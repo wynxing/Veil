@@ -286,8 +286,16 @@ def win_message(code: int) -> str:
     return f"{code} {text}".strip()
 
 
+def clocks() -> dict[str, Any]:
+    return {
+        "wallUnix": time.time(),
+        "monotonic": time.monotonic(),
+        "wall": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def log_event(log_path: str | None, event: dict[str, Any]) -> None:
-    payload = {"ts": datetime.now(timezone.utc).isoformat(), **event}
+    payload = {"ts": datetime.now(timezone.utc).isoformat(), "clocks": clocks(), **event}
     line = json.dumps(payload, ensure_ascii=False)
     print(line, flush=True)
     if log_path:
@@ -307,6 +315,35 @@ def is_internal_tech(tech: int) -> bool:
         DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
         DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
     }
+
+
+def looks_virtual(row: dict[str, Any]) -> bool:
+    blob = " ".join(
+        str(row.get(key) or "")
+        for key in ("adapterPath", "monitorPath", "monitorName", "sourceName")
+    ).lower()
+    needles = (
+        "root\\display",
+        "root#display",
+        "iddcx",
+        "virtual",
+        "usbmmidd",
+        "virtualdisplay",
+        "indirect",
+        "idd sample",
+        "mtt",
+    )
+    return any(needle in blob for needle in needles)
+
+
+def classify_role(row: dict[str, Any]) -> str:
+    if row.get("placeholder"):
+        return "placeholder"
+    if row.get("internal"):
+        return "internal"
+    if looks_virtual(row):
+        return "virtual"
+    return "external"
 
 
 def query_topology(flags: int = QUERY_FLAGS) -> tuple[Any, Any]:
@@ -429,32 +466,35 @@ def snapshot_status() -> dict[str, Any]:
     for index, path in enumerate(paths):
         target = device_target_name(path)
         device_path = target.get("path") or ""
-        path_rows.append(
-            {
-                "index": index,
-                "active": bool(path.flags & DISPLAYCONFIG_PATH_ACTIVE),
-                "flags": int(path.flags),
-                "sourceId": int(path.sourceInfo.id),
-                "targetId": int(path.targetInfo.id),
-                "adapterId": luid_str(path.targetInfo.adapterId),
-                "outputTechnology": int(path.targetInfo.outputTechnology),
-                "internal": is_internal_tech(int(path.targetInfo.outputTechnology)),
-                "targetAvailable": bool(path.targetInfo.targetAvailable),
-                "sourceName": device_source_name(path),
-                "adapterPath": device_adapter_name(path),
-                "monitorName": target.get("name"),
-                "monitorPath": device_path,
-                "placeholder": "DEFAULT_MONITOR" in device_path,
-                "edidManufactureId": target.get("edidManufactureId"),
-                "edidProductCodeId": target.get("edidProductCodeId"),
-            }
-        )
+        row = {
+            "index": index,
+            "active": bool(path.flags & DISPLAYCONFIG_PATH_ACTIVE),
+            "flags": int(path.flags),
+            "sourceId": int(path.sourceInfo.id),
+            "targetId": int(path.targetInfo.id),
+            "adapterId": luid_str(path.targetInfo.adapterId),
+            "outputTechnology": int(path.targetInfo.outputTechnology),
+            "internal": is_internal_tech(int(path.targetInfo.outputTechnology)),
+            "targetAvailable": bool(path.targetInfo.targetAvailable),
+            "sourceName": device_source_name(path),
+            "adapterPath": device_adapter_name(path),
+            "monitorName": target.get("name"),
+            "monitorPath": device_path,
+            "placeholder": "DEFAULT_MONITOR" in device_path,
+            "edidManufactureId": target.get("edidManufactureId"),
+            "edidProductCodeId": target.get("edidProductCodeId"),
+        }
+        row["role"] = classify_role(row)
+        path_rows.append(row)
+    roles = [row["role"] for row in path_rows if row["active"]]
     return {
         "pathCount": len(paths),
         "modeCount": len(modes),
         "gdiMonitorCount": int(user32.GetSystemMetrics(SM_CMONITORS)),
         "pathInfoSize": sizeof(DISPLAYCONFIG_PATH_INFO),
         "modeInfoSize": sizeof(DISPLAYCONFIG_MODE_INFO),
+        "activeInternal": roles.count("internal"),
+        "activeAuxiliary": roles.count("virtual") + roles.count("external"),
         "paths": path_rows,
         "gdi": enum_gdi_devices(),
     }
@@ -587,9 +627,14 @@ def require_confirm(value: str) -> None:
 
 
 def wait_and_poll(log_path: str, seconds: int, note: str) -> None:
-    deadline = time.time() + seconds
+    start_wall = time.time()
+    start_mono = time.monotonic()
+    deadline_mono = start_mono + seconds
     while True:
-        remaining = max(0.0, deadline - time.time())
+        now_mono = time.monotonic()
+        remaining = max(0.0, deadline_mono - now_mono)
+        wall_elapsed = time.time() - start_wall
+        mono_elapsed = now_mono - start_mono
         status = snapshot_status()
         log_event(
             log_path,
@@ -597,7 +642,12 @@ def wait_and_poll(log_path: str, seconds: int, note: str) -> None:
                 "event": "poll",
                 "note": note,
                 "remainingSeconds": round(remaining, 1),
+                "wallElapsedSeconds": round(wall_elapsed, 1),
+                "monoElapsedSeconds": round(mono_elapsed, 1),
+                "sleepSuspected": wall_elapsed > mono_elapsed + 2.0,
                 "gdiMonitorCount": status["gdiMonitorCount"],
+                "activeInternal": status["activeInternal"],
+                "activeAuxiliary": status["activeAuxiliary"],
                 "activePaths": [row for row in status["paths"] if row["active"]],
             },
         )
@@ -715,20 +765,50 @@ def cmd_temp_off(args: argparse.Namespace) -> int:
     return 0 if sent else 1
 
 
-def deactivated_paths(paths: list[Any]) -> list[Any]:
+def deactivated_paths(paths: list[Any], target: str) -> tuple[list[Any], int, int]:
     changed = []
+    disabled = 0
+    remaining_active = 0
     for path in paths:
         clone = DISPLAYCONFIG_PATH_INFO.from_buffer_copy(bytes(path))
-        clone.flags &= ~DISPLAYCONFIG_PATH_ACTIVE
+        is_internal = is_internal_tech(int(clone.targetInfo.outputTechnology))
+        should_disable = clone.flags & DISPLAYCONFIG_PATH_ACTIVE and (
+            target == "all" or (target == "internal" and is_internal)
+        )
+        if should_disable:
+            clone.flags &= ~DISPLAYCONFIG_PATH_ACTIVE
+            disabled += 1
+        elif clone.flags & DISPLAYCONFIG_PATH_ACTIVE:
+            remaining_active += 1
         changed.append(clone)
-    return changed
+    return changed, disabled, remaining_active
 
 
 def cmd_disable_path(args: argparse.Namespace) -> int:
     require_confirm(args.confirm)
     save_topology(args.config)
     paths, modes = load_topology(args.config)
-    disabled = deactivated_paths(paths)
+    disabled, disabled_count, remaining_active = deactivated_paths(paths, args.target)
+    log_event(
+        args.log,
+        {
+            "event": "disable_path_plan",
+            "target": args.target,
+            "disabledCount": disabled_count,
+            "remainingActive": remaining_active,
+            "validateOnly": bool(args.validate_only),
+        },
+    )
+    if args.target == "internal" and remaining_active < 1:
+        log_event(
+            args.log,
+            {
+                "event": "disable_path_skipped_apply",
+                "reason": "no remaining active path after disabling internal; auxiliary target required",
+            },
+        )
+        return 3
+
     validate_rc = set_display_config(disabled, modes, SET_BASE_FLAGS | SDC_VALIDATE)
     log_event(
         args.log,
@@ -736,7 +816,9 @@ def cmd_disable_path(args: argparse.Namespace) -> int:
             "event": "disable_path_validate",
             "rc": validate_rc,
             "message": win_message(validate_rc) if validate_rc else "ERROR_SUCCESS",
-            "activeBefore": sum(1 for path in paths if path.flags & DISPLAYCONFIG_PATH_ACTIVE),
+            "target": args.target,
+            "disabledCount": disabled_count,
+            "remainingActive": remaining_active,
         },
     )
     if validate_rc != 0:
@@ -744,10 +826,13 @@ def cmd_disable_path(args: argparse.Namespace) -> int:
             args.log,
             {
                 "event": "disable_path_skipped_apply",
-                "reason": "validate failed; last physical path disable not applied",
+                "reason": "validate failed; path disable not applied",
             },
         )
         return 2
+    if args.validate_only:
+        log_event(args.log, {"event": "disable_path_validate_only_done"})
+        return 0
 
     pid = start_watchdog(args.config, args.watchdog_seconds, args.log)
     log_event(
@@ -811,8 +896,10 @@ def build_parser() -> argparse.ArgumentParser:
     disable = sub.add_parser("disable-path", help="CCD deactivate paths with watchdog")
     disable.add_argument("--config", required=True)
     disable.add_argument("--log", required=True)
-    disable.add_argument("--watchdog-seconds", type=int, default=20)
+    disable.add_argument("--watchdog-seconds", type=int, default=15)
     disable.add_argument("--confirm", required=True)
+    disable.add_argument("--target", choices=("internal", "all"), default="internal")
+    disable.add_argument("--validate-only", action="store_true")
     disable.add_argument("--input-test", action="store_true")
     return parser
 

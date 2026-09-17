@@ -1,7 +1,7 @@
 # Veil 技术验证协议
 
-版本：0.1  
-状态：仅内屏第一组已记录，闭环未跑通  
+版本：0.2  
+状态：仅内屏第一组失败后，虚拟屏辅助未获得第二目标  
 日期：2026-09-17
 
 本文是验证协议，不是已验证支持列表。产品要求见 [PRD.md](PRD.md)。没有实测证据时，不得把候选机制写成已完成能力。
@@ -39,10 +39,11 @@
 | 机制 | 接口 | 产品意图 | 已知限制 |
 | --- | --- | --- | --- |
 | 临时关闭 | `SendNotifyMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)` | 一次熄屏，允许输入唤醒 | 通常作用于全部显示器，不是按屏保持关闭；`SendMessageTimeout` 广播会长时间阻塞 |
-| 保持关闭 | CCD `QueryDisplayConfig` / `SetDisplayConfig` 清除 `DISPLAYCONFIG_PATH_ACTIVE` | 停用桌面输出直到主动恢复 | 最后一块物理屏可能被系统拒绝；不等于面板断电 |
+| 保持关闭 | CCD `QueryDisplayConfig` / `SetDisplayConfig` 清除指定路径的 `DISPLAYCONFIG_PATH_ACTIVE` | 停用桌面输出直到主动恢复 | 停用全部活动路径会被拒绝；只停内屏须留下辅助目标 |
+| 虚拟/外接辅助 | 第二块活动目标 + 只停内屏 | 检验「非最后一块物理屏」时保持关闭 | 虚拟屏单独枚举，不计入物理支持；不自研驱动、不用 Parsec |
 | 覆盖层 | 全屏黑窗 | 禁止 | 屏幕可能仍亮且仍参与桌面 |
 
-虚拟显示器不是本轮候选。仅当仅内屏闭环失败后，再单独评估。
+虚拟显示器在仅内屏闭环失败后单独评估。本机当前仍无第二目标时，`disable-path --target internal` 必须拒绝 apply。
 
 ## 4. 判定
 
@@ -69,6 +70,12 @@
 
 本轮实测摘要见该结果表。`SC_MONITORPOWER` 在本机导致睡眠感黑屏，且可能把系统带进待机，不能当作后台继续运行的关屏。CCD 停用最后一块物理路径返回 87，保持关闭不支持。
 
+## 5b. 虚拟屏辅助
+
+假设：留下一块非内屏活动路径后，可以只停内屏。安全规则额外要求：`remainingActive >= 1`，否则不 VALIDATE/APPLY。第一次 apply 看门狗 **15 秒**。
+
+结果见 [validation/redmi-book-14-2025-aux.md](validation/redmi-book-14-2025-aux.md)。2026-09-17：无外接、无假插头、无已装 VDD；探针退出码 3，未 apply。
+
 ## 6. 探针命令
 
 工作目录为仓库根或 `tools/display-probe`。Python 3.12，仅标准库。
@@ -79,7 +86,8 @@ python tools/display-probe/probe.py save --config <file>
 python tools/display-probe/probe.py restore --config <file>
 python tools/display-probe/probe.py watchdog --config <file> --seconds N --log <file>
 python tools/display-probe/probe.py temp-off --config <file> --watchdog-seconds 20 --confirm off --log <file>
-python tools/display-probe/probe.py disable-path --config <file> --watchdog-seconds 20 --confirm off --log <file>
+python tools/display-probe/probe.py disable-path --config <file> --watchdog-seconds 15 --confirm off --target internal --log <file>
+python tools/display-probe/probe.py disable-path --config <file> --confirm off --target internal --validate-only --log <file>
 ```
 
-关屏命令默认先拉起分离看门狗。`--confirm off` 是唯一接受的确认词。`temp-off` 使用 `SendNotifyMessageW`，避免广播 `SendMessageTimeout` 阻塞。
+关屏命令默认先拉起分离看门狗。`--confirm off` 是唯一接受的确认词。`temp-off` 使用 `SendNotifyMessageW`，避免广播 `SendMessageTimeout` 阻塞。`--target internal` 只停内屏；没有剩余活动路径时拒绝 apply。日志含墙钟与 monotonic，用于判断待机。
