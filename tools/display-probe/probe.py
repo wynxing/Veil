@@ -9,7 +9,6 @@ import argparse
 import base64
 import json
 import os
-import subprocess
 import sys
 import time
 from ctypes import (
@@ -70,7 +69,7 @@ CREATE_NO_WINDOW = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 MOUSEEVENTF_MOVE = 0x0001
 KEYEVENTF_KEYUP = 0x0002
-VK_SPACE = 0x20
+VK_SHIFT = 0x10
 
 QUERY_FLAGS = (
     QDC_ONLY_ACTIVE_PATHS | QDC_VIRTUAL_MODE_AWARE | QDC_VIRTUAL_REFRESH_RATE_AWARE
@@ -551,7 +550,7 @@ def restore_topology(path: str) -> int:
     return set_display_config(
         paths,
         modes,
-        SET_BASE_FLAGS | SDC_APPLY | SDC_SAVE_TO_DATABASE,
+        SET_BASE_FLAGS | SDC_APPLY,
     )
 
 
@@ -562,7 +561,7 @@ def apply_topology_internal() -> int:
             None,
             0,
             None,
-            SDC_APPLY | SDC_TOPOLOGY_INTERNAL | SDC_VIRTUAL_MODE_AWARE,
+            SDC_APPLY | SDC_TOPOLOGY_INTERNAL,
         )
     )
 
@@ -582,78 +581,13 @@ def monitor_power(state: int) -> tuple[int, int]:
 def synthesize_input() -> None:
     user32.mouse_event(MOUSEEVENTF_MOVE, 12, 0, 0, 0)
     time.sleep(0.05)
-    user32.keybd_event(VK_SPACE, 0, 0, 0)
-    user32.keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0)
-
-
-def start_watchdog(config: str, seconds: int, log_path: str) -> int:
-    script = os.path.abspath(__file__)
-    command = [
-        sys.executable,
-        script,
-        "watchdog",
-        "--config",
-        os.path.abspath(config),
-        "--seconds",
-        str(seconds),
-        "--log",
-        os.path.abspath(log_path),
-    ]
-    flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
-    try:
-        proc = subprocess.Popen(
-            command,
-            creationflags=flags,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
-    except OSError:
-        proc = subprocess.Popen(
-            command,
-            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-        )
-    return int(proc.pid)
+    user32.keybd_event(VK_SHIFT, 0, 0, 0)
+    user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
 
 
 def require_confirm(value: str) -> None:
     if value != "off":
         raise SystemExit("refusing to run: pass --confirm off")
-
-
-def wait_and_poll(log_path: str, seconds: int, note: str) -> None:
-    start_wall = time.time()
-    start_mono = time.monotonic()
-    deadline_mono = start_mono + seconds
-    while True:
-        now_mono = time.monotonic()
-        remaining = max(0.0, deadline_mono - now_mono)
-        wall_elapsed = time.time() - start_wall
-        mono_elapsed = now_mono - start_mono
-        status = snapshot_status()
-        log_event(
-            log_path,
-            {
-                "event": "poll",
-                "note": note,
-                "remainingSeconds": round(remaining, 1),
-                "wallElapsedSeconds": round(wall_elapsed, 1),
-                "monoElapsedSeconds": round(mono_elapsed, 1),
-                "sleepSuspected": wall_elapsed > mono_elapsed + 2.0,
-                "gdiMonitorCount": status["gdiMonitorCount"],
-                "activeInternal": status["activeInternal"],
-                "activeAuxiliary": status["activeAuxiliary"],
-                "activePaths": [row for row in status["paths"] if row["active"]],
-            },
-        )
-        if remaining <= 0:
-            break
-        time.sleep(min(5.0, remaining))
 
 
 def cmd_enumerate(_args: argparse.Namespace) -> int:
@@ -691,78 +625,19 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
 
 def cmd_watchdog(args: argparse.Namespace) -> int:
-    log_event(
-        args.log,
-        {
-            "event": "watchdog_sleep",
-            "pid": os.getpid(),
-            "seconds": args.seconds,
-            "config": os.path.abspath(args.config),
-        },
-    )
-    time.sleep(args.seconds)
-    rc = restore_topology(args.config)
-    log_event(
-        args.log,
-        {
-            "event": "watchdog_restore",
-            "rc": rc,
-            "message": win_message(rc) if rc else "ERROR_SUCCESS",
-        },
-    )
-    sent, err = monitor_power(-1)
-    log_event(
-        args.log,
-        {
-            "event": "watchdog_monitor_on",
-            "sent": sent,
-            "lastError": err,
-            "lastErrorMessage": win_message(err) if err else "",
-        },
-    )
-    if rc != 0:
-        fallback = apply_topology_internal()
-        log_event(
-            args.log,
-            {
-                "event": "watchdog_topology_internal",
-                "rc": fallback,
-                "message": win_message(fallback) if fallback else "ERROR_SUCCESS",
-            },
-        )
-        return 0 if fallback == 0 else 1
-    return 0
+    from pathlib import Path
+    import uuid
+    from validation import start_run, wait_result
+    directory = Path(args.log).resolve().parent / ("watchdog-" + uuid.uuid4().hex[:8])
+    proc = start_run(args.config, directory, "timer", args.seconds)
+    result = wait_result(proc, directory, args.seconds)
+    log_event(args.log, {"event": "watchdog_result", "directory": str(directory), **result})
+    return 0 if result["ok"] else 1
 
 
 def cmd_temp_off(args: argparse.Namespace) -> int:
-    require_confirm(args.confirm)
-    save_topology(args.config)
-    pid = start_watchdog(args.config, args.watchdog_seconds, args.log)
-    log_event(
-        args.log,
-        {
-            "event": "watchdog_started",
-            "pid": pid,
-            "seconds": args.watchdog_seconds,
-            "recoveryHint": "Win+Ctrl+Shift+B then reboot if restore fails",
-        },
-    )
-    before = snapshot_status()
-    log_event(args.log, {"event": "status_before", "status": before})
-    sent, err = monitor_power(2)
-    log_event(
-        args.log,
-        {
-            "event": "temp_off",
-            "sent": sent,
-            "lastError": err,
-            "lastErrorMessage": win_message(err) if err else "",
-        },
-    )
-    wait_and_poll(args.log, args.watchdog_seconds + 3, "temp-off-wait-restore")
-    after = snapshot_status()
-    log_event(args.log, {"event": "status_after", "status": after})
-    return 0 if sent else 1
+    from validation import guarded_experiment
+    return guarded_experiment(args, "temp-off")
 
 
 def deactivated_paths(paths: list[Any], target: str) -> tuple[list[Any], int, int]:
@@ -785,87 +660,8 @@ def deactivated_paths(paths: list[Any], target: str) -> tuple[list[Any], int, in
 
 
 def cmd_disable_path(args: argparse.Namespace) -> int:
-    require_confirm(args.confirm)
-    save_topology(args.config)
-    paths, modes = load_topology(args.config)
-    disabled, disabled_count, remaining_active = deactivated_paths(paths, args.target)
-    log_event(
-        args.log,
-        {
-            "event": "disable_path_plan",
-            "target": args.target,
-            "disabledCount": disabled_count,
-            "remainingActive": remaining_active,
-            "validateOnly": bool(args.validate_only),
-        },
-    )
-    if args.target == "internal" and remaining_active < 1:
-        log_event(
-            args.log,
-            {
-                "event": "disable_path_skipped_apply",
-                "reason": "no remaining active path after disabling internal; auxiliary target required",
-            },
-        )
-        return 3
-
-    validate_rc = set_display_config(disabled, modes, SET_BASE_FLAGS | SDC_VALIDATE)
-    log_event(
-        args.log,
-        {
-            "event": "disable_path_validate",
-            "rc": validate_rc,
-            "message": win_message(validate_rc) if validate_rc else "ERROR_SUCCESS",
-            "target": args.target,
-            "disabledCount": disabled_count,
-            "remainingActive": remaining_active,
-        },
-    )
-    if validate_rc != 0:
-        log_event(
-            args.log,
-            {
-                "event": "disable_path_skipped_apply",
-                "reason": "validate failed; path disable not applied",
-            },
-        )
-        return 2
-    if args.validate_only:
-        log_event(args.log, {"event": "disable_path_validate_only_done"})
-        return 0
-
-    pid = start_watchdog(args.config, args.watchdog_seconds, args.log)
-    log_event(
-        args.log,
-        {
-            "event": "watchdog_started",
-            "pid": pid,
-            "seconds": args.watchdog_seconds,
-            "recoveryHint": "Win+Ctrl+Shift+B then reboot if restore fails",
-        },
-    )
-    apply_rc = set_display_config(
-        disabled,
-        modes,
-        SET_BASE_FLAGS | SDC_APPLY | SDC_SAVE_TO_DATABASE,
-    )
-    log_event(
-        args.log,
-        {
-            "event": "disable_path_apply",
-            "rc": apply_rc,
-            "message": win_message(apply_rc) if apply_rc else "ERROR_SUCCESS",
-        },
-    )
-    if args.input_test:
-        time.sleep(3)
-        synthesize_input()
-        log_event(args.log, {"event": "input_synthesized"})
-        time.sleep(2)
-        log_event(args.log, {"event": "status_after_input", "status": snapshot_status()})
-    wait_and_poll(args.log, args.watchdog_seconds + 3, "disable-path-wait-restore")
-    log_event(args.log, {"event": "status_after", "status": snapshot_status()})
-    return 0 if apply_rc == 0 else 1
+    from validation import guarded_experiment
+    return guarded_experiment(args, "disable-path")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -890,8 +686,9 @@ def build_parser() -> argparse.ArgumentParser:
     temp_off = sub.add_parser("temp-off", help="SC_MONITORPOWER off with watchdog")
     temp_off.add_argument("--config", required=True)
     temp_off.add_argument("--log", required=True)
-    temp_off.add_argument("--watchdog-seconds", type=int, default=20)
+    temp_off.add_argument("--watchdog-seconds", type=int, default=15)
     temp_off.add_argument("--confirm", required=True)
+    temp_off.add_argument("--receipt", required=True, help="successful preflight receipt")
 
     disable = sub.add_parser("disable-path", help="CCD deactivate paths with watchdog")
     disable.add_argument("--config", required=True)
@@ -901,6 +698,7 @@ def build_parser() -> argparse.ArgumentParser:
     disable.add_argument("--target", choices=("internal", "all"), default="internal")
     disable.add_argument("--validate-only", action="store_true")
     disable.add_argument("--input-test", action="store_true")
+    disable.add_argument("--receipt", help="required for apply; successful preflight receipt")
     return parser
 
 
@@ -917,7 +715,7 @@ def main() -> int:
     }
     try:
         return commands[args.command](args)
-    except OSError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         log_event(getattr(args, "log", None), {"event": "os_error", "message": str(exc)})
         return 1
 
