@@ -1,0 +1,22 @@
+# Local development settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated output and dependencies
+node_modules/
+target/
+dist/
+build/
+coverage/
+
+# Local configuration and temporary files
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+.DS_Store
