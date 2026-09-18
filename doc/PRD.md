@@ -1,10 +1,10 @@
 # Veil 产品需求文档
 
-版本：0.11  
-状态：公开产品设计已锁定；实现未开始。仓库 `app/` 仅为调研原型。  
+版本：0.12  
+状态：公开产品设计与实现栈已锁定；产品代码未开始。仓库 `app/` 已冻结。  
 日期：2026-09-18
 
-完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。机制证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。本文是产品合同：用户要什么、首版做什么、什么算成功。未测项不得写成已兼容。
+完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。本文是产品合同：用户要什么、首版做什么、什么算成功。未测项不得写成已兼容。
 
 ## 1. 定位与目标
 
@@ -126,9 +126,9 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 ## 7. 阶段
 
-1. **需求与设计（当前）**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态。  
+1. **需求与设计**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态；[ARCHITECTURE.md](ARCHITECTURE.md) 已锁定实现栈与仓库处置。  
 2. **机制调研（可行性已收口）**：原生不能停最后一条路径；第二目标可以是实体外接或已签名 VDD。证据见 `validation/`。  
-3. **公开产品实现（未开始）**：按设计做安装器、托盘小面板、按需 VDD、多物理屏保持关闭与单独恢复。不得把 `app/` 最小应用直接当发布物。  
+3. **公开产品实现（未开始）**：按架构另开 C# / WPF / WiX 工程。不得把 `app/` 最小应用直接当发布物，也不得在 Python 探针里长出产品。  
 4. **兼容与增强**：扩大硬件矩阵；再评估防睡眠等 P1。
 
 没有实测证据时，不得宣称功能完成或硬件兼容。

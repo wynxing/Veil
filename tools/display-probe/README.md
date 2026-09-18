@@ -1,6 +1,6 @@
 # display-probe
 
-Windows 11、64 位 Python 3.12 标准库技术探针，不是产品应用。以下路径在仓库根执行。`out/` 不提交，正式实验建议把原始证据保存到主仓库 `.git/veil-validation-日期/`，避免清理工作树时丢失。
+Windows 11、64 位 Python 3.12 标准库技术探针，长期保留的实验室工具，不是产品应用。产品实现栈见 [技术架构](../../doc/ARCHITECTURE.md)。以下路径在仓库根执行。`out/` 不提交，正式实验建议把原始证据保存到主仓库 `.git/veil-validation-日期/`，避免清理工作树时丢失。
 
 ## 不关屏检查
 
