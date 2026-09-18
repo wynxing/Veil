@@ -1,6 +1,6 @@
 # Veil 最小应用
 
-调研用托盘原型，不是安装包，也不是 [公开产品设计](../doc/PRODUCT_DESIGN.md) 中的发布物。Python 3.12 标准库，复用 `tools/display-probe` 的 CCD 与独立恢复进程。
+调研用托盘原型，**已冻结**：不新增功能、不打包装。不是安装包，也不是 [公开产品设计](../doc/PRODUCT_DESIGN.md) 中的发布物。处置规则见 [技术架构](../doc/ARCHITECTURE.md) 第 8 节。Python 3.12 标准库，复用 `tools/display-probe` 的 CCD 与独立恢复进程。
 
 第一组硬件：REDMI Book 14 2025 仅内屏 + 已签名 Virtual Display Driver 25.7.23。不能宣传成不依赖虚拟屏。关屏中睡眠唤醒后不自动再关。
 
