@@ -236,14 +236,19 @@ def worker(args):
         result["applyRc"] = 0
         expected = active_targets(paths)
         if args.kind == "disable-path":
-            changed, count, remaining = p.deactivated_paths(paths, args.target)
+            changed, apply_modes, count, remaining, adjusted = p.prepare_disable(
+                paths, modes, args.target
+            )
             if count == 0 or remaining == 0:
-                raise RuntimeError("no eligible internal target or no remaining active target")
-            rc = p.set_display_config(changed, modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
+                raise RuntimeError("no eligible target or no remaining active target")
+            rc = p.set_display_config(changed, apply_modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
             if rc:
                 raise RuntimeError(f"worker validation failed: {rc}")
             expected = active_targets(changed)
-            result["applyRc"] = p.set_display_config(changed, modes, p.SET_BASE_FLAGS | p.SDC_APPLY)
+            result["adjustedOrigin"] = adjusted
+            result["applyRc"] = p.set_display_config(
+                changed, apply_modes, p.SET_BASE_FLAGS | p.SDC_APPLY
+            )
         elif args.kind == "temp-off":
             sent, error = p.monitor_power(2)
             result["applyRc"] = 0 if sent else error or 1
@@ -411,10 +416,13 @@ def guarded_experiment(args, kind):
     check_layout()
     paths, modes = p.query_topology()
     if kind == "disable-path":
-        changed, count, remaining = p.deactivated_paths(paths, args.target)
-        rc = p.set_display_config(changed, modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
+        changed, apply_modes, count, remaining, adjusted = p.prepare_disable(
+            paths, modes, args.target
+        )
+        rc = p.set_display_config(changed, apply_modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
         p.log_event(args.log, {"event": "disable_path_validate", "rc": rc,
-                              "disabledCount": count, "remainingActive": remaining})
+                              "disabledCount": count, "remainingActive": remaining,
+                              "adjustedOrigin": adjusted, "target": args.target})
         if rc:
             return 2
         if args.validate_only:
@@ -429,7 +437,8 @@ def guarded_experiment(args, kind):
     directory = Path(args.log).resolve().parent / ("run-" + uuid.uuid4().hex[:8])
     try:
         proc = start_run(args.config, directory, kind, args.watchdog_seconds,
-                         getattr(args, "target", "internal"), getattr(args, "input_test", False))
+                         getattr(args, "target", "internal"), getattr(args, "input_test", False),
+                         parent_pid=os.getpid() if getattr(args, "parent_crash", False) else 0)
         p.log_event(args.log, {"event": "recovery_ready", "pid": proc.pid,
                               "directory": str(directory), "hotkey": HOTKEY})
         if getattr(args, "parent_crash", False):
@@ -464,7 +473,7 @@ def main():
     work.add_argument("--kind", choices=["timer", "hotkey", "temp-off", "disable-path"], required=True)
     work.add_argument("--seconds", type=int, required=True,
                       help="0 holds until hotkey, release.json, or parent exit")
-    work.add_argument("--target", choices=["internal", "all"], default="internal")
+    work.add_argument("--target", choices=["internal", "external", "all"], default="internal")
     work.add_argument("--input-test", action="store_true")
     work.add_argument("--parent-pid", type=int, default=0)
     progress = sub.add_parser("progress")

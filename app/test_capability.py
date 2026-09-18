@@ -2,6 +2,7 @@
 import unittest
 
 from capability import (
+    auxiliary_listing_note,
     describe_hold_result,
     keep_off_block_reason,
     physical_paths,
@@ -20,9 +21,10 @@ def status(*rows, auxiliary=None):
 
 
 class CapabilityTests(unittest.TestCase):
-    def test_missing_virtual_blocks_keep_off(self):
+    def test_internal_only_blocks_keep_off(self):
         data = status({"role": "internal", "active": True, "monitorName": "Panel"})
-        self.assertIn("虚拟目标", keep_off_block_reason(data))
+        reason = keep_off_block_reason(data)
+        self.assertIn("第二活动目标", reason)
         self.assertEqual(len(physical_paths(data)), 1)
         self.assertEqual(virtual_paths(data), [])
 
@@ -48,7 +50,46 @@ class CapabilityTests(unittest.TestCase):
             {"role": "internal", "active": True},
             {"role": "virtual", "active": False},
         )
-        self.assertIsNotNone(keep_off_block_reason(data))
+        self.assertIn("第二活动目标", keep_off_block_reason(data))
+
+    def test_physical_external_without_virtual_allows_keep_off(self):
+        data = status(
+            {"role": "internal", "active": True, "monitorName": "Panel"},
+            {"role": "external", "active": True, "monitorName": "S24"},
+        )
+        self.assertIsNone(keep_off_block_reason(data))
+        self.assertEqual([row["role"] for row in physical_paths(data)], ["internal", "external"])
+        self.assertEqual(virtual_paths(data), [])
+
+    def test_inactive_external_does_not_count(self):
+        data = status(
+            {"role": "internal", "active": True},
+            {"role": "external", "active": False},
+        )
+        self.assertIn("第二活动目标", keep_off_block_reason(data))
+
+    def test_external_only_without_internal_blocks(self):
+        data = status({"role": "external", "active": True, "monitorName": "S24"})
+        self.assertIn("内屏", keep_off_block_reason(data))
+
+    def test_listing_uses_active_external_when_internal_is_off(self):
+        data = status(
+            {"role": "internal", "active": False},
+            {"role": "external", "active": True, "monitorName": "S24"},
+        )
+        self.assertIn("实体外接", auxiliary_listing_note(data))
+        self.assertNotIn("未检测到", auxiliary_listing_note(data))
+
+    def test_listing_virtual_when_present(self):
+        data = status(
+            {"role": "internal", "active": True},
+            {"role": "virtual", "active": True},
+        )
+        self.assertIn("虚拟辅助目标", auxiliary_listing_note(data))
+
+    def test_listing_missing_aux(self):
+        data = status({"role": "internal", "active": True})
+        self.assertIn("未检测到", auxiliary_listing_note(data))
 
     def test_execution_gap_with_internal_on_is_confirmed_not_unknown(self):
         result = {

@@ -52,6 +52,8 @@ SDC_VIRTUAL_MODE_AWARE = 0x00008000
 SDC_VIRTUAL_REFRESH_RATE_AWARE = 0x00020000
 
 DISPLAYCONFIG_PATH_ACTIVE = 0x00000001
+DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE = 1
+DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID = 0xFFFF
 
 DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1
 DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2
@@ -663,7 +665,9 @@ def deactivated_paths(paths: list[Any], target: str) -> tuple[list[Any], int, in
         clone = DISPLAYCONFIG_PATH_INFO.from_buffer_copy(bytes(path))
         is_internal = is_internal_tech(int(clone.targetInfo.outputTechnology))
         should_disable = clone.flags & DISPLAYCONFIG_PATH_ACTIVE and (
-            target == "all" or (target == "internal" and is_internal)
+            target == "all"
+            or (target == "internal" and is_internal)
+            or (target == "external" and not is_internal)
         )
         if should_disable:
             clone.flags &= ~DISPLAYCONFIG_PATH_ACTIVE
@@ -672,6 +676,49 @@ def deactivated_paths(paths: list[Any], target: str) -> tuple[list[Any], int, in
             remaining_active += 1
         changed.append(clone)
     return changed, disabled, remaining_active
+
+
+def source_mode_index(path: DISPLAYCONFIG_PATH_INFO, modes: list[Any]) -> int | None:
+    packed = int(path.sourceInfo.modeInfoIdx)
+    packed_src = (packed >> 16) & 0xFFFF
+    for idx in (packed_src, packed):
+        if idx == DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID or idx >= len(modes):
+            continue
+        if int(modes[idx].infoType) == DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE:
+            return idx
+    return None
+
+
+def modes_with_remaining_at_origin(
+    paths: list[Any], modes: list[Any]
+) -> tuple[list[Any], bool]:
+    changed = [DISPLAYCONFIG_MODE_INFO.from_buffer_copy(bytes(mode)) for mode in modes]
+    moved = False
+    for path in paths:
+        if not (path.flags & DISPLAYCONFIG_PATH_ACTIVE):
+            continue
+        idx = source_mode_index(path, changed)
+        if idx is None:
+            continue
+        mode = changed[idx]
+        if mode.sourceMode.position.x == 0 and mode.sourceMode.position.y == 0:
+            continue
+        mode.sourceMode.position.x = 0
+        mode.sourceMode.position.y = 0
+        moved = True
+    return changed, moved
+
+
+def prepare_disable(paths: list[Any], modes: list[Any], target: str) -> tuple[list[Any], list[Any], int, int, bool]:
+    changed, count, remaining = deactivated_paths(paths, target)
+    adjusted = False
+    out_modes = modes
+    if target == "external" and remaining:
+        shifted, moved = modes_with_remaining_at_origin(changed, modes)
+        if moved:
+            out_modes = shifted
+            adjusted = True
+    return changed, out_modes, count, remaining, adjusted
 
 
 def cmd_disable_path(args: argparse.Namespace) -> int:
@@ -710,7 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
     disable.add_argument("--log", required=True)
     disable.add_argument("--watchdog-seconds", type=int, default=15)
     disable.add_argument("--confirm", required=True)
-    disable.add_argument("--target", choices=("internal", "all"), default="internal")
+    disable.add_argument("--target", choices=("internal", "external", "all"), default="internal")
     disable.add_argument("--validate-only", action="store_true")
     disable.add_argument("--input-test", action="store_true")
     disable.add_argument("--parent-crash", action="store_true",

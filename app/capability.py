@@ -10,12 +10,10 @@ def active_roles(status):
 
 def keep_off_block_reason(status):
     roles = active_roles(status)
-    if roles.count("virtual") < 1:
-        return "没有活动的虚拟目标。请安装已签名 Virtual Display Driver 后再保持关闭。"
     if roles.count("internal") < 1:
         return "当前没有活动的内屏路径。"
-    if status.get("activeAuxiliary", 0) < 1:
-        return "没有第二活动目标，无法停用最后一条物理路径。"
+    if roles.count("virtual") + roles.count("external") < 1:
+        return "没有第二活动目标（虚拟屏或实体外接），无法停用最后一条物理路径。"
     return None
 
 
@@ -25,6 +23,15 @@ def physical_paths(status):
 
 def virtual_paths(status):
     return [row for row in status.get("paths", []) if row.get("role") == "virtual"]
+
+
+def auxiliary_listing_note(status):
+    virtual = virtual_paths(status)
+    if virtual:
+        return f"虚拟辅助目标 {len(virtual)} 个（不列入物理屏，不能对它关屏）"
+    if "external" in active_roles(status):
+        return "当前第二目标是实体外接，未使用虚拟屏"
+    return "未检测到活动虚拟目标或实体外接"
 
 
 def describe_hold_result(result, status=None, hotkey=DEFAULT_HOTKEY):

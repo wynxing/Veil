@@ -32,6 +32,7 @@ python tools/display-probe/validation.py preflight --config out/topology.json --
 ```powershell
 # 零活动路径也可校验；校验失败绝不 apply。
 python tools/display-probe/probe.py disable-path --config out/topology.json --confirm off --target internal --validate-only --log out/validate.jsonl
+python tools/display-probe/probe.py disable-path --config out/topology.json --confirm off --target external --validate-only --log out/validate-external.jsonl
 
 # 需要第二活动目标以及有效凭证；虚拟屏安装后必须重新预检。
 python tools/display-probe/probe.py disable-path --config out/topology.json --receipt out/preflight.json --confirm off --target internal --watchdog-seconds 15 --input-test --log out/off.jsonl

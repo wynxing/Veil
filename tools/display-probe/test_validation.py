@@ -35,6 +35,41 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(changed[0].sourceInfo.modeInfoIdx, 0x0001FFFF)
         self.assertEqual(bytes(changed[1]), before[1])
 
+    def test_deactivation_external_leaves_internal(self):
+        original = [path(), path(False, ident=2)]
+        before = [bytes(x) for x in original]
+        changed, count, remaining = p.deactivated_paths(original, "external")
+        self.assertEqual((count, remaining), (1, 1))
+        self.assertEqual([bytes(x) for x in original], before)
+        self.assertTrue(changed[0].flags & p.DISPLAYCONFIG_PATH_ACTIVE)
+        self.assertFalse(changed[1].flags & p.DISPLAYCONFIG_PATH_ACTIVE)
+
+    def test_remaining_source_moves_to_origin_without_mutating_input(self):
+        remaining = path(True, ident=1)
+        remaining.sourceInfo.modeInfoIdx = 1
+        target_mode = p.DISPLAYCONFIG_MODE_INFO()
+        target_mode.infoType = 2
+        source_mode = p.DISPLAYCONFIG_MODE_INFO()
+        source_mode.infoType = 1
+        source_mode.sourceMode.position.x = 2560
+        source_mode.sourceMode.position.y = 12
+        original = bytes(source_mode)
+        shifted, moved = p.modes_with_remaining_at_origin([remaining], [target_mode, source_mode])
+        self.assertTrue(moved)
+        self.assertEqual((shifted[1].sourceMode.position.x, shifted[1].sourceMode.position.y), (0, 0))
+        self.assertEqual(bytes(source_mode), original)
+
+    def test_virtual_packed_source_index_moves_to_origin(self):
+        remaining = path(True, ident=1)
+        remaining.sourceInfo.modeInfoIdx = (1 << 16) | 0xFFFF
+        modes = [p.DISPLAYCONFIG_MODE_INFO(), p.DISPLAYCONFIG_MODE_INFO()]
+        modes[0].infoType = 2
+        modes[1].infoType = 1
+        modes[1].sourceMode.position.x = 2560
+        shifted, moved = p.modes_with_remaining_at_origin([remaining], modes)
+        self.assertTrue(moved)
+        self.assertEqual(shifted[1].sourceMode.position.x, 0)
+
     def test_profiles_query_fresh_and_only_validate(self):
         with patch.object(p, "query_topology", return_value=([path()], [])) as query, \
              patch.object(p, "set_display_config", return_value=0) as setter, \
@@ -186,6 +221,7 @@ class ValidationTests(unittest.TestCase):
                     v.guarded_experiment(args, "disable-path")
             crash.assert_called_once_with(17)
             start.assert_called_once()
+            self.assertEqual(start.call_args.kwargs["parent_pid"], os.getpid())
             wait.assert_not_called()
 
     def test_hold_allows_zero_seconds_and_passes_parent_pid(self):

@@ -1,4 +1,4 @@
-"""Veil 最小应用：托盘 + 物理屏列表 + VDD 辅助保持关闭。"""
+"""Veil 最小应用：托盘 + 物理屏列表 + 保持关闭（虚拟屏或实体外接作第二目标）。"""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import probe as p  # noqa: E402
 import validation as v  # noqa: E402
 from capability import (  # noqa: E402
+    auxiliary_listing_note,
     describe_hold_result,
     keep_off_block_reason,
     physical_paths,
@@ -122,7 +123,7 @@ class Session:
             rc = p.apply_topology_clone()
             self.confirmed = "已确认" if rc == 0 else "失败"
             self.detail = (
-                "已尝试恢复内屏与虚拟目标共用源。" if rc == 0
+                "已尝试恢复内屏显示。" if rc == 0
                 else f"恢复拓扑失败：{rc}"
             )
             return
@@ -197,11 +198,7 @@ def run_window(session: Session):
             elif row.get("role") == "external":
                 extra = "  未验证"
             lines.append(f"{name}（{kind}，{state}）{extra}")
-        virtual = virtual_paths(status)
-        if virtual:
-            lines.append(f"虚拟辅助目标 {len(virtual)} 个（不列入物理屏，不能对它关屏）")
-        else:
-            lines.append("未检测到活动虚拟目标")
+        lines.append(auxiliary_listing_note(status))
         listing.set("\n".join(lines) or "没有显示器")
         wanted.set("用户要求：" + session.wanted)
         confirmed.set("已确认状态：" + session.confirmed)
