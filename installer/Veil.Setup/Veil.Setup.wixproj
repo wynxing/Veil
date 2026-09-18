@@ -1,0 +1,15 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>Veil</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <DefineConstants>PublishDir=$(MSBuildThisFileDirectory)..\out\app;PayloadDir=$(MSBuildThisFileDirectory)..\payload</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Package.wxs" />
+    <Compile Include="Files.wxs" />
+  </ItemGroup>
+  <Target Name="RequirePayload" BeforeTargets="BeforeBuild">
+    <Exec Command="&quot;$(WINDIR)\System32\WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\ValidatePayload.ps1&quot;" />
+  </Target>
+</Project>

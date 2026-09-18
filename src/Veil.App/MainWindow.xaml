@@ -1,0 +1,57 @@
+<Window x:Class="Veil.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Veil"
+        Width="420"
+        MinWidth="360"
+        Height="460"
+        MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI"
+        FontSize="13">
+    <DockPanel Margin="16">
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock FontSize="22" FontWeight="SemiBold" Text="Veil"/>
+            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#555"
+                       Text="按物理屏保持关闭，直到主动恢复。虚拟屏不出现在列表中。未机旁复测的路径失败会如实显示。"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <TextBlock Text="{Binding HotkeyStatus}" Margin="0,0,0,8"/>
+            <CheckBox Content="开机自启（默认关，不跨重启再关屏）" IsChecked="{Binding StartupEnabled}"/>
+            <Button Content="恢复全部" Margin="0,12,0,0" Padding="10,6" Click="RestoreAll_Click"/>
+            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#444" Text="{Binding Detail}"/>
+        </StackPanel>
+        <ItemsControl Margin="0,16,0,8" ItemsSource="{Binding Screens}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="0,8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock FontWeight="SemiBold">
+                                    <Run Text="{Binding Name, Mode=OneWay}"/>
+                                    <Run Text="（"/>
+                                    <Run Text="{Binding Kind, Mode=OneWay}"/>
+                                    <Run Text="）"/>
+                                </TextBlock>
+                                <TextBlock Foreground="#555" Text="{Binding StatusText}"/>
+                                <TextBlock Foreground="#8A1F1F" Text="{Binding BlockReason}" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="保持关闭" Margin="8,0,0,0" Padding="8,4"
+                                        Click="KeepOff_Click"
+                                        IsEnabled="{Binding CanKeepOff}"/>
+                                <Button Content="恢复" Margin="8,0,0,0" Padding="8,4"
+                                        Click="Restore_Click"
+                                        IsEnabled="{Binding CanRestore}"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </DockPanel>
+</Window>

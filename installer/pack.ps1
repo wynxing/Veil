@@ -1,0 +1,29 @@
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $root) { $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
+if ($PSScriptRoot.EndsWith("installer")) {
+    $root = Split-Path -Parent $PSScriptRoot
+}
+
+$repo = Resolve-Path (Join-Path $PSScriptRoot "..")
+Set-Location $repo
+
+$ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+& $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "ValidatePayload.ps1")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
+if (-not (Test-Path $dotnet)) { throw "未找到 .NET SDK： $dotnet" }
+
+& $dotnet publish (Join-Path $repo "src\Veil.App\Veil.App.csproj") -c Release -p:Platform=x64 -o (Join-Path $PSScriptRoot "out\app")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Copy-Item (Join-Path $PSScriptRoot "payload.manifest.json") (Join-Path $PSScriptRoot "out\app\payload.manifest.json") -Force
+
+$wix = Join-Path $PSScriptRoot "Veil.Setup\Veil.Setup.wixproj"
+& $dotnet build $wix -c Release
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$bundle = Join-Path $PSScriptRoot "Veil.Setup\Veil.Bundle.wixproj"
+if (Test-Path $bundle) {
+    & $dotnet build $bundle -c Release
+}
