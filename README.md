@@ -2,7 +2,7 @@
 
 Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。首版不做临时关闭。
 
-**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口；C# 路径须在 P15 / REDMI 上重新机旁观察后才能继承「已验证」。仓库 `app/` 仍是冻结的调研原型。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 在 COLORFUL P15 上已有短时只停内屏及热键恢复的机旁观察（内屏灭、外屏能用、恢复时闪一下）；只停外屏、REDMI / 安装器 VDD、睡醒再关仍未做。仓库 `app/` 仍是冻结的调研原型。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
 
 本地构建（x64）：
 
@@ -30,7 +30,7 @@ dotnet test src\Veil.sln -p:Platform=x64
 
 第一组：XIAOMI REDMI Book 14 2025，仅笔记本内屏。原生停最后一条路径校验 87。已签名 Virtual Display Driver 25.7.23 作为第二目标后，可保持关闭内屏（短时、10 分钟、循环、崩溃恢复）。睡醒后内屏亮起，保持关闭结束且当时未自动再关。详见 [虚拟屏辅助结果](doc/validation/redmi-book-14-2025-vdd.md)。
 
-第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。原生只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环（主屏外接时须把留下的内屏挪到原点）。操作者确认目标屏灭、留下的屏可用，仅开关闪烁。详见 [P15 外接记录](doc/validation/colorful-p15-24-aux.md)。
+第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。Python 探针只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环。C# 产品短时只停内屏与热键恢复已有机旁观察。详见 [P15 外接记录](doc/validation/colorful-p15-24-aux.md) 与 [P15 C# 短时](doc/validation/colorful-p15-24-csharp.md)。
 
 ## 文档
 
@@ -39,6 +39,6 @@ dotnet test src\Veil.sln -p:Platform=x64
 - [技术架构](doc/ARCHITECTURE.md)：.NET / WPF / WiX、双进程切分、现存 Python 代码处置。
 - [技术验证协议](doc/TECH_VALIDATION.md)：实验规则；可行性调研已收口。
 - [最小应用](app/README.md)：已冻结的调研原型，仅本机已验证配置。
-- [产品工程](src/)：C# / WPF，尚未机旁复测。
+- [产品工程](src/)：C# / WPF。P15 短时只停内屏与热键恢复已观察，不是已发布。
 - [安装器](installer/README.md)：WiX 5；payload 缺失则构建失败。
 - [协作规范](AGENTS.md)：工作树开发与清理要求。

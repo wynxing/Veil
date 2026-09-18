@@ -104,6 +104,24 @@ public sealed class ScreenListBuilderTests
         Assert.Contains(items, i => i.Name == "S24");
     }
 
+    [Fact]
+    public void ClearedHeartbeatAfterRestoreShowsActiveScreensOn()
+    {
+        var snap = new DisplaySnapshot(
+        [
+            Row(PathRole.Internal, 1, "Panel", @"PCI\VEN_8086", @"\\?\DISPLAY#CMN#1"),
+            Row(PathRole.External, 2, "S24", @"PCI\VEN_8086", @"\\?\DISPLAY#PDA#1"),
+        ]);
+        var items = ScreenListBuilder.Build(snap, heartbeat: null, pendingWanted: [], false, true, true);
+        Assert.All(items, i =>
+        {
+            Assert.Equal("开启", i.Wanted);
+            Assert.Equal("已显示", i.Confirmed);
+            Assert.True(i.CanKeepOff);
+            Assert.False(i.CanRestore);
+        });
+    }
+
     private static PathRow Row(PathRole role, uint id, string name, string adapter, string monitor) =>
         new(
             (int)id,

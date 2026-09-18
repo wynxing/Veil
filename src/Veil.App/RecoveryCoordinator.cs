@@ -35,6 +35,8 @@ public sealed class RecoveryCoordinator
 
     public HeartbeatFile? Heartbeat { get; private set; }
 
+    public string? StatusText { get; private set; }
+
     public IReadOnlyList<ScreenIdentity> Wanted =>
         _intent.KeepOff.Select(x => x.ToIdentity()).ToList();
 
@@ -50,18 +52,47 @@ public sealed class RecoveryCoordinator
         {
             HotkeyRegistered = Heartbeat.HotkeyRegistered;
             IsReady = Heartbeat.Armed || File.Exists(SessionPaths.Ready(_directory));
+            if (!string.IsNullOrEmpty(Heartbeat.Detail))
+            {
+                StatusText = Heartbeat.Detail;
+            }
         }
 
         if (File.Exists(SessionPaths.Result(_directory)))
         {
             var result = JsonUtil.TryRead<ResultFile>(SessionPaths.Result(_directory));
-            Heartbeat ??= new HeartbeatFile { Detail = result?.Reason };
+            Heartbeat = null;
+            StatusText = FormatResult(result);
             IsReady = false;
             HotkeyRegistered = false;
             _directory = null;
             _recoveryPid = 0;
             _intent = new IntentFile();
         }
+    }
+
+    public static string FormatResult(ResultFile? result)
+    {
+        if (result is null)
+        {
+            return "恢复已结束，状态未知。";
+        }
+
+        var text = result.Reason switch
+        {
+            "release" => "已恢复全部。",
+            "hotkey" => "已由 Ctrl+Alt+Shift+F10 恢复。",
+            "parent-exit" => "界面退出后已恢复。",
+            "execution-gap" => "会话中断，已恢复。",
+            "unexpected-topology" => "显示拓扑变化，已恢复。",
+            _ => string.IsNullOrEmpty(result.Error) ? "恢复已结束。" : result.Error,
+        };
+        if (result.Ok)
+        {
+            return text;
+        }
+
+        return string.IsNullOrEmpty(result.Error) ? text + " 恢复未完全成功。" : result.Error;
     }
 
     public string? KeepOff(ScreenIdentity identity)

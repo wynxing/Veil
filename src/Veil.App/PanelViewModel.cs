@@ -86,7 +86,7 @@ public sealed class PanelViewModel : INotifyPropertyChanged
             Screens.Add(item);
         }
 
-        if (_recovery.Heartbeat?.Detail is { Length: > 0 } detail)
+        if (_recovery.StatusText is { Length: > 0 } detail)
         {
             Detail = detail;
         }
