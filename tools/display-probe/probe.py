@@ -40,6 +40,9 @@ QDC_VIRTUAL_MODE_AWARE = 0x00000010
 QDC_VIRTUAL_REFRESH_RATE_AWARE = 0x00000040
 
 SDC_TOPOLOGY_INTERNAL = 0x00000001
+SDC_TOPOLOGY_CLONE = 0x00000002
+SDC_TOPOLOGY_EXTEND = 0x00000004
+SDC_TOPOLOGY_EXTERNAL = 0x00000008
 SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x00000020
 SDC_VALIDATE = 0x00000040
 SDC_APPLY = 0x00000080
@@ -566,6 +569,18 @@ def apply_topology_internal() -> int:
     )
 
 
+def apply_topology_clone() -> int:
+    return int(
+        user32.SetDisplayConfig(
+            0,
+            None,
+            0,
+            None,
+            SDC_APPLY | SDC_TOPOLOGY_CLONE,
+        )
+    )
+
+
 def monitor_power(state: int) -> tuple[int, int]:
     # HWND_BROADCAST + SendMessageTimeout can block for tens of seconds.
     sent = user32.SendNotifyMessageW(
@@ -698,6 +713,8 @@ def build_parser() -> argparse.ArgumentParser:
     disable.add_argument("--target", choices=("internal", "all"), default="internal")
     disable.add_argument("--validate-only", action="store_true")
     disable.add_argument("--input-test", action="store_true")
+    disable.add_argument("--parent-crash", action="store_true",
+                         help="exit the parent after arming; worker must still restore")
     disable.add_argument("--receipt", help="required for apply; successful preflight receipt")
     return parser
 

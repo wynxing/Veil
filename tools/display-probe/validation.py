@@ -29,6 +29,16 @@ p.user32.UnregisterHotKey.argtypes = [c_void_p, c_int32]
 p.user32.UnregisterHotKey.restype = c_int32
 p.user32.PeekMessageW.argtypes = [POINTER(MSG), c_void_p, c_uint32, c_uint32, c_uint32]
 p.user32.PeekMessageW.restype = c_int32
+p.kernel32.OpenProcess.argtypes = [c_uint32, c_int32, c_uint32]
+p.kernel32.OpenProcess.restype = c_void_p
+p.kernel32.GetExitCodeProcess.argtypes = [c_void_p, POINTER(c_uint32)]
+p.kernel32.GetExitCodeProcess.restype = c_int32
+p.kernel32.CloseHandle.argtypes = [c_void_p]
+p.kernel32.CloseHandle.restype = c_int32
+STILL_ACTIVE = 259
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+HOLD_OK_REASONS = ("hotkey", "release", "parent-exit")
+PROBE_OK_REASONS = ("timer", "hotkey")
 
 
 def write_json(path, data):
@@ -111,19 +121,54 @@ def wait_ready(proc, directory, timeout=8):
     raise RuntimeError(f"recovery worker not ready within {timeout}s")
 
 
-def start_run(config, directory, kind, seconds, target="internal", input_test=False):
-    if not 1 <= seconds <= 900:
-        raise ValueError("seconds must be in [1, 900]")
+def pid_running(pid):
+    if not pid:
+        return False
+    handle = p.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
+    if not handle:
+        return False
+    code = c_uint32()
+    ok = p.kernel32.GetExitCodeProcess(handle, byref(code))
+    p.kernel32.CloseHandle(handle)
+    return bool(ok) and code.value == STILL_ACTIVE
+
+
+def start_run(config, directory, kind, seconds, target="internal", input_test=False,
+              parent_pid=0, exist_ok=False):
+    if seconds != 0 and not 1 <= seconds <= 900:
+        raise ValueError("seconds must be 0 (hold) or in [1, 900]")
     directory = Path(directory).resolve()
-    directory.mkdir(parents=True, exist_ok=False)
+    directory.mkdir(parents=True, exist_ok=exist_ok)
     args = ["worker", "--config", str(Path(config).resolve()), "--directory", str(directory),
             "--kind", kind, "--seconds", seconds, "--target", target]
     if input_test:
         args.append("--input-test")
+    if parent_pid:
+        args.extend(["--parent-pid", str(int(parent_pid))])
     proc = spawn(args)
     wait_ready(proc, directory)
     write_json(directory / "arm.json", {"pid": proc.pid})
     return proc
+
+
+def request_release(directory):
+    write_json(Path(directory) / "release.json", {"at": time.time()})
+
+
+def validate_keep_off(adjust_clone=True):
+    """只校验，不 apply 关屏。扩展桌面下只停内屏会 87，可改为克隆后再校验。"""
+    check_layout()
+    paths, modes = p.query_topology()
+    changed, count, remaining = p.deactivated_paths(paths, "internal")
+    rc = p.set_display_config(changed, modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
+    adjusted = False
+    if adjust_clone and rc == 87:
+        if p.apply_topology_clone() == 0:
+            adjusted = True
+            paths, modes = p.query_topology()
+            changed, count, remaining = p.deactivated_paths(paths, "internal")
+            rc = p.set_display_config(changed, modes, p.SET_BASE_FLAGS | p.SDC_VALIDATE)
+    return {"rc": rc, "disabledCount": count, "remainingActive": remaining, "adjustedClone": adjusted}
 
 
 def hotkey_received():
@@ -183,10 +228,11 @@ def worker(args):
         armed = True
         if hotkey_received():
             raise RuntimeError("hotkey received before start; cancelled without switching")
-        progress = spawn(["progress", "--directory", directory, "--seconds", args.seconds + 10])
-        wait_progress_ready(progress, directory)
-        if hotkey_received():
-            raise RuntimeError("hotkey received during preparation; cancelled without switching")
+        if args.seconds > 0:
+            progress = spawn(["progress", "--directory", directory, "--seconds", args.seconds + 10])
+            wait_progress_ready(progress, directory)
+            if hotkey_received():
+                raise RuntimeError("hotkey received during preparation; cancelled without switching")
         result["applyRc"] = 0
         expected = active_targets(paths)
         if args.kind == "disable-path":
@@ -207,7 +253,8 @@ def worker(args):
         start = previous = time.monotonic()
         poll_at = start
         input_done = False
-        result["reason"] = "timer"
+        result["reason"] = "timer" if args.seconds > 0 else "hold"
+        parent_pid = getattr(args, "parent_pid", 0) or 0
         while True:
             now = time.monotonic()
             if now - previous > 3:
@@ -216,7 +263,13 @@ def worker(args):
             if hotkey_received():
                 result["reason"] = "hotkey"
                 break
-            if now - start >= args.seconds:
+            if (directory / "release.json").exists():
+                result["reason"] = "release"
+                break
+            if parent_pid and not pid_running(parent_pid):
+                result["reason"] = "parent-exit"
+                break
+            if args.seconds > 0 and now - start >= args.seconds:
                 break
             previous = now
             if args.input_test and not input_done and now - start >= 3:
@@ -250,7 +303,8 @@ def worker(args):
                 result["restoreError"] = repr(exc)
         if registered:
             p.user32.UnregisterHotKey(None, 1)
-        result["ok"] = (result["reason"] in ("timer", "hotkey") and result["applyRc"] == 0
+        accepted = HOLD_OK_REASONS if getattr(args, "seconds", 1) == 0 else PROBE_OK_REASONS
+        result["ok"] = (result["reason"] in accepted and result["applyRc"] == 0
                         and result["restoreRc"] == 0 and result["restoredTargets"] and result["restoredTopology"])
         write_json(directory / "stop.json", {})
         if progress is not None:
@@ -291,10 +345,34 @@ def wait_result(proc, directory, seconds):
     return read_json(Path(directory) / "result.json")
 
 
+def remind_hotkey():
+    script = r"""
+import threading, time, ctypes, tkinter as tk
+def beeps():
+    for _ in range(45):
+        ctypes.windll.kernel32.Beep(1500, 180)
+        time.sleep(1.4)
+threading.Thread(target=beeps, daemon=True).start()
+root = tk.Tk()
+root.title('Veil preflight')
+root.attributes('-topmost', True)
+root.geometry('980x280+30+40')
+root.configure(bg='#111')
+tk.Label(root, text='现在按  Ctrl + Alt + Shift + F10', fg='#fff', bg='#111',
+         font=('Segoe UI', 28, 'bold')).pack(pady=(40, 12))
+tk.Label(root, text='笔记本功能键请加 Fn。必须按键，关掉窗口不算。', fg='#f6d65e',
+         bg='#111', font=('Segoe UI', 16)).pack()
+root.after(85000, root.destroy)
+root.mainloop()
+"""
+    subprocess.Popen([sys.executable, "-c", script], close_fds=True)
+
+
 def preflight(args):
     p.save_topology(args.config)
     token = current_fingerprint()
-    receipt = {"fingerprint": token, "created": time.time(), "hotkey": HOTKEY, "ok": False}
+    receipt = {"fingerprint": token, "created": time.time(), "hotkey": HOTKEY,
+               "checks": {}, "ok": False}
     write_json(args.receipt, receipt)  # 先使旧凭证失效。
     base = Path(args.receipt).resolve().parent
     for kind, seconds in (("timer", 2), ("hotkey", args.hotkey_seconds)):
@@ -302,8 +380,10 @@ def preflight(args):
         proc = start_run(args.config, directory, kind, seconds)
         p.log_event(args.log, {"event": "preflight_wait", "kind": kind,
                               "seconds": seconds, "hotkey": HOTKEY, "directory": str(directory)})
+        if kind == "hotkey":
+            remind_hotkey()
         result = wait_result(proc, directory, seconds)
-        receipt[kind] = {"directory": str(directory), "result": result}
+        receipt["checks"][kind] = {"directory": str(directory), "result": result}
         if not result["ok"] or result["reason"] != kind:
             write_json(args.receipt, receipt)
             return 2
@@ -321,7 +401,7 @@ def verify_receipt(path):
             or data.get("fingerprint") != current_fingerprint()):
         raise RuntimeError("preflight missing, expired, or topology changed")
     for kind in ("timer", "hotkey"):
-        result = read_json(Path(data[kind]["directory"]) / "result.json")
+        result = read_json(Path(data["checks"][kind]["directory"]) / "result.json")
         if not result.get("ok") or result.get("reason") != kind:
             raise RuntimeError("preflight evidence failed")
 
@@ -352,6 +432,10 @@ def guarded_experiment(args, kind):
                          getattr(args, "target", "internal"), getattr(args, "input_test", False))
         p.log_event(args.log, {"event": "recovery_ready", "pid": proc.pid,
                               "directory": str(directory), "hotkey": HOTKEY})
+        if getattr(args, "parent_crash", False):
+            p.log_event(args.log, {"event": "parent_crash_exit", "parentPid": os.getpid(),
+                                  "workerPid": proc.pid, "directory": str(directory)})
+            os._exit(17)
         result = wait_result(proc, directory, args.watchdog_seconds)
         p.log_event(args.log, {"event": "experiment_result", **result})
         receipt["ok"] = result["ok"]
@@ -378,9 +462,11 @@ def main():
     work.add_argument("--config", required=True)
     work.add_argument("--directory", required=True)
     work.add_argument("--kind", choices=["timer", "hotkey", "temp-off", "disable-path"], required=True)
-    work.add_argument("--seconds", type=int, required=True)
+    work.add_argument("--seconds", type=int, required=True,
+                      help="0 holds until hotkey, release.json, or parent exit")
     work.add_argument("--target", choices=["internal", "all"], default="internal")
     work.add_argument("--input-test", action="store_true")
+    work.add_argument("--parent-pid", type=int, default=0)
     progress = sub.add_parser("progress")
     progress.add_argument("--directory", required=True)
     progress.add_argument("--seconds", type=int, required=True)

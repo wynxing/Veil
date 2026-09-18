@@ -10,6 +10,8 @@ target/
 dist/
 build/
 coverage/
+__pycache__/
+*.pyc
 
 # Local configuration and temporary files
 .env

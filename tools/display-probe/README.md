@@ -53,3 +53,21 @@ python tools/display-probe/probe.py temp-off --config out/topology.json --receip
 输入测试使用鼠标移动和 Shift，不输入文本。意外拓扑变化或循环出现超过 3 秒的间隔会触发提前恢复。`ok=true` 仅代表探针的系统检查成功；不代表物理屏幕验收通过。任何失败或父进程异常都会使预检凭证保持失效，须检查日志再重做预检。人工兜底为 `Win+Ctrl+Shift+B`，仍无画面再重启。
 
 15 秒物理闭环通过后，才可把 `--watchdog-seconds` 改为 600 做 10 分钟测试。20 次循环逐次执行、逐次记录，不自动跳过物理观察或失败。短时恢复未通过时，不执行长时、睡眠唤醒和虚拟目标移除测试。
+
+最小应用（托盘原型，不是安装包）见 [app/README.md](../../app/README.md)。保持关闭使用 worker `--seconds 0`，直到热键、`release.json` 或父进程退出。
+
+## 辅助脚本
+
+安装脚本只用于本机已核验的签名包，必须管理员运行，拒绝覆盖已有 `C:\VirtualDisplayDriver` 或已有虚拟适配器。
+
+```powershell
+# 管理员：安装已核验的 VDD。证据目录须含 vdd\VirtualDisplayDriver 与 nefcon\x64\nefconc.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/display-probe/install-vdd.ps1 -EvidenceDirectory <evidence>
+
+# 汇总单次 run-* 目录的系统检查（不能代替机旁观察）
+python tools/display-probe/summarize-run.py <run-directory> --output <summary.json>
+
+# 至多 20 次 15 秒循环；任一次非 timer 成功即整组停止
+python tools/display-probe/run-cycles.py --config <topology> --receipt <receipt> --directory <cycles-dir> --count 20 --seconds 15 --confirm off
+```
+
