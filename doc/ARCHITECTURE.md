@@ -1,7 +1,7 @@
 # Veil 技术架构
 
 版本：1.2  
-状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏已观察，公开产品未发布  
+状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察，公开产品未发布  
 日期：2026-09-18
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
