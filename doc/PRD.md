@@ -1,7 +1,7 @@
 # Veil 产品需求文档
 
-版本：0.13  
-状态：公开产品 C# 代码已开始；不是已发布。仓库 `app/` 仍冻结。C# 待机旁复测。  
+版本：0.14  
+状态：公开产品 C# 代码已开始；不是已发布。P15 上 C# 短时只停内屏已观察。仓库 `app/` 仍冻结。  
 日期：2026-09-18
 
 完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。本文是产品合同：用户要什么、首版做什么、什么算成功。未测项不得写成已兼容。
@@ -128,7 +128,7 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 1. **需求与设计**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态；[ARCHITECTURE.md](ARCHITECTURE.md) 已锁定实现栈与仓库处置。  
 2. **机制调研（可行性已收口）**：原生不能停最后一条路径；第二目标可以是实体外接或已签名 VDD。证据见 `validation/`。  
-3. **公开产品实现（代码已开始，未验收）**：`src/` 为 C# / WPF，`installer/` 为 WiX。不得把 `app/` 最小应用直接当发布物，也不得在 Python 探针里长出产品。C# 待机旁复测：双物理按屏开关、单屏恢复、安装器启用 VDD、睡醒再关。  
+3. **公开产品实现（代码已开始，未发布）**：`src/` 为 C# / WPF，`installer/` 为 WiX。不得把 `app/` 最小应用直接当发布物。C# 在 P15 上已有短时只停内屏 + `release` 恢复的机旁观察；仍待：热键/按钮恢复、只停外屏、单屏恢复、安装器 VDD、睡醒再关。  
 4. **兼容与增强**：扩大硬件矩阵；再评估防睡眠等 P1。
 
 没有实测证据时，不得宣称功能完成或硬件兼容。

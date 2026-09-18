@@ -1,7 +1,7 @@
 # Veil 公开产品设计
 
-版本：1.2  
-状态：设计已锁定；C# 代码已开始，不是已发布能力  
+版本：1.3  
+状态：设计已锁定；C# 代码已开始；P15 短时只停内屏已有机旁观察，不是已发布能力  
 日期：2026-09-18
 
 本文是可公开产品的完整设计，不是实验室最小应用说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与现存代码处置见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
@@ -74,9 +74,9 @@
 | 配置 | 已记录 | 未做 |
 | --- | --- | --- |
 | REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，只停内屏：短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。关屏期间禁用虚拟适配器则保持关闭结束。 | 实体外接 |
-| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。原生只停内屏：短时、10 分钟、20 次循环、父进程崩溃、最小应用短时关内屏。只停外屏短时（须原点调整）。操作者确认目标屏灭、留下的屏可用，仅开关闪烁。 | 只停外屏长时/循环/崩溃；P15 睡眠；按需 VDD；多路同时保持关闭 |
+| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针 / 冻结 `app/`：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。C# 产品：短时只停内屏 + `release.json` 恢复；操作者确认内屏灭、外屏能用、恢复时闪一下。 | C# 热键/按钮恢复；C# 只停外屏；单屏恢复其余仍关；C# 长时/循环/崩溃；P15 睡眠；按需 VDD |
 
-细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md) 与 [validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
+细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md) 与 [validation/colorful-p15-24-csharp.md](validation/colorful-p15-24-csharp.md)。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
 
 **设计已写、验收未过（不得宣称完成）**
 
@@ -113,9 +113,9 @@
 
 `src/` 与 `installer/` 已按 [ARCHITECTURE.md](ARCHITECTURE.md) 创建。公开产品仍须按第 5 节验收。`app/` 继续冻结，不得标成已发布产品。
 
-C# 待机旁复测（未完成，不得写成已验证）：
+C# 待机旁复测（未完成，不得把下列未选项写成已验证）：
 
-- COLORFUL P15：双物理屏按屏开关、热键/退出恢复（不启用 VDD）
+- COLORFUL P15：短时只停内屏 + 文件 release 恢复已观察；热键恢复、面板按钮恢复、只停外屏未做
 - 单屏恢复、其余仍关
 - 安装器启用自带 VDD 后，REDMI 关光内屏
 - 睡醒后单次再关（失败即停）
