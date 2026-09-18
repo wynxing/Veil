@@ -1,7 +1,7 @@
 # Veil 公开产品设计
 
-版本：1.1  
-状态：设计与实现栈已锁定，待实现；不是已发布能力  
+版本：1.2  
+状态：设计已锁定；C# 代码已开始，不是已发布能力  
 日期：2026-09-18
 
 本文是可公开产品的完整设计，不是实验室最小应用说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与现存代码处置见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
@@ -109,6 +109,14 @@
 | 实现栈 | C# / .NET 8 + WPF；传统 WiX 安装包；首版含按需自带 VDD。细节见 [ARCHITECTURE.md](ARCHITECTURE.md) |
 | 实验室代码 | Python 探针长期保留；`app/` 冻结，不作为发布物 |
 
-## 7. 本轮范围
+## 7. 实现状态
 
-实现栈与仓库处置已写入 [ARCHITECTURE.md](ARCHITECTURE.md)。不在本轮创建 C# 工程或安装包。公开产品实现须另开计划，按第 5 节验收，不得把 `app/` 最小应用直接标成已发布产品。
+`src/` 与 `installer/` 已按 [ARCHITECTURE.md](ARCHITECTURE.md) 创建。公开产品仍须按第 5 节验收。`app/` 继续冻结，不得标成已发布产品。
+
+C# 待机旁复测（未完成，不得写成已验证）：
+
+- COLORFUL P15：双物理屏按屏开关、热键/退出恢复（不启用 VDD）
+- 单屏恢复、其余仍关
+- 安装器启用自带 VDD 后，REDMI 关光内屏
+- 睡醒后单次再关（失败即停）
+

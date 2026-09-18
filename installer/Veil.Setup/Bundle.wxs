@@ -1,0 +1,16 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Veil" Version="0.1.0" Manufacturer="Veil" UpgradeCode="b3c91d44-0e7a-4f2c-8a55-21d6c80e4aa2">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl=""
+        Theme="hyperlinkLicense"
+        SuppressOptionsUI="no" />
+    </BootstrapperApplication>
+    <Variable Name="InstallVdd" Type="string" Value="1" bal:Overridable="yes" />
+    <Chain>
+      <MsiPackage SourceFile="$(var.PackageMsi)" Compressed="yes">
+        <MsiProperty Name="INSTALLVDD" Value="[InstallVdd]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

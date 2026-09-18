@@ -2,7 +2,15 @@
 
 Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。首版不做临时关闭。
 
-**项目状态：公开产品设计与实现栈已锁定，产品代码未开始。** 机制可行性已在两台机器上收口。仓库 `app/` 是冻结的调研原型，不是安装包。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈与旧代码处置见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口；C# 路径须在 P15 / REDMI 上重新机旁观察后才能继承「已验证」。仓库 `app/` 仍是冻结的调研原型。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+
+本地构建（x64）：
+
+```powershell
+dotnet test src\Veil.sln -p:Platform=x64
+```
+
+安装器需要已核验 payload，见 [installer/README.md](installer/README.md)。无 payload 时安装器构建应失败。安装包未代码签名，不得标「可公开安装」。
 
 ## 希望解决的问题
 
@@ -31,4 +39,6 @@ Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决
 - [技术架构](doc/ARCHITECTURE.md)：.NET / WPF / WiX、双进程切分、现存 Python 代码处置。
 - [技术验证协议](doc/TECH_VALIDATION.md)：实验规则；可行性调研已收口。
 - [最小应用](app/README.md)：已冻结的调研原型，仅本机已验证配置。
+- [产品工程](src/)：C# / WPF，尚未机旁复测。
+- [安装器](installer/README.md)：WiX 5；payload 缺失则构建失败。
 - [协作规范](AGENTS.md)：工作树开发与清理要求。

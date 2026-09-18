@@ -1,0 +1,36 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Veil" Manufacturer="Veil" Version="0.1.0" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Language="1033" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 Veil。" />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="Veil">
+        <Directory Id="VDDDIR" Name="vdd" />
+        <Directory Id="NEFCONDIR" Name="nefcon">
+          <Directory Id="NEFCONX64" Name="x64" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Property Id="INSTALLVDD" Value="1" />
+    <Feature Id="App" Title="Veil 应用" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+    </Feature>
+    <Feature Id="BundledVdd" Title="自带虚拟显示驱动" Description="这是显示驱动，用于没有外接屏时关掉笔记本屏幕。默认安装为禁用设备。" Level="1">
+      <Condition Level="0">INSTALLVDD=0</Condition>
+      <ComponentGroupRef Id="VddFiles" />
+    </Feature>
+
+    <CustomAction Id="RestoreDisplays" Execute="immediate" Impersonate="yes" Return="ignore"
+                  ExeCommand="&quot;[INSTALLDIR]Veil.App.exe&quot; --restore-and-exit" Directory="INSTALLDIR" />
+    <CustomAction Id="InstallVdd" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[INSTALLDIR]Veil.DriverHelper.exe&quot; install-driver" Directory="INSTALLDIR" />
+    <CustomAction Id="UninstallVdd" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="&quot;[INSTALLDIR]Veil.DriverHelper.exe&quot; uninstall-driver" Directory="INSTALLDIR" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RestoreDisplays" Before="InstallValidate" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UninstallVdd" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="InstallVdd" After="InstallFiles" Condition="NOT Installed AND INSTALLVDD=1" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

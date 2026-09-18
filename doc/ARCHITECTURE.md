@@ -1,7 +1,7 @@
 # Veil 技术架构
 
-版本：1.0  
-状态：实现栈已锁定，公开产品代码未开始  
+版本：1.1  
+状态：实现栈已锁定；`src/` 与 `installer/` 已创建，公开产品未验收  
 日期：2026-09-18
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
@@ -205,7 +205,7 @@ tools/display-probe/      长期保留的 Python 实验室
 app/                      冻结的调研原型，直到 C# 达到同等闭环
 ```
 
-`src/` 与 `installer/` 在产品实现分支才创建。本轮只定布局，不建空项目充数。
+`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。`MttVDD.dll` 读取 `vdd_settings.xml` 的路径尚未用捆绑包核对，不得假装已解决。
 
 ### 8.2 现存路径
 

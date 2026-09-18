@@ -12,6 +12,18 @@ build/
 coverage/
 __pycache__/
 *.pyc
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# WiX / installer payload binaries (hashes live in payload.manifest.json)
+installer/payload/**
+!installer/payload/README.md
+installer/out/
+installer/Veil.Setup/bin/
+installer/Veil.Setup/obj/
 
 # Local configuration and temporary files
 .env

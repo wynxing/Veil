@@ -1,0 +1,42 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?ifndef PublishDir?>
+    <?define PublishDir="..\out\app"?>
+  <?endif?>
+  <?ifndef PayloadDir?>
+    <?define PayloadDir="..\payload"?>
+  <?endif?>
+
+  <Fragment>
+    <ComponentGroup Id="AppFiles" Directory="INSTALLDIR">
+      <Component Id="VeilApp" Guid="*">
+        <File Source="$(var.PublishDir)\Veil.App.exe" KeyPath="yes" />
+        <File Source="$(var.PublishDir)\Veil.App.dll" />
+        <File Source="$(var.PublishDir)\Veil.App.runtimeconfig.json" />
+        <File Source="$(var.PublishDir)\Veil.App.deps.json" />
+        <File Source="$(var.PublishDir)\Veil.Engine.dll" />
+        <File Source="$(var.PublishDir)\Veil.Recovery.exe" />
+        <File Source="$(var.PublishDir)\Veil.Recovery.dll" />
+        <File Source="$(var.PublishDir)\Veil.Recovery.runtimeconfig.json" />
+        <File Source="$(var.PublishDir)\Veil.Recovery.deps.json" />
+        <File Source="$(var.PublishDir)\Veil.DriverHelper.exe" />
+        <File Source="$(var.PublishDir)\Veil.DriverHelper.dll" />
+        <File Source="$(var.PublishDir)\Veil.DriverHelper.runtimeconfig.json" />
+        <File Source="$(var.PublishDir)\Veil.DriverHelper.deps.json" />
+        <File Source="$(var.PublishDir)\payload.manifest.json" />
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Veil"
+                       Name="DisplayName" Value="Veil" Type="string" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="VddFiles">
+      <Component Id="VddInf" Directory="VDDDIR" Guid="*">
+        <File Source="$(var.PayloadDir)\vdd\MttVDD.inf" KeyPath="yes" />
+        <File Source="$(var.PayloadDir)\vdd\MttVDD.dll" />
+        <File Source="$(var.PayloadDir)\vdd\mttvdd.cat" />
+      </Component>
+      <Component Id="Nefcon" Directory="NEFCONX64" Guid="*">
+        <File Source="$(var.PayloadDir)\nefcon\x64\nefconc.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
