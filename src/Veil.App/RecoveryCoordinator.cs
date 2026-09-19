@@ -10,9 +10,15 @@ namespace Veil.App;
 
 public sealed class RecoveryCoordinator
 {
+    public const string EnableVddCancelled = "已取消启用隐藏辅助输出，物理屏未改动。";
+    public const string DisableVddFailed = "自带 VDD 未能禁用。";
+
     private readonly ICcdApi _ccd;
     private readonly Func<string, string?, int> _startRecovery;
     private readonly Func<string, int> _runDriverHelper;
+    private readonly Func<bool>? _confirmEnableVdd;
+    private readonly Func<bool> _bundledVddInstalled;
+    private readonly TimeSpan _virtualPathWait;
     private string? _directory;
     private int _recoveryPid;
     private IntentFile _intent = new();
@@ -20,11 +26,17 @@ public sealed class RecoveryCoordinator
     public RecoveryCoordinator(
         ICcdApi ccd,
         Func<string, string?, int>? startRecovery = null,
-        Func<string, int>? runDriverHelper = null)
+        Func<string, int>? runDriverHelper = null,
+        Func<bool>? confirmEnableVdd = null,
+        Func<bool>? bundledVddInstalled = null,
+        TimeSpan? virtualPathWait = null)
     {
         _ccd = ccd;
         _startRecovery = startRecovery ?? StartRecoveryProcess;
         _runDriverHelper = runDriverHelper ?? RunDriverHelperProcess;
+        _confirmEnableVdd = confirmEnableVdd;
+        _bundledVddInstalled = bundledVddInstalled ?? (() => DriverStatus.Installed);
+        _virtualPathWait = virtualPathWait ?? TimeSpan.FromSeconds(15);
     }
 
     public bool HasSession => _directory is not null && !File.Exists(SessionPaths.Result(_directory));
@@ -60,6 +72,7 @@ public sealed class RecoveryCoordinator
 
         if (File.Exists(SessionPaths.Result(_directory)))
         {
+            var usedBundledVdd = _intent.VddAssist;
             var result = JsonUtil.TryRead<ResultFile>(SessionPaths.Result(_directory));
             Heartbeat = null;
             StatusText = FormatResult(result);
@@ -68,6 +81,10 @@ public sealed class RecoveryCoordinator
             _directory = null;
             _recoveryPid = 0;
             _intent = new IntentFile();
+            if (usedBundledVdd)
+            {
+                AppendDisableResult();
+            }
         }
     }
 
@@ -133,7 +150,7 @@ public sealed class RecoveryCoordinator
             Poll();
             if (_directory is null)
             {
-                message = "";
+                message = StatusText ?? "";
                 return true;
             }
 
@@ -152,7 +169,7 @@ public sealed class RecoveryCoordinator
             return RestoreAll();
         }
 
-        var plan = Gate.PlanKeepOff(snapshot, selected, bundledVddInstalled: DriverStatus.Installed);
+        var plan = Gate.PlanKeepOff(snapshot, selected, bundledVddInstalled: _bundledVddInstalled());
         if (plan.Action == KeepOffAction.Blocked)
         {
             return plan.BlockReason;
@@ -160,13 +177,18 @@ public sealed class RecoveryCoordinator
 
         if (plan.Action == KeepOffAction.EnableBundledVdd)
         {
+            if (_confirmEnableVdd is not null && !_confirmEnableVdd())
+            {
+                return EnableVddCancelled;
+            }
+
             var helperRc = _runDriverHelper("enable");
             if (helperRc != 0)
             {
                 return "自带 VDD 未能启用，物理屏未改动。";
             }
 
-            var waitUntil = DateTime.UtcNow.AddSeconds(15);
+            var waitUntil = DateTime.UtcNow + _virtualPathWait;
             while (DateTime.UtcNow < waitUntil)
             {
                 snapshot = _ccd.QuerySnapshot();
@@ -180,13 +202,14 @@ public sealed class RecoveryCoordinator
 
             if (!snapshot.HasActiveBundledVdd)
             {
-                _ = _runDriverHelper("disable");
+                AppendDisableResult();
                 return "自带 VDD 未能出现活动虚拟路径，物理屏未改动。";
             }
 
             plan = Gate.PlanKeepOff(snapshot, selected, bundledVddInstalled: true);
             if (plan.Action != KeepOffAction.Deactivate)
             {
+                AppendDisableResult();
                 return plan.BlockReason ?? "启用自带 VDD 后仍无法保持关闭。";
             }
         }
@@ -282,6 +305,20 @@ public sealed class RecoveryCoordinator
         proc.WaitForExit(60000);
         return proc.HasExited ? proc.ExitCode : 1;
     }
+
+    private void AppendDisableResult()
+    {
+        var rc = _runDriverHelper("disable");
+        if (rc == 0)
+        {
+            return;
+        }
+
+        StatusText = string.IsNullOrEmpty(StatusText)
+            ? DisableVddFailed
+            : StatusText + " " + DisableVddFailed;
+    }
+
 }
 
 public static class DriverStatus

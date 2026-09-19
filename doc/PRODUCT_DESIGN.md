@@ -1,8 +1,8 @@
 # Veil 公开产品设计
 
-版本：1.4  
-状态：设计已锁定；C# 代码已开始；P15 短时只停内屏与热键恢复已有机旁观察；面板按钮与只停外屏仅有系统检查。不是已发布能力  
-日期：2026-09-18
+版本：1.5  
+状态：设计已锁定；C# 代码已开始；P15 短时只停内屏与热键恢复已有机旁观察；面板按钮与只停外屏仅有系统检查。REDMI 安装器 VDD 短时只停内屏有系统检查，口头画面未录入。不是已发布能力  
+日期：2026-09-19
 
 本文是可公开产品的完整设计，不是实验室最小应用说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与现存代码处置见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
 
@@ -73,7 +73,7 @@
 
 | 配置 | 已记录 | 未做 |
 | --- | --- | --- |
-| REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，只停内屏：短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。关屏期间禁用虚拟适配器则保持关闭结束。 | 实体外接 |
+| REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，Python：只停内屏短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。C# 安装器路径：装禁用态 VDD、面板启用后短时只停内屏与 `release` / disable 有系统检查；口头画面未录入。 | 实体外接；C# 口头机旁；C# 长时/循环/崩溃/睡醒 |
 | COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针 / 冻结 `app/`：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。C# 产品：短时只停内屏；`release.json` 与热键恢复（机旁）；面板「恢复」/「恢复全部」与只停外屏 `adjustedOrigin`（系统检查，外屏口头机旁未做）。 | 只停外屏口头机旁；单屏恢复其余仍关（双物理无 VDD 测不了并发）；C# 长时/循环/崩溃；P15 睡眠；按需 VDD |
 
 细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)、[validation/colorful-p15-24-csharp.md](validation/colorful-p15-24-csharp.md)、[validation/redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md) 与 [validation/installer-payload-csharp.md](validation/installer-payload-csharp.md)。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
@@ -117,6 +117,6 @@ C# 待机旁复测（未完成，不得把下列未选项写成已验证）：
 
 - COLORFUL P15：短时只停内屏、`release` 与热键恢复已观察；面板按钮与只停外屏仅系统检查
 - 单屏恢复、其余仍关（当前双物理拓扑测不了并发多关）
-- 安装器启用自带 VDD 后，REDMI 关光内屏（[未执行](validation/redmi-book-14-2025-csharp.md)）
+- 安装器启用自带 VDD 后，REDMI 关光内屏（[系统检查，口头未录入](validation/redmi-book-14-2025-csharp.md)）
 - 睡醒后单次再关（失败即停；P15 未执行睡眠）
 

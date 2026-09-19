@@ -53,4 +53,4 @@ P15 上 `C:\VirtualDisplayDriver` 本不存在；本轮没有创建该目录、�
 
 第一次 `pack.ps1` 因 WiX v5 不接受 Feature 内嵌 `Condition`、默认编译把 `Bundle.wxs` 打进 MSI、以及多文件 Component 的 `Guid='*'` 失败；已改为 `Level`、分项目编译、一文件一组件，并让 pack 同时 publish Recovery / DriverHelper。缺 payload 时仍失败。
 
-COLORFUL P15 **不得**用该包安装 MTT VDD。REDMI 安装见 [redmi-book-14-2025-csharp.md](redmi-book-14-2025-csharp.md)，当前未执行。
+COLORFUL P15 **不得**用该包安装 MTT VDD。REDMI 本机已用后续无签名 MSI 做过禁用态安装与短时系统检查，见 [redmi-book-14-2025-csharp.md](redmi-book-14-2025-csharp.md)。仍无 Authenticode，不可公开安装。

@@ -1,8 +1,8 @@
 # Veil 技术架构
 
-版本：1.2  
-状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；公开产品未发布  
-日期：2026-09-18
+版本：1.3  
+状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；REDMI 安装器 VDD 短时有系统检查、口头未录入；公开产品未发布  
+日期：2026-09-19
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
 
@@ -184,7 +184,7 @@ WPF 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台�
 
 退出或恢复全部物理屏后，尽力禁用自带设备，避免留下一块用户没要的虚拟屏。禁用失败要可见，不能假装卸掉了。卸载顺序：恢复物理屏 → 禁用并删除自带设备 → 删文件。
 
-启用/禁用显示设备是否处处不需重启、睡眠后设备是否仍在，**尚未在产品安装器路径上验证**。第一版实现后必须在 REDMI（无外接）上按 TECH_VALIDATION 重做机旁闭环，才能宣称该路径可用。
+REDMI 上产品安装器路径已有一次短时系统检查（装完禁用、面板 enable、只停内屏、`release` 后 disable），口头画面未录入，见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)。启用/禁用是否处处不需重启、睡眠后设备是否仍在，仍未验证。没有口头机旁不得宣称该路径可用。
 
 ## 8. 仓库布局与现存代码处置
 
@@ -205,7 +205,7 @@ tools/display-probe/      长期保留的 Python 实验室
 app/                      冻结的调研原型，直到 C# 达到同等闭环
 ```
 
-`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。这不是 REDMI 安装已通过，见 [installer-payload-csharp.md](validation/installer-payload-csharp.md)。
+`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。REDMI quiet 安装与短时系统检查见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)，不是可公开安装。
 
 ### 8.2 现存路径
 

@@ -22,6 +22,7 @@ public sealed class RecoveryCoordinatorTests
         try
         {
             var ccd = DualPhysical();
+            var helperCalls = new List<string>();
             var coordinator = new RecoveryCoordinator(
                 ccd,
                 startRecovery: (sessionDir, _) =>
@@ -34,7 +35,11 @@ public sealed class RecoveryCoordinatorTests
                     });
                     return 4242;
                 },
-                runDriverHelper: _ => 0);
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return 0;
+                });
 
             var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
             Assert.Null(coordinator.KeepOff(identity));
@@ -74,6 +79,7 @@ public sealed class RecoveryCoordinatorTests
             Assert.Empty(coordinator.Wanted);
             Assert.Equal("已恢复全部。", coordinator.StatusText);
             Assert.False(coordinator.HotkeyRegistered);
+            Assert.DoesNotContain("disable", helperCalls);
         }
         finally
         {
@@ -86,6 +92,150 @@ public sealed class RecoveryCoordinatorTests
                 catch (IOException)
                 {
                 }
+            }
+        }
+    }
+
+    [Fact]
+    public void SessionResultDisablesBundledVddAndShowsFailure()
+    {
+        var started = "";
+        var helperCalls = new List<string>();
+        try
+        {
+            var ccd = InternalPlusBundledVdd();
+            var coordinator = new RecoveryCoordinator(
+                ccd,
+                startRecovery: (sessionDir, _) =>
+                {
+                    started = sessionDir;
+                    WriteReady(sessionDir);
+                    return 4242;
+                },
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return verb == "disable" ? 3 : 0;
+                },
+                bundledVddInstalled: () => true);
+
+            var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
+            Assert.Null(coordinator.KeepOff(identity));
+            Assert.True(coordinator.HasSession);
+            WriteHoldingHeartbeat(started, identity);
+            JsonUtil.WriteAtomic(SessionPaths.Result(started), new ResultFile
+            {
+                Ok = true,
+                Reason = "hotkey",
+                RestoreRc = 0,
+                RestoredTopology = true,
+            });
+
+            coordinator.Poll();
+            Assert.False(coordinator.HasSession);
+            Assert.Contains("disable", helperCalls);
+            Assert.Contains(RecoveryCoordinator.DisableVddFailed, coordinator.StatusText);
+            Assert.Contains("Ctrl+Alt+Shift+F10", coordinator.StatusText);
+        }
+        finally
+        {
+            DeleteSession(started);
+        }
+    }
+
+    [Fact]
+    public void CancelledEnablePromptDoesNotTouchHelperOrScreens()
+    {
+        var helperCalls = new List<string>();
+        var confirmed = false;
+        var ccd = InternalOnly();
+        var coordinator = new RecoveryCoordinator(
+            ccd,
+            startRecovery: (_, _) => throw new InvalidOperationException("recovery"),
+            runDriverHelper: verb =>
+            {
+                helperCalls.Add(verb);
+                return 0;
+            },
+            confirmEnableVdd: () =>
+            {
+                confirmed = true;
+                return false;
+            },
+            bundledVddInstalled: () => true);
+
+        var identity = ccd.QuerySnapshot().PhysicalScreens.Single().Identity;
+        Assert.Equal(RecoveryCoordinator.EnableVddCancelled, coordinator.KeepOff(identity));
+        Assert.True(confirmed);
+        Assert.Empty(helperCalls);
+        Assert.False(coordinator.HasSession);
+        Assert.True(ccd.QuerySnapshot().ActivePhysical.Count() == 1);
+        Assert.False(ccd.QuerySnapshot().HasActiveBundledVdd);
+    }
+
+    [Fact]
+    public void ConfirmedEnableThenMissingVirtualPathDisables()
+    {
+        var helperCalls = new List<string>();
+        var ccd = InternalOnly();
+        var coordinator = new RecoveryCoordinator(
+            ccd,
+            startRecovery: (_, _) => throw new InvalidOperationException("recovery"),
+            runDriverHelper: verb =>
+            {
+                helperCalls.Add(verb);
+                return 0;
+            },
+            confirmEnableVdd: () => true,
+            bundledVddInstalled: () => true,
+            virtualPathWait: TimeSpan.Zero);
+
+        var identity = ccd.QuerySnapshot().PhysicalScreens.Single().Identity;
+        var error = coordinator.KeepOff(identity);
+        Assert.Equal("自带 VDD 未能出现活动虚拟路径，物理屏未改动。", error);
+        Assert.Equal(new[] { "enable", "disable" }, helperCalls);
+        Assert.False(coordinator.HasSession);
+        Assert.True(ccd.QuerySnapshot().ActivePhysical.Count() == 1);
+    }
+
+    private static void WriteReady(string sessionDir) =>
+        JsonUtil.WriteAtomic(SessionPaths.Ready(sessionDir), new ReadyFile
+        {
+            Pid = 4242,
+            HotkeyRegistered = true,
+        });
+
+    private static void WriteHoldingHeartbeat(string started, ScreenIdentity identity) =>
+        JsonUtil.WriteAtomic(SessionPaths.Heartbeat(started), new HeartbeatFile
+        {
+            HotkeyRegistered = true,
+            Armed = true,
+            Detail = "已保持关闭。",
+            Screens =
+            [
+                new HeartbeatScreen
+                {
+                    AdapterLuid = identity.AdapterLuid,
+                    TargetId = identity.TargetId,
+                    MonitorPath = identity.MonitorPath,
+                    Name = "Panel",
+                    Wanted = "保持关闭",
+                    Confirmed = "已关闭",
+                    Detail = "已保持关闭。",
+                },
+            ],
+        });
+
+    private static void DeleteSession(string started)
+    {
+        if (!string.IsNullOrEmpty(started) && Directory.Exists(started))
+        {
+            try
+            {
+                Directory.Delete(started, true);
+            }
+            catch (IOException)
+            {
             }
         }
     }
@@ -122,7 +272,38 @@ public sealed class RecoveryCoordinatorTests
         return item;
     }
 
-    private static PathRow Row(PathRole role, uint id, string name, string monitor) =>
+    private static StubCcd InternalOnly()
+    {
+        var internalPath = Path(internalTech: true, id: 1);
+        return new StubCcd
+        {
+            Paths = [internalPath],
+            Modes = [new DisplayConfigModeInfo { InfoType = 1 }],
+            Rows = [Row(PathRole.Internal, 1, "Panel", @"\\?\DISPLAY#CMN#1")],
+        };
+    }
+
+    private static StubCcd InternalPlusBundledVdd()
+    {
+        var internalPath = Path(internalTech: true, id: 1);
+        var vddPath = Path(internalTech: false, id: 2);
+        return new StubCcd
+        {
+            Paths = [internalPath, vddPath],
+            Modes =
+            [
+                new DisplayConfigModeInfo { InfoType = 1 },
+                new DisplayConfigModeInfo { InfoType = 1 },
+            ],
+            Rows =
+            [
+                Row(PathRole.Internal, 1, "Panel", @"\\?\DISPLAY#CMN#1"),
+                Row(PathRole.Virtual, 2, "VDD by MTT", @"\\?\DISPLAY#MTT1337#1", adapter: @"ROOT\MttVDD\0000"),
+            ],
+        };
+    }
+
+    private static PathRow Row(PathRole role, uint id, string name, string monitor, string adapter = @"PCI\VEN_8086") =>
         new(
             (int)id,
             true,
@@ -133,7 +314,7 @@ public sealed class RecoveryCoordinatorTests
             role == PathRole.Internal ? CcdConstants.OutputTechnologyInternal : 5,
             role == PathRole.Internal,
             @"\\.\DISPLAY" + id,
-            @"PCI\VEN_8086",
+            adapter,
             name,
             monitor,
             false,
