@@ -7,15 +7,15 @@
 | 项 | 状态 |
 | --- | --- |
 | 产品要求 | 只发布已验证配置上的行为；能力检测失败则禁用并说明 |
-| 本次流程 | 私有仓库 GitHub Release 挂无签名、自包含 win-x64 预览包，供协作者下载自用 |
+| 本次流程 | 私有仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX），供协作者下载自用 |
 | 已验证 | 本机曾用 `pack.ps1` 打出无签名 Burn EXE；payload 哈希门禁成立；REDMI 上无签名 MSI 装过禁用态 VDD |
-| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容、把 `app/` 打成发布物 |
+| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容、把已删除的调研原型打成发布物 |
 
 预览包能装、能跑，不等于公开产品已发布，也不等于硬件兼容已过。
 
 ## 版本
 
-单一来源：[src/Directory.Build.props](../src/Directory.Build.props) 的 `Version` 与可选 `VersionSuffix`。
+单一来源：[src/version.props](../src/version.props) 的 `Version` 与可选 `VersionSuffix`。
 
 - MSI / Burn 只用数字版本，例如 `0.1.0`。下一包必须升高（`0.1.1`），否则 `MajorUpgrade` 拒装。
 - 标签：`v` + 数字版本 + 可选 suffix，例如 `v0.1.0-preview.1`。
@@ -28,7 +28,7 @@
 在仓库根：
 
 ```powershell
-dotnet test src\Veil.sln -p:Platform=x64
+cargo test --manifest-path src\Cargo.toml
 .\installer\FetchPayload.ps1
 .\installer\pack.ps1
 ```
@@ -42,7 +42,7 @@ dotnet test src\Veil.sln -p:Platform=x64
 - `VeilSetup-<informational>-x64.exe`
 - `SHA256SUMS.txt`
 
-应用按 `win-x64` 自包含发布，目标机不必先装 .NET 8 Desktop Runtime。不打 Single-File，不 Trim。
+应用按 Rust `x86_64-pc-windows-msvc` release 静态链接发布，目标机不必先装 .NET。WiX 仍用本机 `dotnet` 编译安装器工程。安装目录里的 exe 名保持 `Veil.App.exe` / `Veil.Recovery.exe` / `Veil.DriverHelper.exe`。
 
 ## 打 tag 与 CI
 

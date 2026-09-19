@@ -1,7 +1,7 @@
 # Veil 技术架构
 
 版本：1.5  
-状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；REDMI 安装器 VDD 首次短时有系统检查，操作者确认内屏灭了；第二次手动再关未 APPLY；第四次约 12 分钟稳定黑屏有口头；第五次 20×15 秒循环系统检查 20/20。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
+状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。C# 产品源码与冻结的 `app/` 已移出工作区；`*-csharp.md` 仍是历史，**不得**写成 Rust 已过。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
 日期：2026-09-19
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
@@ -24,8 +24,8 @@
 
 | 项      | 选择                                 | 说明                               |
 | ------ | ---------------------------------- | -------------------------------- |
-| 语言与运行时 | C# / .NET 8，`net8.0-windows`，仅 x64 | 探针按 64 位 ABI 校验过；首版不发布 x86 / ARM |
-| 界面     | WPF 小面板 + 托盘                       | 单击托盘打开；不是设置中心                    |
+| 语言与运行时 | Rust，x64 MSVC（`x86_64-pc-windows-msvc`） | 结构体尺寸与探针 / C# ABI 单测对齐；首版不发布 x86 / ARM |
+| 界面     | egui 小面板 + 原生托盘（非 wgpu）         | 单击托盘打开；不是设置中心；不引入浏览器控件 |
 | 安装     | 传统安装包：WiX 5 引导 EXE（Burn）+ 应用 MSI   | 便于提权安装已签名驱动；不用 MSIX              |
 | 首版范围   | 含按需自带 VDD                          | 无第二物理屏时，允许关光全部物理屏                |
 | 关屏机制   | CCD `SetDisplayConfig` 停路径         | 不写 `SDC_SAVE_TO_DATABASE`        |
@@ -34,7 +34,7 @@
 | 实验室    | 保留 Python 3.12 探针                  | 不作为安装包，不作为发布 UI                  |
 
 
-否决项：把 `app/` 最小应用打成安装包、PyInstaller 当发布物、WinUI 3 首版、Tauri/Electron、C++/Rust 重写 CCD、借用机器上已有的向日葵 / GameViewer 等虚拟屏。
+否决项：把已删除的调研原型打成安装包、PyInstaller 当发布物、回退 C# 当发布栈、WinUI 3 首版、Tauri/Electron、用浏览器控件、重写 CCD 结构但不锁 ABI、借用机器上已有的向日葵 / GameViewer 等虚拟屏。
 
 目标系统按已测机器写：**Windows 11 x64**。Windows 10 与其它 GPU 组合未测，不得写入支持列表。
 
@@ -48,7 +48,7 @@
 
 Veil.App.exe (用户会话, 不提权)
   ├─ 单实例互斥 Local\Veil
-  ├─ 托盘与 WPF 面板
+  ├─ 托盘与 egui 面板
   ├─ 调用 Veil.Engine：枚举、门禁、VALIDATE
   ├─ 需要自带 VDD 时启动 Veil.DriverHelper（UAC）
   └─ 启动 Veil.Recovery，只发「关这些 / 恢复」意图
@@ -122,7 +122,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 ## 5. 恢复进程协议
 
-会话目录沿用探针已跑通的文件握手，换 C# 实现，不引入 RPC。
+会话目录沿用探针已跑通的文件握手，换 Rust 实现，不引入 RPC。C# 产品源码已移出工作区。
 
 
 | 文件                      | 写入方         | 含义                              |
@@ -144,7 +144,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 ## 6. 界面进程
 
-WPF 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台要求仍由恢复进程维持。
+egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台要求仍由恢复进程维持。默认不用 wgpu，避免拓扑变化时交换链丢失。
 
 - 单击托盘：打开/前置面板
 - 右键：打开面板、恢复全部、退出
@@ -152,7 +152,7 @@ WPF 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台�
 - DPI：`PerMonitorV2`
 - 退出：先 `release` 并等待恢复结果；超时或失败则报告，不默默退出
 
-托盘图标可用 WPF 承载 WinForms `NotifyIcon`，或等价的 Win32 `Shell_NotifyIcon`。不引入浏览器控件。
+托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。
 
 ## 7. 安装、驱动与提权
 
@@ -196,19 +196,17 @@ REDMI 上产品安装器路径已有一次短时闭环：装完禁用、面板 e
 
 ```text
 doc/                      合同、架构、验证协议与摘要
-src/Veil.sln
-src/Veil.Engine/          CCD、角色、门禁、拓扑、VALIDATE
-src/Veil.Recovery/        独立恢复进程
-src/Veil.App/             WPF 托盘面板
-src/Veil.DriverHelper/    仅启用/禁用自带 VDD
-src/Veil.Engine.Tests/    不碰真实显示的单元测试
+src/Cargo.toml            Rust workspace
+src/veil-engine/          CCD、角色、门禁、拓扑、VALIDATE、RecoverySession
+src/veil-recovery/        独立恢复进程（发布名为 Veil.Recovery.exe）
+src/veil-app/             egui 托盘面板（发布名为 Veil.App.exe）
+src/veil-driver-helper/   仅启用/禁用自带 VDD（发布名为 Veil.DriverHelper.exe）
 installer/Veil.Setup/     应用 MSI
 installer/Veil.Bundle/    WiX Burn 引导 EXE
 tools/display-probe/      长期保留的 Python 实验室
-app/                      冻结的调研原型，直到 C# 达到同等闭环
 ```
 
-`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。REDMI quiet 安装与短时系统检查见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)，不是可公开安装。
+`src/` 为 Cargo workspace。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。C# REDMI quiet 安装见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)，不是 Rust 已过，也不是可公开安装。
 
 ### 8.2 现存路径
 
@@ -217,9 +215,7 @@ app/                      冻结的调研原型，直到 C# 达到同等闭环
 | ------------------------------------- | ------------------------------------------- | -------------------------------------------------- |
 | `tools/display-probe/`                | 已验证实验室：CCD 结构、VALIDATE 三组、独立 worker、循环、证据收集 | **长期保留**。继续用于机旁对照。可修门禁与记录缺陷，不在其中做产品 UI、安装器或按屏产品状态机 |
 | `tools/display-probe/install-vdd.ps1` | 单机调研安装                                      | 保留作历史步骤；产品安装器重写，不调用它                               |
-| `app/`                                | tkinter 最小应用，只关内屏                           | **冻结**。不新增功能、不打包装。C# 在已测配置上完成「关一块物理屏 + 热键/退出恢复」后删除 |
-| `app/capability.py` 与测试               | 列表与门禁规则                                     | 语义移植到 `Veil.Engine`，用等价单元测试锁住；不要从 Python 运行时加载     |
-| `app/veil.py` 托盘/Tk                   | 调研 UI                                       | **不移植**。WPF 按 PRODUCT_DESIGN 第 4 节重做               |
+| 原 `src/` C# / WPF 与 `app/`           | 对照实现与调研原型                                   | **已移出工作区**。源码在 Git 历史中；`*-csharp.md` 仍是历史，不得写成 Rust 已过 |
 | `doc/validation/`                     | 可复核摘要                                       | 保留。原始拓扑字节仍只放主仓库 `.git/veil-validation-*`，不进 Git    |
 | `verify/continue-vdd-aux`             | 第一组 VDD 证据与早期最小应用                           | 远程分支保留作历史；内容已由 p15 分支继承的，不要再合并一次旧 UI               |
 | `verify/p15-physical-aux`             | 设计锁定 + P15 证据 + 探针                          | 作为合入 `main` 的内容基线。合入后停止在该分支开发                      |
@@ -230,7 +226,7 @@ app/                      冻结的调研原型，直到 C# 达到同等闭环
 - 必须对齐：查询标志、停 ACTIVE、原点调整、VALIDATE 后 APPLY、拓扑原始字节回放、ready/arm 握手、热键、父进程退出恢复、`execution-gap` / 拓扑变化则结束保持关闭、内屏兜底
 - 不要对齐：Tk 窗口、仅内屏按钮、实验室 `progress` 哈希负载、预检蜂鸣窗、`SC_MONITORPOWER` 产品入口、扩展桌面失败就改克隆（那只属于 VDD 退路）
 
-C# 引擎第一次在 P15 与 REDMI 上关屏时，必须重新做机旁观察。移植成功不等于自动继承旧报告里的「已验证」。
+Rust 引擎第一次在 P15 与 REDMI 上关屏时，必须重新做机旁观察。移植成功不等于自动继承 Python 或 C# 报告里的「已验证」。C# 旧报告保留为历史，标题继续写 C#。Rust REDMI 短时只停内屏已有系统检查 + 口头，见 [redmi-book-14-2025-rust.md](validation/redmi-book-14-2025-rust.md)。P15 Rust 仍未跑，见 [colorful-p15-24-rust.md](validation/colorful-p15-24-rust.md)。
 
 ### 8.3 实现顺序
 
@@ -238,11 +234,10 @@ C# 引擎第一次在 P15 与 REDMI 上关屏时，必须重新做机旁观察�
 
 1. `Veil.Engine` + 离线测试（停路径、原点、角色、门禁）
 2. `Veil.Recovery` 与探针对照的握手（先 P15 双物理屏，不启用 VDD）
-3. WPF 列物理屏、按屏开关、托盘、退出恢复
+3. egui 列物理屏、按屏开关、托盘、退出恢复
 4. 安装器安装禁用状态的自带 VDD
 5. DriverHelper 按需启用 + REDMI 关光内屏闭环
 6. 睡醒单次再关（失败即停）
-7. 删除冻结的 `app/`
 
 第 4–5 步未通过前，不得把「无外接关笔记本」写成已发布能力；双物理屏路径可以按已测范围单独验收，但不能因此把 VDD 从首版设计里拿掉。
 
@@ -251,7 +246,7 @@ C# 引擎第一次在 P15 与 REDMI 上关屏时，必须重新做机旁观察�
 
 | 层                         | 做什么                           | 不做什么                           |
 | ------------------------- | ----------------------------- | ------------------------------ |
-| `Veil.Engine.Tests`       | 结构体、停路径、原点、角色、门禁              | 不调用真实 `SetDisplayConfig` APPLY |
+| `cargo test --manifest-path src/Cargo.toml` | ABI、停路径、原点、角色、门禁、会话握手、Coordinator | 不调用真实 `SetDisplayConfig` APPLY |
 | Python `display-probe` 单测 | 继续保护实验室 ABI 与 worker 协议       | 不替代产品测试                        |
 | 机旁                        | 按 TECH_VALIDATION：系统检查 + 物理观察 | API 成功单独不算通过                   |
 | 发布                        | 只包含已验证配置上的行为                  | 能力检测失败则禁用并说明原因                 |

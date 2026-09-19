@@ -6,7 +6,7 @@
 
 1. 运行 `installer/FetchPayload.ps1`，或按 [payload/README.md](payload/README.md) 放入已核验的 VDD 与 NefCon。
 2. 运行 `installer/ValidatePayload.ps1`：缺失或哈希/签名不符会失败。
-3. 运行 `installer/pack.ps1`：自包含发布应用并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
+3. 运行 `installer/pack.ps1`：用 `cargo build --release` 产出三个 exe（拷成 `Veil.*.exe`）并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
 4. 打 `v*` 标签后由 CI 挂 GitHub prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
 
 无 payload 时不得打出缺驱动的包。实验室脚本 `tools/display-probe/install-vdd.ps1` 不得被调用。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。这不是可公开安装。
@@ -21,4 +21,4 @@
 
 ## vdd_settings.xml 路径
 
-产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload-csharp.md](../doc/validation/installer-payload-csharp.md)。REDMI 本机 quiet 安装后设备保持禁用、短时关屏有系统检查，见 [redmi-book-14-2025-csharp.md](../doc/validation/redmi-book-14-2025-csharp.md)。这不是可公开安装。
+产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload-csharp.md](../doc/validation/installer-payload-csharp.md)。C# REDMI quiet 安装见 [redmi-book-14-2025-csharp.md](../doc/validation/redmi-book-14-2025-csharp.md)，不是 Rust 已过。Rust 安装器路径见 [redmi-book-14-2025-rust.md](../doc/validation/redmi-book-14-2025-rust.md)，尚未机旁执行。这不是可公开安装。

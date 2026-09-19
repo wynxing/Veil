@@ -1,6 +1,6 @@
 # Veil 技术验证协议
 
-版本：0.12；日期：2026-09-19。机制可行性已收口，本协议仍用于复测与新产品组合验收。公开形态见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)，产品合同见 [PRD.md](PRD.md)。`app/` 已冻结，不是安装包。
+版本：0.12；日期：2026-09-19。机制可行性已收口，本协议仍用于复测与新产品组合验收。公开形态见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)，产品合同见 [PRD.md](PRD.md)。调研原型已从仓库移除，不是安装包。实验室探针仍在 `tools/display-probe/`。
 
 已测睡眠：关屏中唤醒后内屏亮起，保持关闭结束，当时未自动再关。产品设计的「醒后尝试再关」尚未验收，公开版在该闭环通过前失败即停。
 

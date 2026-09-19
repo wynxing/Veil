@@ -1,7 +1,7 @@
 # Veil 产品需求文档
 
 版本：0.17  
-状态：公开产品 C# 代码已开始；不是已发布。P15 上 C# 短时只停内屏与热键恢复已观察；面板按钮与只停外屏仅系统检查。REDMI 上 C# 安装器 VDD 首次短时只停内屏有系统检查，操作者确认内屏灭了；第二次手动再关未 APPLY；第四次约 12 分钟稳定黑屏有口头；第五次 20×15 秒循环系统检查 20/20。恢复闪屏口头未做。仓库 `app/` 仍冻结。  
+状态：公开产品实现为 Rust + egui；不是已发布。C# 产品源码已移出工作区；机旁报告仍是历史，不得写成 Rust 已过。  
 日期：2026-09-19
 
 完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。本文是产品合同：用户要什么、首版做什么、什么算成功。未测项不得写成已兼容。
@@ -121,9 +121,11 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 - [REDMI 仅内屏 + VDD（Python）](validation/redmi-book-14-2025-vdd.md)  
 - [P15 内屏 + 实体外接（Python）](validation/colorful-p15-24-aux.md)  
-- [P15 C#](validation/colorful-p15-24-csharp.md)  
-- [C# REDMI 短时系统检查](validation/redmi-book-14-2025-csharp.md)  
+- [P15 C#](validation/colorful-p15-24-csharp.md)（历史，不是 Rust 已过）  
+- [C# REDMI 短时系统检查](validation/redmi-book-14-2025-csharp.md)（历史，不是 Rust 已过）  
 - [C# 安装器 payload](validation/installer-payload-csharp.md)  
+- [P15 Rust](validation/colorful-p15-24-rust.md)（尚未机旁执行）  
+- [REDMI Rust](validation/redmi-book-14-2025-rust.md)（短时只停内屏：`release` 与热键均有系统检查 + 口头；长时 / 循环 / 睡醒未做）  
 
 未通过 [产品设计](PRODUCT_DESIGN.md) 第 5 节「仅设计」项之前，不得宣称公开产品已完成。
 
@@ -131,7 +133,7 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 1. **需求与设计**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态；[ARCHITECTURE.md](ARCHITECTURE.md) 已锁定实现栈与仓库处置。  
 2. **机制调研（可行性已收口）**：原生不能停最后一条路径；第二目标可以是实体外接或已签名 VDD。证据见 `validation/`。  
-3. **公开产品实现（代码已开始，未发布）**：`src/` 为 C# / WPF，`installer/` 为 WiX。不得把 `app/` 最小应用直接当发布物。C# 在 P15 上已有短时只停内屏、`release` 与热键恢复的机旁观察；面板按钮与只停外屏有系统检查。C# 在 REDMI 上已有安装器禁用态 VDD、短时只停内屏（系统检查 + 内屏灭口头）与 `release` / disable 的系统检查。仍待：外屏口头机旁、REDMI 恢复闪屏口头、睡醒后再关的长时与 P15。  
+3. **公开产品实现（Rust，未发布）**：`src/` 为 Rust / egui，`installer/` 为 WiX。C# 源码已移出工作区，不得当发布栈。C# 机旁观察不得继承为 Rust 已过。Rust 仍待：P15 短时只停内屏与热键恢复、Rust MSI 重装、长时 / 循环 / 睡醒 / 崩溃。REDMI 短时只停内屏（`release` + 热键）已有系统检查 + 口头。  
 4. **兼容与增强**：扩大硬件矩阵；再评估防睡眠等 P1。
 
 没有实测证据时，不得宣称功能完成或硬件兼容。

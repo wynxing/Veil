@@ -1,0 +1,17 @@
+[package]
+name = "veil-recovery"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "veil_recovery"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+veil-engine = { path = "../veil-engine" }
+
+[build-dependencies]
+winresource = "0.1"
