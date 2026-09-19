@@ -20,4 +20,4 @@
 
 ## vdd_settings.xml 路径
 
-产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload-csharp.md](../doc/validation/installer-payload-csharp.md)。这不是 REDMI 安装器路径已通过，也不是可公开安装。
+产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload-csharp.md](../doc/validation/installer-payload-csharp.md)。REDMI 本机 quiet 安装后设备保持禁用、短时关屏有系统检查，见 [redmi-book-14-2025-csharp.md](../doc/validation/redmi-book-14-2025-csharp.md)。这不是可公开安装。

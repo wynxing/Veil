@@ -2,7 +2,7 @@
 
 Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。首版不做临时关闭。
 
-**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 在 COLORFUL P15 上：只停内屏的 `release.json` 与热键恢复有机旁观察；面板「恢复」/「恢复全部」与只停外屏（含原点调整）有系统检查，外屏口头机旁未做。本地可打出无签名 Burn EXE；`MttVDD.dll` 写死 `C:\VirtualDisplayDriver`。REDMI 安装器 VDD 与睡醒再关**未执行**。仓库 `app/` 仍冻结。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 在 COLORFUL P15 上：只停内屏的 `release.json` 与热键恢复有机旁观察；面板「恢复」/「恢复全部」与只停外屏（含原点调整）有系统检查，外屏口头机旁未做。C# 在 REDMI 上：安装器装禁用态 VDD、面板启用后首次短时只停内屏与 `release` 恢复、恢复后 disable 有系统检查；操作者确认关屏期间内屏灭了。第二次手动再关未 APPLY。第三次覆盖 `63e1057` 后再关短时 APPLY、热键恢复。第四次墙钟约 12 分钟，操作者确认稳定黑屏 10 分钟以上。第五次 20×15 秒循环系统检查 20/20（提权启动界面）。恢复闪屏口头未做。本地可打出无签名 Burn EXE；`MttVDD.dll` 写死 `C:\VirtualDisplayDriver`。睡醒再关**未执行**。仓库 `app/` 仍冻结。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
 
 本地构建（x64）：
 
@@ -30,7 +30,7 @@ dotnet test src\Veil.sln -p:Platform=x64
 
 第一组：XIAOMI REDMI Book 14 2025，仅笔记本内屏。原生停最后一条路径校验 87。已签名 Virtual Display Driver 25.7.23 作为第二目标后，可保持关闭内屏（短时、10 分钟、循环、崩溃恢复）。睡醒后内屏亮起，保持关闭结束且当时未自动再关。详见 [虚拟屏辅助结果](doc/validation/redmi-book-14-2025-vdd.md)。
 
-第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。Python 探针只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环。C# 产品见 [P15 C#](doc/validation/colorful-p15-24-csharp.md)。C# 安装器 payload 见 [安装器核对](doc/validation/installer-payload-csharp.md)。C# REDMI 路径见 [C# REDMI 未执行](doc/validation/redmi-book-14-2025-csharp.md)。
+第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。Python 探针只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环。C# 产品见 [P15 C#](doc/validation/colorful-p15-24-csharp.md)。C# 安装器 payload 见 [安装器核对](doc/validation/installer-payload-csharp.md)。C# REDMI 安装器路径见 [C# REDMI 短时系统检查](doc/validation/redmi-book-14-2025-csharp.md)。
 
 ## 文档
 

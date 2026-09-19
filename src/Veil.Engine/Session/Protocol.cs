@@ -17,8 +17,20 @@ public static class JsonUtil
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(value, Options));
-        File.Move(tmp, path, overwrite: true);
+        var payload = JsonSerializer.Serialize(value, Options);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.WriteAllText(tmp, payload);
+                File.Move(tmp, path, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < 7)
+            {
+                Thread.Sleep(20);
+            }
+        }
     }
 
     public static T Read<T>(string path) =>
