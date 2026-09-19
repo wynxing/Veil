@@ -23,12 +23,12 @@
       <ComponentGroupRef Id="VddFiles" />
     </Feature>
 
-    <CustomAction Id="RestoreDisplays" Execute="immediate" Impersonate="yes" Return="ignore"
-                  ExeCommand="&quot;[INSTALLDIR]Veil.App.exe&quot; --restore-and-exit" Directory="INSTALLDIR" />
-    <CustomAction Id="InstallVdd" Execute="deferred" Impersonate="no" Return="check"
-                  ExeCommand="&quot;[INSTALLDIR]Veil.DriverHelper.exe&quot; install-driver" Directory="INSTALLDIR" />
-    <CustomAction Id="UninstallVdd" Execute="deferred" Impersonate="no" Return="ignore"
-                  ExeCommand="&quot;[INSTALLDIR]Veil.DriverHelper.exe&quot; uninstall-driver" Directory="INSTALLDIR" />
+    <CustomAction Id="RestoreDisplays" FileRef="VeilAppExe" ExeCommand="--restore-and-exit"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="InstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="install-driver"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="UninstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
 
     <InstallExecuteSequence>
       <Custom Action="RestoreDisplays" Before="InstallValidate" Condition="REMOVE=&quot;ALL&quot;" />

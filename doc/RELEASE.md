@@ -66,7 +66,7 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 
 ## 下一次预览
 
-当前预览版本是 `0.1.1-preview.1`（`v0.1.1-preview.1`）。再改代码：升高 `Version`（或改 suffix 的同时升高数字版本）、合并、再打新 tag。不要复用同一个 MSI 版本号。
+当前预览版本是 `0.1.2-preview.1`（`v0.1.2-preview.1`）。0.1.1 从旧 C# 组件 GUID 升级时会漏拷 exe，已换成独立组件并用 FileRef 跑 DriverHelper。再改代码：升高 `Version`、合并、再打新 tag。不要复用同一个 MSI 版本号。
 
 ## 明确延后
 
