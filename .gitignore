@@ -25,6 +25,8 @@ installer/out/
 installer/dist/
 installer/Veil.Setup/bin/
 installer/Veil.Setup/obj/
+installer/Veil.Bundle/bin/
+installer/Veil.Bundle/obj/
 
 # Local configuration and temporary files
 .env

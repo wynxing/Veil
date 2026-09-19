@@ -202,7 +202,8 @@ src/Veil.Recovery/        独立恢复进程
 src/Veil.App/             WPF 托盘面板
 src/Veil.DriverHelper/    仅启用/禁用自带 VDD
 src/Veil.Engine.Tests/    不碰真实显示的单元测试
-installer/Veil.Setup/     WiX Burn + MSI
+installer/Veil.Setup/     应用 MSI
+installer/Veil.Bundle/    WiX Burn 引导 EXE
 tools/display-probe/      长期保留的 Python 实验室
 app/                      冻结的调研原型，直到 C# 达到同等闭环
 ```

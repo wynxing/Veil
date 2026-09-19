@@ -10,7 +10,6 @@
   <ItemGroup>
     <Compile Include="Package.wxs" />
     <Compile Include="Files.wxs" />
-    <Compile Remove="Bundle.wxs" />
   </ItemGroup>
   <Target Name="RequirePayload" BeforeTargets="BeforeBuild">
     <PropertyGroup>

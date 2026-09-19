@@ -73,13 +73,15 @@ $wix = Join-Path $PSScriptRoot "Veil.Setup\Veil.Setup.wixproj"
 & $dotnet build $wix -c Release -p:ProductVersion=$($version.Version)
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$bundle = Join-Path $PSScriptRoot "Veil.Setup\Veil.Bundle.wixproj"
+$bundle = Join-Path $PSScriptRoot "Veil.Bundle\Veil.Bundle.wixproj"
 if (Test-Path $bundle) {
+    & $dotnet restore $bundle
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $dotnet build $bundle -c Release -p:ProductVersion=$($version.Version)
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-$built = Join-Path $PSScriptRoot "Veil.Setup\bin\Release\VeilSetup.exe"
+$built = Join-Path $PSScriptRoot "Veil.Bundle\bin\Release\VeilSetup.exe"
 if (-not (Test-Path -LiteralPath $built)) {
     throw "Missing bundle output: $built"
 }
