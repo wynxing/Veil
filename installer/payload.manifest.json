@@ -3,6 +3,10 @@
   "hardwareId": "Root\\MttVDD",
   "publisherThumbprint": "3CF8CF26D8BA266C3A483AB7D26D4A818E317D76",
   "publisherName": "SignPath Foundation",
+  "sources": {
+    "vddZip": "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip",
+    "nefconZip": "https://github.com/nefarius/nefcon/releases/download/v1.20.0/nefcon_v1.20.0.zip"
+  },
   "files": {
     "vdd/mttvdd.cat": "08A0093FC9B2E32B287A6F8A77CA4DE0A31830D29FC33D2B13A918DC859468F6",
     "vdd/MttVDD.dll": "C9CA837F57A98FBD43BC416A7F535A95843626E7759EAF85CF0CD7CE334DBB05",

@@ -1,5 +1,8 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Veil" Manufacturer="Veil" Version="0.1.0" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Language="1033" Scope="perMachine">
+  <?ifndef ProductVersion?>
+    <?define ProductVersion="0.1.0"?>
+  <?endif?>
+  <Package Name="Veil" Manufacturer="Veil" Version="$(var.ProductVersion)" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Language="1033" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 Veil。" />
     <MediaTemplate EmbedCab="yes" />
     <StandardDirectory Id="ProgramFiles64Folder">

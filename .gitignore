@@ -22,6 +22,7 @@ obj/
 installer/payload/**
 !installer/payload/README.md
 installer/out/
+installer/dist/
 installer/Veil.Setup/bin/
 installer/Veil.Setup/obj/
 
