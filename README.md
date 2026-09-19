@@ -2,7 +2,7 @@
 
 Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。首版不做临时关闭。
 
-**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 在 COLORFUL P15 上：只停内屏的 `release.json` 与热键恢复有机旁观察；面板「恢复」/「恢复全部」与只停外屏（含原点调整）有系统检查，外屏口头机旁未做。C# 在 REDMI 上：安装器装禁用态 VDD、面板启用后短时只停内屏与 `release` 恢复、恢复后 disable 有系统检查，口头画面未录入。本地可打出无签名 Burn EXE；`MttVDD.dll` 写死 `C:\VirtualDisplayDriver`。睡醒再关**未执行**。仓库 `app/` 仍冻结。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+**项目状态：公开产品 C# 代码已开始，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 在 COLORFUL P15 上：只停内屏的 `release.json` 与热键恢复有机旁观察；面板「恢复」/「恢复全部」与只停外屏（含原点调整）有系统检查，外屏口头机旁未做。C# 在 REDMI 上：安装器装禁用态 VDD、面板启用后短时只停内屏与 `release` 恢复、恢复后 disable 有系统检查；操作者确认关屏期间内屏灭了，恢复闪屏口头未做。本地可打出无签名 Burn EXE；`MttVDD.dll` 写死 `C:\VirtualDisplayDriver`。睡醒再关**未执行**。仓库 `app/` 仍冻结。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
 
 本地构建（x64）：
 

@@ -1,6 +1,6 @@
 # 验证结果：REDMI Book 14 2025 上的 C# 安装器 VDD 短时闭环
 
-状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。面板确认后 `DriverHelper enable`，短时只停内屏有系统检查；`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。**没有操作者口头确认画面，不得写成机旁通过。** 不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
+状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。面板确认后 `DriverHelper enable`，短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。恢复闪屏、辅助输出是否可见未口头确认。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
 日期：2026-09-19
 
 ## 环境
@@ -45,7 +45,7 @@
 1. 装后枚举：`activeInternal=1`、`activeAuxiliary=0`。  
 2. 启动已安装的 `Veil.App`。面板点内置「保持关闭」。出现启用说明（`Gate.EnableVddReason`），点确定。`Veil.DriverHelper enable` 经 UAC。  
 3. `ready.json`：`pid=6524`，`hotkeyRegistered=true`。`intent.json`：只关内屏，`vddAssist=true`。  
-4. 关屏中：`applyRc=0`；CCD `activeInternal=0`、`activeAuxiliary=1`；活动路径为 `VDD by MTT` / `DISPLAY\MTT1337` / `ROOT#DISPLAY#0000`。心跳「已关闭」。看门狗采样 `enumerate-0` 至 `enumerate-7` 与 `during/enumerate.txt` 均为内 0 / 辅 1。`adjustedClone=false`（本轮未改克隆）。  
+4. 关屏中：`applyRc=0`；CCD `activeInternal=0`、`activeAuxiliary=1`；活动路径为 `VDD by MTT` / `DISPLAY\MTT1337` / `ROOT#DISPLAY#0000`。心跳「已关闭」。看门狗采样 `enumerate-0` 至 `enumerate-7` 与 `during/enumerate.txt` 均为内 0 / 辅 1。`adjustedClone=false`（本轮未改克隆）。操作者事后确认：**内屏灭了**。未单独说辅助输出是否可见。  
 5. 约 25 秒后写入 `release.json`（看门狗 90 秒总时限先到期，由脚本补写；仍是文件协议恢复，不是热键）。`result.json`：`reason=release`，`ok=true`，`restoreRc=0`，`restoredTopology=true`。  
 6. 恢复后枚举与装后基线同一哈希；`ROOT\DISPLAY\0000` 再次 `CM_PROB_DISABLED`。
 
@@ -56,14 +56,14 @@
 | 1 | 卸实验室 MTT | 设备删除，`oem58.inf` 去掉 | 未口头记画面 | 产品安装前残留已清；不是产品卸载验收 |
 | 2 | 安装器装禁用 VDD | 实例在、Code 22 | 未口头确认同意页（quiet MSI） | 本机禁用态安装成立；无同意页、无签名 |
 | 3 | 面板确认后 enable | 设备变 OK，出现活动 `Root\MttVDD` 路径 | 未口头确认闪断 | 启用路径有系统检查 |
-| 4 | 只停内屏 | apply=0；内 0 / 辅 1 | **未口头确认「内屏灭」** | 系统检查通过；不是机旁通过 |
+| 4 | 只停内屏 | apply=0；内 0 / 辅 1 | 操作者：内屏灭了 | 短时保持关闭：系统检查 + 内屏口头成立 |
 | 5 | `release.json` 恢复 | restore=0，拓扑回到装后基线 | 未口头确认闪一下 | 文件协议恢复成立 |
 | 6 | 恢复后 disable | 再次 Code 22 | 未口头确认虚拟屏消失 | 系统检查：未留下活动自带 VDD |
 | 7 | 亲手热键 / 10 分钟 / 循环 / 崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
 
 ## 未做
 
-- 操作者口头确认内屏灭、辅助输出在、恢复闪屏  
+- 操作者口头确认辅助输出是否可见、恢复是否闪一下  
 - 亲手按 `Ctrl+Alt+Shift+F10` 预检  
 - Burn 交互同意页；`INSTALLVDD=0` 只装应用  
 - C# 10 分钟、20 次循环、父进程崩溃  
