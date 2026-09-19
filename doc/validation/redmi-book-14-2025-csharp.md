@@ -1,6 +1,6 @@
 # 验证结果：REDMI Book 14 2025 上的 C# 安装器 VDD 短时闭环
 
-状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。**第二次**手动再关未 APPLY。**第三次**覆盖 `63e1057` 后短时 APPLY，热键恢复。**第四次** `session-139b5929` 墙钟约 12 分钟（719 s），操作者确认**稳定黑屏 10 分钟以上**；`reason=hotkey`，恢复后 VDD Code 22。关屏中无连续 CCD 采样，不得写成与 Python 10 分钟采样同等。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
+状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。**第二次**手动再关未 APPLY。**第三次**覆盖 `63e1057` 后短时 APPLY，热键恢复。**第四次**墙钟约 12 分钟，操作者确认稳定黑屏 10 分钟以上。**第五次** C# **20×15 秒**循环系统检查 20/20：关屏采样均为内 0 / 辅 1，`reason=release`，恢复后 VDD Code 22。循环时提权启动界面进程以避免每轮 UAC；未逐次口头记画面。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
 日期：2026-09-19
 
 ## 环境
@@ -59,10 +59,11 @@
 | 4 | 只停内屏 | apply=0；内 0 / 辅 1 | 操作者：内屏灭了 | 短时保持关闭：系统检查 + 内屏口头成立 |
 | 5 | `release.json` 恢复 | restore=0，拓扑回到装后基线 | 未口头确认闪一下 | 文件协议恢复成立 |
 | 6 | 恢复后 disable | 再次 Code 22 | 未口头确认虚拟屏消失 | 系统检查：未留下活动自带 VDD |
-| 7 | 亲手热键预检 / 20 次循环 / 崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
+| 7 | 亲手热键预检 / 父进程崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
 | 8 | 第二次手动再关 | 无 APPLY、无 `result.json` | 操作者：无黑屏、无闪屏 | 关屏未落地；面板假死 |
 | 9 | 覆盖 `63e1057` 后再关 | 采样 0–4 内 0 / 辅 1；`reason=hotkey` restore=0 | 未口头记画面 | 短时 APPLY 有系统检查；不是 15 秒 release 闭环 |
 | 10 | 操作者自测约 12 分钟 | `session-139b5929` 墙钟 719 s；`applyRc=0`；`reason=hotkey` | 操作者：稳定黑屏 10 分钟以上 | 长时口头成立；无关屏中连续枚举 |
+| 11 | 20×15 秒循环 | 20/20 `reason=release`；每轮 14 次采样内 0 / 辅 1；restore=0；VDD Code 22 | 未逐次口头 | 系统检查成立；提权启动界面；不是日常非提权 20 次 |
 
 ## 第二次手动再关（失败）
 
@@ -96,12 +97,25 @@ CCD：`enumerate-0` 至 `enumerate-4` 为 `activeInternal=0`、`activeAuxiliary=
 
 操作者事后确认：可以保持**稳定黑屏 10 分钟以上**。本轮没有关屏中的 `enumerate-*` 时间序列，不能写成与 Python 10 分钟后台采样同等。恢复后枚举回到内 1 / 辅 0，`ROOT\DISPLAY\0000` 为 Code 22。
 
+## 第五次 20×15 秒循环（系统检查）
+
+14:16–14:24（UTC 06:16:21–06:24:48），同一覆盖构建。为避免每轮 `DriverHelper` UAC，**提权启动** `Veil.App` 与循环脚本；每轮先 `enable` 出自带 VDD，再点「保持关闭」，15 秒后写 `release.json`。日常非提权每次关屏仍会要 UAC，本轮不证明那条。
+
+`manifest.json`：`completed=true`，`okCount=20`。每一轮：
+
+- 关屏中 14 次 CCD 采样均为 `activeInternal=0`、`activeAuxiliary=1`（全部 `enumerate-*.txt` 无内屏仍活动）
+- `result.json`：`reason=release`，`ok=true`，`applyRc=0`，`restoreRc=0`
+- 恢复后等待辅助路径消失，`ROOT\DISPLAY\0000` 为 `CM_PROB_DISABLED`
+
+结束时枚举回到内 1 / 辅 0，与清理后基线同一哈希。未逐次口头确认黑屏/闪屏。不可公开安装。
+
 ## 未做
 
 - 操作者口头确认辅助输出是否可见、恢复是否闪一下  
 - 预检式亲手热键（第三次结果是热键恢复，但不是按预检脚本按的）  
 - Burn 交互同意页；`INSTALLVDD=0` 只装应用  
-- C# 20 次循环、父进程崩溃  
+- C# 父进程崩溃  
+- 非提权界面下的 20 次循环（本轮为提权启动）  
 - 关屏中连续 CCD 采样的 10 分钟（本次只有墙钟 + 口头）  
 - 睡醒再关  
 - 代码签名、可公开安装
@@ -142,3 +156,10 @@ CCD：`enumerate-0` 至 `enumerate-4` 为 `activeInternal=0`、`activeAuxiliary=
 | `operator-10min-139b5929/timing.txt` | `BDBC4C4760AC5460D384EC0EADF456C02E50B5EC8ACFBDF8498D907991B50D5A` |
 | `operator-10min-139b5929/after-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
 | `operator-10min-139b5929/after-pnp.txt` | `AC937B3BFE72DD1EF1E70DB7925A5694DE6CC330224BDCB22AE28ACC83C73264` |
+| `cycles-20/manifest.json` | `890D8D747A12F6DB9088F31DFF9C499C719B4673B0B5C266B1D22C4780D1E1EC` |
+| `cycles-20/cycles.log` | `BF8F3C4E9FFDE892ADDE97D1AA573619EFBF08422303D19DD493C469B710242D` |
+| `cycles-20/cycle-01/enumerate-0.txt` | `4F53326DAD2B3DD42C313A03AD22BF25B2FA6E85366583E047446EB31780A549` |
+| `cycles-20/cycle-01/session/result.json` | `C1B20411079660125CBE6196F1ECB045F91EF4DB161A90F6220CDBFAC8913774` |
+| `cycles-20/cycle-20/enumerate-0.txt` | `C43505AC3F2F94DB8A239A5482E4F7032431E3131C783DAA3E2E1D68F94F7418` |
+| `cycles-20/cycle-20/session/result.json` | `C1B20411079660125CBE6196F1ECB045F91EF4DB161A90F6220CDBFAC8913774` |
+| `cycles-20/after-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
