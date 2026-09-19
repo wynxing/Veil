@@ -1,7 +1,7 @@
 # Veil 技术架构
 
-版本：1.6  
-状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
+版本：1.7  
+状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。首版代码已齐，预览包可下载。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
 日期：2026-09-19
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
@@ -222,7 +222,9 @@ Rust 引擎在 P15 与 REDMI 上关屏时，必须重新做机旁观察。移植
 3. egui 列物理屏、按屏开关、托盘、退出恢复：代码已在；面板点选未机旁  
 4. 安装器安装禁用状态的自带 VDD：打包脚本已有；Rust MSI 未机旁  
 5. DriverHelper 按需启用 + REDMI 关光内屏：工作树 exe 沿用已装 VDD 做过短时；不是 MSI 重装  
-6. 睡醒单次再关（失败即停）：尚未机旁  
+6. 睡醒单次再关（失败即停）：代码已有；尚未机旁  
+7. 单屏恢复：缩小 intent 时从保存拓扑一次 APPLY；离线测试已有，机旁未做  
+8. 卸载恢复：`--restore-and-exit` 等待 `result.json`；机旁未做  
 
 第 4–5 步未通过前，不得把「无外接关笔记本」写成已发布能力；双物理屏路径可以按已测范围单独验收，但不能因此把 VDD 从首版设计里拿掉。
 

@@ -26,7 +26,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--restore-and-exit") {
-        OpenSessionRelease::request_all();
+        OpenSessionRelease::request_all_and_wait(Duration::from_secs(20));
         return;
     }
     if args.iter().any(|a| a == "--validate-keep-off-internal") {

@@ -1,7 +1,7 @@
 # Veil 公开产品设计
 
-版本：1.7  
-状态：设计已锁定；公开产品实现为 Rust + egui。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。不是已发布能力  
+版本：1.8  
+状态：设计已锁定；首版 Rust 代码已齐，预览包可下载。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。不是已发布能力  
 日期：2026-09-19
 
 本文是可公开产品的完整设计，不是实验室探针说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与仓库布局见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
@@ -78,13 +78,13 @@
 
 细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)、[validation/installer-payload.md](validation/installer-payload.md)。Rust 机旁：[REDMI Rust](validation/redmi-book-14-2025-rust.md)；[P15 Rust](validation/colorful-p15-24-rust.md) 尚未填写。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
 
-**设计已写、验收未过（不得宣称完成）**
+**设计已写、代码已齐、验收未过（不得宣称完成）**
 
-- 多块物理屏同时保持关闭  
-- 单独恢复其中一块、其余仍关  
+- 多块物理屏同时保持关闭（离线测试有；机旁未过）  
+- 单独恢复其中一块、其余仍关（Recovery 从保存拓扑一次 APPLY；机旁未过）  
 - 按需启用自带 VDD 后关光全部物理屏（Rust MSI 路径未过）  
 - 睡醒后再关；P15 睡眠  
-- 安装器、驱动同意、卸载移除 VDD  
+- 安装器、驱动同意、卸载移除 VDD（卸载会等待会话 `result`；机旁未过）  
 - 托盘小面板作为日常产品界面  
 
 实验室探针只关路径、无安装包，不是本设计中的公开产品。
@@ -111,6 +111,6 @@
 
 ## 7. 实现状态
 
-`src/` 为 Rust Cargo workspace，`installer/` 按 [ARCHITECTURE.md](ARCHITECTURE.md) 打包三个 exe。公开产品仍须按第 5 节验收。
+`src/` 为 Rust Cargo workspace，`installer/` 按 [ARCHITECTURE.md](ARCHITECTURE.md) 打包三个 exe。首版合同功能已在代码里齐备，预览包可打。公开产品仍须按第 5 节机旁验收，不得把预览包写成已发布。
 
 Rust 机旁：REDMI 短时只停内屏已有 `release` 与热键两次系统检查 + 口头（[redmi-book-14-2025-rust.md](validation/redmi-book-14-2025-rust.md)）。仍未做：P15 Rust、Rust 长时 / 循环 / 睡醒 / 面板点选 / MSI 重装。

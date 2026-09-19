@@ -52,6 +52,7 @@ pub struct RecoverySession {
     opt: RecoveryOptions,
     saved_paths: Vec<DisplayConfigPathInfo>,
     saved_modes: Vec<DisplayConfigModeInfo>,
+    saved_identities: Vec<ScreenIdentity>,
     saved_fingerprint: String,
     armed: bool,
     holding: bool,
@@ -74,6 +75,7 @@ impl RecoverySession {
             opt,
             saved_paths: vec![],
             saved_modes: vec![],
+            saved_identities: vec![],
             saved_fingerprint: String::new(),
             armed: false,
             holding: false,
@@ -117,6 +119,7 @@ impl RecoverySession {
             self.fail("error", Some("topology changed since save"), false);
             return Ok(());
         }
+        self.saved_identities = current.snapshot.paths.iter().map(|p| p.identity()).collect();
         if !self.opt.hotkey.try_register() {
             self.fail("error", Some("RegisterHotKey failed"), false);
             return Ok(());
@@ -255,6 +258,7 @@ impl RecoverySession {
                 return;
             }
         };
+        let previous: Vec<ScreenIdentity> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
         self.last_intent_text = Some(text);
         self.intent = intent;
         let selected: Vec<_> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
@@ -262,9 +266,106 @@ impl RecoverySession {
             self.finish("release", true);
             return;
         }
-        if !self.try_apply(&selected, false) {
+        let shrink = previous.iter().any(|old| !selected.iter().any(|id| id.matches(old)));
+        let ok = if shrink {
+            self.try_apply_from_saved(&selected)
+        } else {
+            self.try_apply(&selected, false)
+        };
+        if !ok && !shrink {
             self.last_intent_text = None;
         }
+    }
+
+    fn try_apply_from_saved(&mut self, selected: &[ScreenIdentity]) -> bool {
+        if self.saved_paths.is_empty() || self.saved_identities.len() != self.saved_paths.len() {
+            self.write_heartbeat("保存拓扑无法用于单屏恢复。", Some(selected), true);
+            return false;
+        }
+        if selected
+            .iter()
+            .any(|id| !self.saved_identities.iter().any(|saved| saved.matches(id)))
+        {
+            self.write_heartbeat("保存拓扑与当前设备对不上，未恢复该屏。", Some(selected), true);
+            return false;
+        }
+        let prepared = match PathOps::deactivate(
+            &self.saved_paths,
+            &self.saved_modes,
+            &self.saved_identities,
+            selected,
+            true,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                self.write_heartbeat(&e, Some(selected), true);
+                return false;
+            }
+        };
+        if !prepared.can_apply() {
+            self.write_heartbeat("无法从保存拓扑恢复该屏，未 APPLY。", Some(selected), true);
+            return false;
+        }
+        let rc = match self
+            .opt
+            .ccd
+            .set(&prepared.paths, &prepared.modes, CcdConstants::VALIDATE_FLAGS)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.write_heartbeat(&e, Some(selected), true);
+                return false;
+            }
+        };
+        if rc != 0 {
+            SessionLog::append(
+                &self.opt.directory,
+                "apply-blocked",
+                Some(&format!("partial-restore VALIDATE {rc}")),
+                None,
+                Some(false),
+                Some(rc),
+            );
+            self.write_heartbeat(&format!("无法从保存拓扑恢复该屏：校验 {rc}。"), Some(selected), true);
+            return false;
+        }
+        let apply_rc = match self
+            .opt
+            .ccd
+            .set(&prepared.paths, &prepared.modes, CcdConstants::APPLY_FLAGS)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.write_heartbeat(&e, Some(selected), true);
+                return false;
+            }
+        };
+        self.result.apply_rc = Some(apply_rc);
+        self.result.adjusted_origin = Some(prepared.adjusted_origin);
+        if apply_rc != 0 {
+            SessionLog::append(
+                &self.opt.directory,
+                "apply-failed",
+                Some(&format!("partial-restore APPLY {apply_rc}")),
+                None,
+                Some(false),
+                Some(apply_rc),
+            );
+            self.write_heartbeat(&format!("APPLY 失败：{apply_rc}。"), Some(selected), true);
+            return false;
+        }
+        self.holding = true;
+        self.expected_targets = Some(PathOps::active_targets(&prepared.paths));
+        SessionLog::append(
+            &self.opt.directory,
+            "partial-restored",
+            Some("已恢复该屏，其余仍保持关闭。"),
+            None,
+            Some(false),
+            Some(apply_rc),
+        );
+        self.write_heartbeat("已恢复该屏，其余仍保持关闭。", Some(selected), false);
+        true
     }
 
     fn try_apply(&mut self, selected: &[ScreenIdentity], is_reapply: bool) -> bool {
