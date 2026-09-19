@@ -4,6 +4,29 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$systemModules = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\Modules"
+if (-not $env:PSModulePath) {
+    $env:PSModulePath = $systemModules
+}
+elseif ($env:PSModulePath -notlike ("*" + $systemModules + "*")) {
+    $env:PSModulePath = $systemModules + ";" + $env:PSModulePath
+}
+Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+
+function Get-VeilFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([BitConverter]::ToString($hasher.ComputeHash($stream)) -replace "-", "")
+    }
+    finally {
+        $stream.Dispose()
+        $hasher.Dispose()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
     throw "Missing $ManifestPath"
 }
@@ -16,7 +39,7 @@ foreach ($name in $manifest.files.PSObject.Properties.Name) {
         $missing += $name
         continue
     }
-    $actual = (Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+    $actual = Get-VeilFileSha256 -Path $full
     $expected = [string]$manifest.files.$name
     if ($actual -ne $expected) {
         throw "Hash mismatch: $name actual $actual expected $expected"

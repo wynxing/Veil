@@ -13,6 +13,10 @@
     <Compile Remove="Bundle.wxs" />
   </ItemGroup>
   <Target Name="RequirePayload" BeforeTargets="BeforeBuild">
-    <Exec Command="&quot;$(WINDIR)\System32\WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\ValidatePayload.ps1&quot;" />
+    <PropertyGroup>
+      <_VeilPwsh Condition="Exists('$(ProgramFiles)\PowerShell\7\pwsh.exe')">$(ProgramFiles)\PowerShell\7\pwsh.exe</_VeilPwsh>
+      <_VeilPwsh Condition="'$(_VeilPwsh)' == ''">$(WINDIR)\System32\WindowsPowerShell\v1.0\powershell.exe</_VeilPwsh>
+    </PropertyGroup>
+    <Exec Command="&quot;$(_VeilPwsh)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\ValidatePayload.ps1&quot;" />
   </Target>
 </Project>
