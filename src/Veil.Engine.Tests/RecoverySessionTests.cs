@@ -158,6 +158,26 @@ public sealed class RecoverySessionTests
     }
 
     [Fact]
+    public void TopologyChurnWhilePhysicalStillOffDoesNotBurnReapply()
+    {
+        using var dir = new TempSession();
+        var ccd = DualPhysicalCcd();
+        SaveTopology(dir.Path, ccd);
+        var session = ArmWithIntent(dir.Path, ccd);
+        Assert.False(session.Exited);
+        var remaining = ccd.Paths[1];
+        remaining.TargetInfo.Id = 99;
+        ccd.Paths[1] = remaining;
+        ccd.Rows[1] = ccd.Rows[1] with { TargetId = 99 };
+        session.Tick();
+        Assert.False(session.Exited);
+        Assert.False(session.Result.ReapplyAttempted);
+        var events = File.ReadAllText(SessionPaths.Events(dir.Path));
+        Assert.Contains("topology-settle", events);
+        Assert.DoesNotContain("\"type\":\"interrupt\"", events);
+    }
+
+    [Fact]
     public void ExecutionGapRestoresThenReappliesOnce()
     {
         using var dir = new TempSession();
@@ -178,6 +198,55 @@ public sealed class RecoverySessionTests
     }
 
     [Fact]
+    public void StaleCaptureAfterRestoreStillReapplies()
+    {
+        using var dir = new TempSession();
+        var ccd = DualPhysicalCcd();
+        SaveTopology(dir.Path, ccd);
+        var clock = new FakeClock { Seconds = 0 };
+        var session = ArmWithIntent(dir.Path, ccd, clock: clock);
+        var applyCount = ccd.Flags.Count(f => f == CcdConstants.ApplyFlags);
+        ccd.StaleCapturesRemaining = 2;
+        clock.Seconds = 10;
+        session.Tick();
+        Assert.True(session.Result.ReapplyAttempted);
+        Assert.True(ccd.Flags.Count(f => f == CcdConstants.ApplyFlags) > applyCount);
+        Assert.False(session.Exited);
+        var events = File.ReadAllText(SessionPaths.Events(dir.Path));
+        Assert.Contains("reapply-settle", events);
+        Assert.Contains("reapplied", events);
+        Assert.DoesNotContain("already-off", events);
+    }
+
+    [Fact]
+    public void ReapplyWithoutSecondTargetRequestsBundledVdd()
+    {
+        using var dir = new TempSession();
+        var ccd = InternalPlusBundledVdd();
+        SaveTopology(dir.Path, ccd);
+        var clock = new FakeClock { Seconds = 0 };
+        var session = ArmWithIntent(dir.Path, ccd, clock: clock, vddAssist: true);
+        ccd.AfterApply = () =>
+        {
+            ccd.Paths = [ccd.Paths[0]];
+            ccd.Rows = [ccd.Rows[0] with { Active = true }];
+        };
+        clock.Seconds = 10;
+        session.Tick();
+        Assert.True(session.Result.ReapplyAttempted);
+        Assert.False(session.Exited);
+        Assert.True(File.Exists(SessionPaths.VddRequest(dir.Path)));
+        var events = File.ReadAllText(SessionPaths.Events(dir.Path));
+        Assert.Contains("vdd-request", events);
+        ccd.AfterApply = null;
+        ccd.Paths = InternalPlusBundledVdd().Paths;
+        ccd.Rows = InternalPlusBundledVdd().Rows;
+        session.Tick();
+        Assert.False(session.Exited);
+        Assert.Contains("reapplied", File.ReadAllText(SessionPaths.Events(dir.Path)));
+    }
+
+    [Fact]
     public void DualPhysicalNeverUsesCloneFlags()
     {
         using var dir = new TempSession();
@@ -187,13 +256,13 @@ public sealed class RecoverySessionTests
         Assert.DoesNotContain(ccd.Flags, f => (f & CcdConstants.SdcTopologyClone) != 0);
     }
 
-    private static RecoverySession ArmWithIntent(string dir, FakeCcd ccd, FakeParent? parent = null, FakeClock? clock = null)
+    private static RecoverySession ArmWithIntent(string dir, FakeCcd ccd, FakeParent? parent = null, FakeClock? clock = null, bool vddAssist = false)
     {
         var session = new RecoverySession(Options(dir, ccd, new FakeHotkey(), selfPid: 11, parent: parent, clock: clock));
         session.Start();
         JsonUtil.WriteAtomic(SessionPaths.Arm(dir), new ArmFile { Pid = 11 });
         session.Tick();
-        WriteKeepInternalOff(dir);
+        WriteKeepInternalOff(dir, vddAssist);
         session.Tick();
         return session;
     }
@@ -216,7 +285,30 @@ public sealed class RecoverySessionTests
             Clock = clock ?? new FakeClock(),
             ArmTimeoutSeconds = 10,
             GapSeconds = 3,
+            ReapplySettleAttempts = 4,
+            Pause = _ => { },
         };
+
+    private static FakeCcd InternalPlusBundledVdd()
+    {
+        var internalPath = PathFactory.Path(id: 1);
+        var vddPath = PathFactory.Path(internalTech: false, id: 2);
+        return new FakeCcd
+        {
+            Paths = [internalPath, vddPath],
+            Modes = [new DisplayConfigModeInfo { InfoType = 1 }],
+            Rows =
+            [
+                PathFactory.Row(PathRole.Internal, targetId: 1, monitorPath: @"\\?\DISPLAY#CMN#1"),
+                PathFactory.Row(
+                    PathRole.Virtual,
+                    targetId: 2,
+                    name: "VDD by MTT",
+                    adapterPath: @"ROOT\MttVDD\0000",
+                    monitorPath: @"\\?\DISPLAY#MTT1337#1"),
+            ],
+        };
+    }
 
     private static FakeCcd DualPhysicalCcd()
     {
@@ -237,10 +329,11 @@ public sealed class RecoverySessionTests
     private static void SaveTopology(string dir, FakeCcd ccd) =>
         TopologyBlob.Save(SessionPaths.Topology(dir), ccd.Paths, ccd.Modes);
 
-    private static void WriteKeepInternalOff(string dir) =>
+    private static void WriteKeepInternalOff(string dir, bool vddAssist = false) =>
         JsonUtil.WriteAtomic(SessionPaths.Intent(dir), new IntentFile
         {
             KeepOff = [new ScreenIdentityDto { AdapterLuid = "0000000000000001", TargetId = 1, MonitorPath = @"\\?\DISPLAY#CMN#1" }],
+            VddAssist = vddAssist,
         });
 
     private sealed class TempSession : IDisposable

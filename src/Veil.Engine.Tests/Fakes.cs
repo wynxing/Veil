@@ -67,6 +67,11 @@ internal sealed class FakeCcd : ICcdApi
     public int InternalRc { get; set; }
     public List<uint> Flags { get; } = [];
     public Exception? CaptureException { get; set; }
+    public int StaleCapturesRemaining { get; set; }
+    public Action? AfterApply { get; set; }
+    private DisplayConfigPathInfo[] _visiblePaths = [];
+    private List<PathRow> _visibleRows = [];
+    private bool _hasVisible;
 
     public (DisplayConfigPathInfo[] Paths, DisplayConfigModeInfo[] Modes) QueryRaw(uint flags = CcdConstants.QueryFlags) =>
         (ClonePaths(), CloneModes());
@@ -78,6 +83,18 @@ internal sealed class FakeCcd : ICcdApi
             throw CaptureException;
         }
 
+        if (StaleCapturesRemaining > 0 && _hasVisible)
+        {
+            StaleCapturesRemaining--;
+            return new(
+                (DisplayConfigPathInfo[])_visiblePaths.Clone(),
+                CloneModes(),
+                new DisplaySnapshot(_visibleRows.ToList()));
+        }
+
+        _visiblePaths = ClonePaths();
+        _visibleRows = Rows.ToList();
+        _hasVisible = true;
         return new(ClonePaths(), CloneModes(), new DisplaySnapshot(Rows.ToList()));
     }
 
@@ -96,6 +113,7 @@ internal sealed class FakeCcd : ICcdApi
             Paths = (DisplayConfigPathInfo[])paths.Clone();
             Modes = (DisplayConfigModeInfo[])modes.Clone();
             SyncRowsFromPaths();
+            AfterApply?.Invoke();
             var rc = NextApplyRc ?? ApplyRc;
             NextApplyRc = null;
             return rc;

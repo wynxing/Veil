@@ -15,6 +15,10 @@ public sealed class RecoveryOptions
     public IParentWatcher Parent { get; init; } = new Win32ParentWatcher();
     public double ArmTimeoutSeconds { get; init; } = 10;
     public double GapSeconds { get; init; } = 3;
+    public int ReapplySettleAttempts { get; init; } = 12;
+    public TimeSpan ReapplySettlePause { get; init; } = TimeSpan.FromMilliseconds(150);
+    public Action<TimeSpan> Pause { get; init; } = Thread.Sleep;
+    public double VddWaitSeconds { get; init; } = 20;
 }
 
 public sealed class RecoverySession
@@ -26,6 +30,8 @@ public sealed class RecoverySession
     private bool _armed;
     private bool _holding;
     private bool _reapplyAttempted;
+    private bool _waitingVdd;
+    private double _vddWaitStart;
     private bool _hotkeyRegistered;
     private double _started;
     private double _previous;
@@ -76,6 +82,7 @@ public sealed class RecoverySession
                 HotkeyRegistered = true,
                 Hotkey = CcdConstants.HotkeyText,
             });
+            SessionLog.Append(_opt.Directory, "ready", detail: "热键已注册。");
             WriteHeartbeat("等待 arm。");
             _started = _opt.Clock.Seconds;
             _previous = _started;
@@ -132,6 +139,7 @@ public sealed class RecoverySession
 
                 _armed = true;
                 _previous = now;
+                SessionLog.Append(_opt.Directory, "armed");
                 WriteHeartbeat("已 arm。");
                 return;
             }
@@ -162,6 +170,12 @@ public sealed class RecoverySession
             return;
         }
 
+        if (_waitingVdd)
+        {
+            TickWaitingVdd(now);
+            return;
+        }
+
         if (now - _previous > _opt.GapSeconds)
         {
             HandleInterrupt("execution-gap");
@@ -181,6 +195,15 @@ public sealed class RecoverySession
             var current = PathOps.ActiveTargets(frame.Paths);
             if (!TargetsEqual(current, _expectedTargets))
             {
+                var selected = _intent.KeepOff.Select(x => x.ToIdentity()).ToList();
+                if (KeepOffStillHolds(frame.Snapshot, selected))
+                {
+                    _expectedTargets = current;
+                    SessionLog.Append(_opt.Directory, "topology-settle", detail: "活动目标变了，所选物理屏仍关。");
+                    WriteHeartbeat("拓扑微调，仍保持关闭。", selected);
+                    return;
+                }
+
                 HandleInterrupt("unexpected-topology");
             }
         }
@@ -253,9 +276,25 @@ public sealed class RecoverySession
     {
         var frame = _opt.Ccd.Capture();
         var plan = Gate.PlanKeepOff(frame.Snapshot, selected, bundledVddInstalled: _intent.VddAssist || frame.Snapshot.HasActiveBundledVdd);
-        if (plan.Action == KeepOffAction.Blocked || plan.Action == KeepOffAction.EnableBundledVdd)
+        if (plan.Action == KeepOffAction.EnableBundledVdd)
         {
-            WriteHeartbeat(plan.BlockReason ?? Gate.LastPathReason, selected, failed: true);
+            if (isReapply)
+            {
+                RequestBundledVdd();
+                return false;
+            }
+
+            var enable = plan.BlockReason ?? Gate.EnableVddReason;
+            SessionLog.Append(_opt.Directory, "apply-blocked", detail: enable, reason: plan.Action.ToString(), reapply: false);
+            WriteHeartbeat(enable, selected, failed: true);
+            return false;
+        }
+
+        if (plan.Action == KeepOffAction.Blocked)
+        {
+            var blocked = plan.BlockReason ?? Gate.LastPathReason;
+            SessionLog.Append(_opt.Directory, "apply-blocked", detail: blocked, reason: plan.Action.ToString(), reapply: isReapply);
+            WriteHeartbeat(blocked, selected, failed: true);
             if (isReapply)
             {
                 Finish(Result.Reason, restore: true);
@@ -273,10 +312,12 @@ public sealed class RecoverySession
             {
                 _holding = true;
                 _expectedTargets = PathOps.ActiveTargets(frame.Paths);
-                WriteHeartbeat("已保持关闭。", selected, failed: false);
+                SessionLog.Append(_opt.Directory, "already-off", detail: "所选物理屏已关，未再 APPLY。", reapply: isReapply);
+                WriteHeartbeat(isReapply ? "醒后所选屏仍关着。" : "已保持关闭。", selected, failed: false);
                 return true;
             }
 
+            SessionLog.Append(_opt.Directory, "apply-blocked", detail: "没有剩余活动路径。", reapply: isReapply);
             WriteHeartbeat("VALIDATE 后没有剩余活动路径，未 APPLY。", selected, failed: true);
             return false;
         }
@@ -328,6 +369,7 @@ public sealed class RecoverySession
 
         if (rc != 0)
         {
+            SessionLog.Append(_opt.Directory, "apply-blocked", detail: $"VALIDATE {rc}", reapply: isReapply, applyRc: rc);
             WriteHeartbeat($"无法保持关闭：校验 {rc}。", selected, failed: true);
             Result.ApplyRc = rc;
             return false;
@@ -339,6 +381,7 @@ public sealed class RecoverySession
         Result.AdjustedClone = adjustedClone;
         if (applyRc != 0)
         {
+            SessionLog.Append(_opt.Directory, "apply-failed", detail: $"APPLY {applyRc}", reapply: isReapply, applyRc: applyRc);
             WriteHeartbeat($"APPLY 失败：{applyRc}。", selected, failed: true);
             RestoreSaved();
             if (isReapply)
@@ -351,6 +394,12 @@ public sealed class RecoverySession
 
         _holding = true;
         _expectedTargets = PathOps.ActiveTargets(paths);
+        SessionLog.Append(
+            _opt.Directory,
+            isReapply ? "reapplied" : "applied",
+            detail: isReapply ? "已再次保持关闭。" : "已保持关闭。",
+            reapply: isReapply,
+            applyRc: applyRc);
         WriteHeartbeat(isReapply ? "已再次保持关闭。" : "已保持关闭。", selected, failed: false);
         return true;
     }
@@ -358,14 +407,23 @@ public sealed class RecoverySession
     private void HandleInterrupt(string reason)
     {
         Result.Reason = reason;
+        SessionLog.Append(_opt.Directory, "interrupt", reason: reason, reapply: _reapplyAttempted);
         RestoreSaved();
         var selected = _intent.KeepOff.Select(x => x.ToIdentity()).ToList();
         if (!_reapplyAttempted && selected.Count > 0)
         {
             _reapplyAttempted = true;
             Result.ReapplyAttempted = true;
+            SessionLog.Append(_opt.Directory, "reapply-attempt", reason: reason);
             WriteHeartbeat("会话中断，尝试再关一次。", selected);
+            WaitForSelectedPhysical(selected);
             if (TryApply(selected, isReapply: true) && _holding)
+            {
+                _previous = _opt.Clock.Seconds;
+                return;
+            }
+
+            if (_waitingVdd)
             {
                 _previous = _opt.Clock.Seconds;
                 return;
@@ -393,6 +451,14 @@ public sealed class RecoverySession
                     && Result.RestoreRc is 0
                     && Result.RestoredTargets
                     && Result.RestoredTopology;
+        WriteHeartbeat(FinishHeartbeat(reason));
+        SessionLog.Append(
+            _opt.Directory,
+            "finish",
+            detail: FinishHeartbeat(reason),
+            reason: reason,
+            reapply: Result.ReapplyAttempted,
+            applyRc: Result.ApplyRc);
         WriteResult();
     }
 
@@ -407,6 +473,7 @@ public sealed class RecoverySession
         }
 
         WriteHeartbeat(error ?? reason);
+        SessionLog.Append(_opt.Directory, "finish", detail: error ?? reason, reason: reason);
         WriteResult();
     }
 
@@ -529,6 +596,111 @@ public sealed class RecoverySession
         JsonUtil.WriteAtomic(SessionPaths.Result(_opt.Directory), Result);
         Exited = true;
     }
+
+    private void WaitForSelectedPhysical(IReadOnlyList<ScreenIdentity> selected)
+    {
+        var attempts = Math.Max(1, _opt.ReapplySettleAttempts);
+        for (var i = 0; i < attempts; i++)
+        {
+            var snap = _opt.Ccd.Capture().Snapshot;
+            if (selected.Any(id => snap.Paths.Any(p => p.Active && p.IsPhysical && id.Matches(p.Identity))))
+            {
+                SessionLog.Append(_opt.Directory, "reapply-settle", detail: $"selected-active attempt {i + 1}");
+                return;
+            }
+
+            if (i + 1 < attempts)
+            {
+                _opt.Pause(_opt.ReapplySettlePause);
+            }
+        }
+
+        SessionLog.Append(_opt.Directory, "reapply-settle", detail: "timeout, selected still off");
+    }
+
+    private void RequestBundledVdd()
+    {
+        _waitingVdd = true;
+        _vddWaitStart = _opt.Clock.Seconds;
+        JsonUtil.WriteAtomic(SessionPaths.VddRequest(_opt.Directory), new VddRequestFile
+        {
+            At = _vddWaitStart,
+            Reason = "reapply",
+        });
+        SessionLog.Append(_opt.Directory, "vdd-request", detail: "再关需要再次启用自带 VDD。");
+        WriteHeartbeat("等待再次启用隐藏辅助输出。");
+    }
+
+    private void TickWaitingVdd(double now)
+    {
+        if (now - _vddWaitStart > _opt.VddWaitSeconds)
+        {
+            SessionLog.Append(_opt.Directory, "apply-blocked", detail: "等待自带 VDD 超时。");
+            Finish(string.IsNullOrEmpty(Result.Reason) || Result.Reason == "not-armed" ? "execution-gap" : Result.Reason, restore: true);
+            return;
+        }
+
+        var snap = _opt.Ccd.Capture().Snapshot;
+        if (!snap.HasActiveBundledVdd)
+        {
+            return;
+        }
+
+        TryDelete(SessionPaths.VddRequest(_opt.Directory));
+        SessionLog.Append(_opt.Directory, "vdd-ready");
+        var selected = _intent.KeepOff.Select(x => x.ToIdentity()).ToList();
+        _waitingVdd = false;
+        if (TryApply(selected, isReapply: true) && _holding)
+        {
+            _previous = now;
+            return;
+        }
+
+        Finish(Result.Reason, restore: false);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private static bool KeepOffStillHolds(DisplaySnapshot snapshot, IReadOnlyList<ScreenIdentity> selected)
+    {
+        if (!snapshot.ActivePaths.Any())
+        {
+            return false;
+        }
+
+        foreach (var id in selected)
+        {
+            var row = snapshot.Paths.FirstOrDefault(p => p.IsPhysical && id.Matches(p.Identity));
+            if (row is not null && row.Active)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string FinishHeartbeat(string reason) => reason switch
+    {
+        "hotkey" => "已由热键恢复。",
+        "release" => "已恢复全部。",
+        "parent-exit" => "界面退出后已恢复。",
+        "execution-gap" => "会话中断，保持关闭已结束。",
+        "unexpected-topology" => "显示拓扑已变化，保持关闭已结束。",
+        _ => "保持关闭已结束。",
+    };
 
     private static bool TargetsEqual(List<(string Adapter, uint TargetId)> a, List<(string Adapter, uint TargetId)> b) =>
         a.Count == b.Count && a.Zip(b).All(pair => pair.First == pair.Second);

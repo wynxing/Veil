@@ -118,7 +118,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 失败不得显示为已关闭。睡眠、拔插、自带 VDD 消失后重新枚举。重启后要求清空。
 
-睡醒后再关是产品要求，**闭环未通过**。实现必须：尝试一次；VALIDATE/APPLY 失败则结束要求并说明；禁止循环 APPLY。
+睡醒后再关是产品要求。REDMI 短时合盖已有一次 `reapplied` + 开盖后灭口头，见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)。长时与 P15 **未过**。实现必须：尝试一次；VALIDATE/APPLY 失败则结束要求并说明；禁止循环 APPLY。
 
 ## 5. 恢复进程协议
 
@@ -132,6 +132,8 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 | `arm.json`              | App         | 必须等于 Recovery 的 pid，之后才允许 APPLY |
 | `release.json`          | App         | 用户恢复全部 / 退出                     |
 | `result.json`           | Recovery；进程已死时也可由 App 补写 | 结束原因与恢复结果                       |
+| `events.jsonl`          | Recovery（App 在补写 result 时也可追加） | 追加时间线：ready / apply / settle / interrupt / reapply / finish。给操作者复盘，不是心跳替代 |
+| `vdd-request.json`      | Recovery 再关需要自带 VDD 时 | 界面 Poll 后提权 enable 一次；VDD 出现后再 APPLY。未完成不得循环 APPLY |
 
 
 结束原因需能区分：`hotkey`、`release`、`parent-exit`、`execution-gap`（调度间隙，常见于睡眠）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。

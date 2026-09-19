@@ -25,6 +25,7 @@ public sealed class RecoveryCoordinator
     private readonly Func<int, bool> _isAlive;
     private string? _directory;
     private int _recoveryPid;
+    private string? _vddRequestServed;
     private IntentFile _intent = new();
 
     public RecoveryCoordinator(
@@ -75,8 +76,10 @@ public sealed class RecoveryCoordinator
                 Ok = false,
                 Error = RecoveryExited,
             });
+            SessionLog.Append(_directory, "finish", detail: RecoveryExited, reason: RecoveryExitReason);
         }
 
+        ServeVddRequest();
         Heartbeat = JsonUtil.TryRead<HeartbeatFile>(SessionPaths.Heartbeat(_directory));
         if (Heartbeat is not null)
         {
@@ -92,12 +95,19 @@ public sealed class RecoveryCoordinator
         {
             var usedBundledVdd = _intent.VddAssist;
             var result = JsonUtil.TryRead<ResultFile>(SessionPaths.Result(_directory));
+            var sessionName = Path.GetFileName(_directory);
             Heartbeat = null;
             StatusText = FormatResult(result);
+            if (!string.IsNullOrEmpty(sessionName))
+            {
+                StatusText += " 记录：" + sessionName;
+            }
+
             IsReady = false;
             HotkeyRegistered = false;
             _directory = null;
             _recoveryPid = 0;
+            _vddRequestServed = null;
             _intent = new IntentFile();
             if (usedBundledVdd)
             {
@@ -118,8 +128,8 @@ public sealed class RecoveryCoordinator
             "release" => "已恢复全部。",
             "hotkey" => "已由 Ctrl+Alt+Shift+F10 恢复。",
             "parent-exit" => "界面退出后已恢复。",
-            "execution-gap" => "会话中断，已恢复。",
-            "unexpected-topology" => "显示拓扑变化，已恢复。",
+            "execution-gap" => "会话中断，保持关闭已结束。",
+            "unexpected-topology" => "显示拓扑已变化，保持关闭已结束。",
             RecoveryExitReason => RecoveryExited,
             _ => string.IsNullOrEmpty(result.Error) ? "恢复已结束。" : result.Error,
         };
@@ -128,7 +138,41 @@ public sealed class RecoveryCoordinator
             return text;
         }
 
-        return string.IsNullOrEmpty(result.Error) ? text + " 恢复未完全成功。" : result.Error;
+        if (!string.IsNullOrEmpty(result.Error)
+            && result.Reason is not "execution-gap" and not "unexpected-topology")
+        {
+            return result.Error;
+        }
+
+        if (result.ReapplyAttempted)
+        {
+            text += " 已尝试再关一次。";
+        }
+
+        if (RestoreFailed(result))
+        {
+            text += " 恢复未完全成功。";
+        }
+
+        return text;
+    }
+
+    private static bool RestoreFailed(ResultFile result) =>
+        result.RestoreRc is > 0 || (result.RestoreRc == 0 && !result.RestoredTargets);
+
+    private void ServeVddRequest()
+    {
+        if (_directory is null
+            || _vddRequestServed == _directory
+            || !File.Exists(SessionPaths.VddRequest(_directory))
+            || File.Exists(SessionPaths.Result(_directory)))
+        {
+            return;
+        }
+
+        _vddRequestServed = _directory;
+        SessionLog.Append(_directory, "vdd-enable", detail: "界面按再关请求启用自带 VDD。");
+        _ = _runDriverHelper("enable");
     }
 
     public string? KeepOff(ScreenIdentity identity)

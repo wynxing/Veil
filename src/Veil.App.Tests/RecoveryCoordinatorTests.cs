@@ -27,6 +27,59 @@ public sealed class RecoveryCoordinatorTests
         Assert.Equal("已由 Ctrl+Alt+Shift+F10 恢复。", RecoveryCoordinator.FormatResult(new ResultFile { Ok = true, Reason = "hotkey" }));
 
     [Fact]
+    public void PollEnablesBundledVddOnceWhenReapplyRequestsIt()
+    {
+        var started = "";
+        var helperCalls = new List<string>();
+        try
+        {
+            var ccd = InternalPlusBundledVdd();
+            var coordinator = new RecoveryCoordinator(
+                ccd,
+                startRecovery: (sessionDir, _) =>
+                {
+                    started = sessionDir;
+                    WriteReady(sessionDir);
+                    return 4242;
+                },
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return 0;
+                },
+                bundledVddInstalled: () => true,
+                isAlive: _ => true);
+
+            var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
+            Assert.Null(coordinator.KeepOff(identity));
+            helperCalls.Clear();
+            JsonUtil.WriteAtomic(SessionPaths.VddRequest(started), new VddRequestFile { At = 1, Reason = "reapply" });
+            coordinator.Poll();
+            coordinator.Poll();
+            Assert.Equal(["enable"], helperCalls);
+        }
+        finally
+        {
+            DeleteSession(started);
+        }
+    }
+
+    [Fact]
+    public void FormatResultMapsUnexpectedTopologyAfterReapplyWithoutCallingRestoreFailed() =>
+        Assert.Equal(
+            "显示拓扑已变化，保持关闭已结束。 已尝试再关一次。",
+            RecoveryCoordinator.FormatResult(new ResultFile
+            {
+                Ok = false,
+                Reason = "unexpected-topology",
+                ApplyRc = 0,
+                RestoreRc = 0,
+                RestoredTopology = true,
+                RestoredTargets = true,
+                ReapplyAttempted = true,
+            }));
+
+    [Fact]
     public void SessionResultClearsKeepOffHeartbeat()
     {
         var started = "";
@@ -88,7 +141,8 @@ public sealed class RecoveryCoordinatorTests
             Assert.False(coordinator.HasSession);
             Assert.Null(coordinator.Heartbeat);
             Assert.Empty(coordinator.Wanted);
-            Assert.Equal("已恢复全部。", coordinator.StatusText);
+            Assert.StartsWith("已恢复全部。", coordinator.StatusText);
+            Assert.Contains("记录：", coordinator.StatusText);
             Assert.False(coordinator.HotkeyRegistered);
             Assert.DoesNotContain("disable", helperCalls);
         }
@@ -214,7 +268,8 @@ public sealed class RecoveryCoordinatorTests
 
             coordinator.Poll();
             Assert.False(coordinator.HasSession);
-            Assert.Equal(RecoveryCoordinator.RecoveryExited, coordinator.StatusText);
+            Assert.StartsWith(RecoveryCoordinator.RecoveryExited, coordinator.StatusText);
+            Assert.Contains("记录：", coordinator.StatusText);
             Assert.Contains("disable", helperCalls);
             var result = JsonUtil.Read<ResultFile>(SessionPaths.Result(started));
             Assert.Equal(RecoveryCoordinator.RecoveryExitReason, result.Reason);

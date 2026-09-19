@@ -1,6 +1,6 @@
 # 验证结果：REDMI Book 14 2025 上的 C# 安装器 VDD 短时闭环
 
-状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。**第二次**手动再关未 APPLY。**第三次**覆盖 `63e1057` 后短时 APPLY，热键恢复。**第四次**墙钟约 12 分钟，操作者确认稳定黑屏 10 分钟以上。**第五次** C# **20×15 秒**循环系统检查 20/20：关屏采样均为内 0 / 辅 1，`reason=release`，恢复后 VDD Code 22。循环时提权启动界面进程以避免每轮 UAC；未逐次口头记画面。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
+状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。**第二次**手动再关未 APPLY。**第三次**覆盖 `63e1057` 后短时 APPLY，热键恢复。**第四次**墙钟约 12 分钟，操作者确认稳定黑屏 10 分钟以上。**第五次** C# **20×15 秒**循环系统检查 20/20：关屏采样均为内 0 / 辅 1，`reason=release`，恢复后 VDD Code 22。循环时提权启动界面进程以避免每轮 UAC；未逐次口头记画面。**第六次**工作树构建合盖约 37 秒：没有 `reapplied`。**第七次**同一构建合盖两次：第一次醒后 `reapplied` applyRc=0（系统检查）；第二次合盖按单次再关额度结束。**第八次**单次合盖约 8 秒：`reapplied` applyRc=0，操作者确认开盖后内屏灭着，约 4 秒后热键恢复 `ok=true`。这是短时睡醒再关的系统检查 + 口头，不是长时、也不是全平台闭环。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
 日期：2026-09-19
 
 ## 环境
@@ -59,7 +59,8 @@
 | 4 | 只停内屏 | apply=0；内 0 / 辅 1 | 操作者：内屏灭了 | 短时保持关闭：系统检查 + 内屏口头成立 |
 | 5 | `release.json` 恢复 | restore=0，拓扑回到装后基线 | 未口头确认闪一下 | 文件协议恢复成立 |
 | 6 | 恢复后 disable | 再次 Code 22 | 未口头确认虚拟屏消失 | 系统检查：未留下活动自带 VDD |
-| 7 | 亲手热键预检 / 父进程崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
+| 7 | 亲手热键预检 / 父进程崩溃 | 未跑 | 未做 | 未执行 |
+| 12 | 第八次单次合盖再关 | `session-b6b9baa2`：`reapplied` apply=0，`reason=hotkey` ok | 操作者：开盖后内屏灭 | 短时睡醒再关成立；睡眠约 8 秒，再关后约 4 秒热键 |
 | 8 | 第二次手动再关 | 无 APPLY、无 `result.json` | 操作者：无黑屏、无闪屏 | 关屏未落地；面板假死 |
 | 9 | 覆盖 `63e1057` 后再关 | 采样 0–4 内 0 / 辅 1；`reason=hotkey` restore=0 | 未口头记画面 | 短时 APPLY 有系统检查；不是 15 秒 release 闭环 |
 | 10 | 操作者自测约 12 分钟 | `session-139b5929` 墙钟 719 s；`applyRc=0`；`reason=hotkey` | 操作者：稳定黑屏 10 分钟以上 | 长时口头成立；无关屏中连续枚举 |
@@ -117,9 +118,117 @@ CCD：`enumerate-0` 至 `enumerate-4` 为 `activeInternal=0`、`activeAuxiliary=
 - C# 父进程崩溃  
 - 非提权界面下的 20 次循环（本轮为提权启动）  
 - 关屏中连续 CCD 采样的 10 分钟（本次只有墙钟 + 口头）  
-- 睡醒再关  
+- 睡醒后再关的长时保持、P15 睡眠、第二次睡眠（额度用尽是设计）  
+- 睡醒后连续 CCD 采样  
 - 代码签名、可公开安装
 - 用新构建复现「恢复进程死后面板解绑」
+
+## 合盖约 3 秒（informal，不是睡醒验收）
+
+15:09 操作者合盖。会话 `session-26315504`，`vddAssist=true`。
+
+| 墙钟 | 文件 / 系统 | 含义 |
+| --- | --- | --- |
+| 15:09:40 | ready / arm / intent / topology | 开始只停内屏 |
+| 15:09:49 | heartbeat `已再次保持关闭。` | **睡眠前**已经再关过一次 |
+| 15:09:53 | Kernel-Power 506，原因 Lid | 进入现代待机 |
+| 15:09:56 | Kernel-Power 507，原因 Lid；`result.json` | 退出待机。`reason=unexpected-topology`，`reapplyAttempted=true`，`restoreRc=0` |
+
+当时构建没有 `events.jsonl`，heartbeat 被覆盖，面板把 `ok=false` 写成「恢复未完全成功」，即使拓扑已经拉回。再关额度是整段会话共用一次：VDD/拓扑抖动会先把它用掉，合盖醒来就不能再关。
+
+这只说明本机发生过合盖与一次再关，**不得**写成 C# 睡醒闭环通过。没有关屏中连续枚举，也没有操作者口头记画面。原始副本在 `.git/veil-validation-20260919-csharp-redmi/lid-informal-26315504/`（拓扑字节不进 Git）。
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `result.json` | `6E6E57D610D6B138D6B6D1A0B4B0ED9D4B3399BFEE761F190B1CBD8B0AEA9527` |
+| `heartbeat.json` | `5676D99C1D6F55F7FEA7EA974A8E750499193AD7DF706F5EBE004C3D7848EEEB` |
+| `intent.json` | `277605327C54BF57230F59FEB260BD631B975C6C3EAB7808C0F7BEF9D9C055C6` |
+| `ready.json` | `0F9D3AD709A8E395559BAA6A29F965E0DF4D41284E825663C800125CE5102E84` |
+| `kernel-power.txt` | `94CE74247E12CB0A16BC00FEEF7438D66CC26AAF0F63733846E3747887EFF401` |
+
+## 合盖约 37 秒（有 events.jsonl，再关未站住）
+
+15:24 用工作树 `verify/csharp-sleep-wake` Debug 构建，非提权启动 `Veil.App`。会话 `session-488047d1`，`vddAssist=true`，热键已注册。
+
+| 墙钟 | 来源 | 含义 |
+| --- | --- | --- |
+| 15:24:04 | ready / armed | 恢复进程就绪 |
+| 15:24:05 | `applied` applyRc=0 | 只停内屏落地 |
+| 15:24:11 | Kernel-Power 506，原因 Lid | 进入现代待机 |
+| 15:24:17 | Kernel-Power 172 | Adaptive Connected Standby，Disconnected |
+| 15:24:48 | Kernel-Power 507，原因 AC/DC Display Burst | 退出现代待机 |
+| 15:24:48.162 | `interrupt` execution-gap | 调度间隙认出睡眠 |
+| 15:24:48.196 | `reapply-attempt` | 按合同尝试再关一次 |
+| 15:24:49.644 | `interrupt` unexpected-topology | **没有** `reapplied`；约 1.4 秒后拓扑再次对不上 |
+| 15:24:49.733 | `finish` unexpected-topology | `reapplyAttempted=true`，`restoreRc=0`，`restoredTopology=true` |
+
+醒后本机枚举：`activeInternal=1`、`activeAuxiliary=0`。`ROOT\DISPLAY\0000` 为 Code 22。界面进程仍在。保持关闭没有在醒后继续。
+
+操作者口头：开盖后**闪了一下**。这与 `execution-gap` 先回放拓扑、再尝试一次再关、约 1.4 秒后因拓扑对不上而结束相符。闪一下不是醒后仍保持关闭，也不能单独证明再关 APPLY 落地（`events.jsonl` 没有 `reapplied`）。
+
+这证明：日志能对上合盖睡眠；`execution-gap` 会触发单次再关。**不证明**醒后内屏能再次保持关闭。VDD 是否挺过现代待机、再关失败的 CCD 原因，本轮没有关屏中采样。原始副本在 `.git/veil-validation-20260919-csharp-redmi/sleep-wake-488047d1/`。
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `events.jsonl` | `137D05A3E4F9D7A83E3318C109F8EC0C69B49B3BA7C8F8F3793345A582C1B28E` |
+| `result.json` | `FEAA35DB758625331AA3BD99A01E758037956B006C1EC83CDFDFFAA068688B10` |
+| `heartbeat.json` | `7F1FD155CD5F495BA3F0B5A5EF9A98AB02C42112AC950DD71D086DEA4786C542` |
+| `kernel-power.txt` | `0A092733F3CDF7165A87F0B10EA197E8D02BB7224F0015A1F84E8FECDBF104DE` |
+
+### 再关未落地的代码原因（15:24，不是修复后的复测）
+
+`events.jsonl` 有 `reapply-attempt`，没有 `reapplied` / `apply-blocked` / `already-off`。当时 `TryApply` 在「所选物理屏已经不活动且还有活动路径」时直接视为成功，**不写日志、不再 APPLY**。合盖前保存的拓扑是双路径（内屏+VDD）。醒来 `RestoreSaved` 会先把内屏拉亮（操作者见到闪一下），紧接着的 CCD 查询仍可能停在睡眠中的「内屏已关」。于是再关被当成已经关上，约 1.4 秒后内屏真正亮起，对不上期望目标，走 `unexpected-topology`。恢复进程也不能自己提权启用 VDD；若现代待机丢掉虚拟路径，再关只能停。
+
+工作树随后补了：再关前等待所选物理屏重新出现；该静默分支写入 `already-off`；再关若需要 VDD 则写 `vdd-request.json`，由界面 enable 一次。15:43 复测见下，不得把 15:24 写成已修好。
+
+## 合盖两次（15:43，第一次再关有 APPLY）
+
+同一工作树 Debug 构建，会话 `session-01393423`，`vddAssist=true`。Kernel-Power 记录**两次**合盖。没有 `vdd-request.json`。
+
+| 墙钟 | 来源 | 含义 |
+| --- | --- | --- |
+| 15:43:35 | `applied` applyRc=0 | 只停内屏落地 |
+| 15:43:44 | Kernel-Power 506，原因 Lid | 第一次进入现代待机 |
+| 15:43:54 | Kernel-Power 507，原因 Lid | 第一次开盖，约 10 秒 |
+| 15:43:54.292 | `interrupt` execution-gap | 认出第一次睡眠 |
+| 15:43:54.682 | `reapply-settle` attempt 1 | 所选内屏已重新活动 |
+| 15:43:55.688 | `reapplied` applyRc=0 | **第一次醒后 APPLY 再关落地（系统检查）** |
+| 15:44:01 | Kernel-Power 506，原因 Lid | 第二次合盖 |
+| 15:44:16 | Kernel-Power 507，原因 Lid | 第二次开盖，约 15 秒 |
+| 15:44:16.207 | `interrupt` execution-gap，`reapply=true` | 额度已用，不再关 |
+| 15:44:16.765 | `finish` execution-gap | `restoreRc=0`，`restoredTopology=true` |
+
+醒后枚举：内 1 / 辅 0。VDD Code 22。合同是整段会话只再关一次，第二次合盖结束保持关闭是预期，不是回归。
+
+系统检查：第一次醒后 `reapplied` 成立。第一次开盖后内屏是否再次灭着、灭了多久，**口头未录入**，因此还不能写「睡醒闭环通过」。原始副本在 `.git/veil-validation-20260919-csharp-redmi/sleep-wake-01393423/`。
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `events.jsonl` | `99395672CCC115A876D7349CBE2FF94E5A7D5A844E3ADA10D7BDEF995A99ECB0` |
+| `result.json` | `2C8DADB48E4A8DA0B1EDEA87F70A35B94637BC2AFCA6AA5A358E473B175B61B4` |
+| `kernel-power.txt` | `30EE046B3C6E3270BBEABB966002F9CB7F67466F2D1E43F5562F8137EB4F937D` |
+
+## 单次合盖约 8 秒（开盖后灭，热键恢复）
+
+15:48 同一 Debug 构建。会话 `session-b6b9baa2`。只合盖一次。
+
+| 墙钟 | 来源 | 含义 |
+| --- | --- | --- |
+| 15:48:59 | `applied` applyRc=0 | 只停内屏落地 |
+| 15:49:11 | Kernel-Power 506，原因 Lid | 进入现代待机 |
+| 15:49:19 | Kernel-Power 507，原因 Lid | 开盖，约 8 秒 |
+| 15:49:19.215 | `interrupt` execution-gap | 认出睡眠 |
+| 15:49:19.525 | `reapply-settle` attempt 1 | 内屏已重新活动 |
+| 15:49:20.682 | `reapplied` applyRc=0 | 再关 APPLY 落地 |
+| 15:49:24.318 | `finish` hotkey | `ok=true`，`restoreRc=0` |
+
+操作者口头：合盖后再打开，**内屏是灭的**。没有第二次合盖。恢复是热键，不是 `release.json`。无 `vdd-request`。再关后到热键约 4 秒，没有醒后长时采样。不得写成 10 分钟睡醒保持，也不得写成全 Windows 兼容。原始副本在 `.git/veil-validation-20260919-csharp-redmi/sleep-wake-b6b9baa2/`。
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `events.jsonl` | `1B9732B0950AF3DB33DC4CCCB3BFDB3CBFFFC7B576B32BE3E8B6CB95B288B4F3` |
+| `result.json` | `2C0B83D490645886BF0F954E7624D2248AE8599C8E3D7F5C110067448D0A9542` |
+| `kernel-power.txt` | `02765E7B0FE780F707B513E7E6470DDB0BFE0FE7381EC9069FBB06BEC23F0085` |
 
 ## 证据
 
