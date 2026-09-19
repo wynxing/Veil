@@ -13,7 +13,6 @@
     <Chain>
       <MsiPackage SourceFile="$(var.PackageMsi)" Compressed="yes">
         <MsiProperty Name="INSTALLVDD" Value="[InstallVdd]" />
-        <MsiProperty Name="REINSTALLMODE" Value="amus" />
       </MsiPackage>
     </Chain>
   </Bundle>
