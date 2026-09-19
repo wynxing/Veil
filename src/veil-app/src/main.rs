@@ -33,9 +33,70 @@ fn main() {
         std::process::exit(run_validate_keep_off(&args));
     }
     let Some(mutex) = try_acquire_mutex() else {
+        app_log("单实例互斥失败，已有 Veil 在跑。");
+        message_box("Veil 已在运行。请看任务栏右下角托盘，或点开隐藏图标。", false);
         return;
     };
+    app_log("互斥已拿到，准备打开面板。");
 
+    if let Err(err) = run_panel(mutex) {
+        app_log(&format!("面板未能打开：{err}"));
+        message_box(
+            &format!("Veil 面板未能打开：{err}\n\n细节已写入 %TEMP%\\Veil-app.log"),
+            false,
+        );
+    }
+}
+
+fn run_panel(mutex: HANDLE) -> Result<(), String> {
+    let attempts = [
+        (
+            "wgpu",
+            eframe::Renderer::Wgpu,
+            eframe::HardwareAcceleration::Preferred,
+        ),
+        (
+            "glow",
+            eframe::Renderer::Glow,
+            eframe::HardwareAcceleration::Off,
+        ),
+    ];
+    let mut last = String::from("没有可用的窗口后端");
+    for (name, renderer, accel) in attempts {
+        let (tray, open_id, restore_id, exit_id) = build_tray();
+        let native = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([420.0, 560.0])
+                .with_min_inner_size([360.0, 360.0])
+                .with_title("Veil")
+                .with_active(true),
+            renderer,
+            hardware_acceleration: accel,
+            persist_window: false,
+            ..Default::default()
+        };
+        app_log(&format!("尝试 eframe {name}"));
+        match eframe::run_native(
+            "Veil",
+            native,
+            Box::new(move |_cc| Ok(Box::new(VeilApp::new(mutex, tray, open_id, restore_id, exit_id)))),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last = format!("{name}: {err}");
+                app_log(&format!("eframe {name} 失败：{err}"));
+            }
+        }
+    }
+    Err(last)
+}
+
+fn build_tray() -> (
+    Option<TrayIcon>,
+    tray_icon::menu::MenuId,
+    tray_icon::menu::MenuId,
+    tray_icon::menu::MenuId,
+) {
     let menu = Menu::new();
     let open_item = MenuItem::new("打开面板", true, None);
     let restore_item = MenuItem::new("恢复全部", true, None);
@@ -46,30 +107,19 @@ fn main() {
     let _ = menu.append(&open_item);
     let _ = menu.append(&restore_item);
     let _ = menu.append(&exit_item);
-    let tray = TrayIconBuilder::new()
+    let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Veil")
         .with_icon(default_icon())
         .build()
-        .ok();
-
-    let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 560.0])
-            .with_min_inner_size([360.0, 360.0])
-            .with_title("Veil")
-            .with_active(true),
-        renderer: eframe::Renderer::Glow,
-        hardware_acceleration: eframe::HardwareAcceleration::Off,
-        persist_window: false,
-        ..Default::default()
+    {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            app_log(&format!("托盘图标未创建：{err}"));
+            None
+        }
     };
-
-    let _ = eframe::run_native(
-        "Veil",
-        native,
-        Box::new(move |_cc| Ok(Box::new(VeilApp::new(mutex, tray, open_id, restore_id, exit_id)))),
-    );
+    (tray, open_id, restore_id, exit_id)
 }
 
 struct VeilApp {
@@ -415,12 +465,31 @@ fn default_icon() -> Icon {
 }
 
 fn tray_icon_for(holding: bool) -> Icon {
-    let pixel = if holding {
-        [196u8, 72, 48, 255]
+    let (fill, edge) = if holding {
+        ([196u8, 72, 48, 255], [255u8, 220, 200, 255])
     } else {
-        [40u8, 40, 48, 255]
+        ([28u8, 140, 150, 255], [240u8, 252, 255, 255])
     };
-    Icon::from_rgba(pixel.repeat(16 * 16), 16, 16).expect("icon")
+    let mut rgba = Vec::with_capacity(16 * 16 * 4);
+    for y in 0..16 {
+        for x in 0..16 {
+            let px = if x == 0 || y == 0 || x == 15 || y == 15 {
+                edge
+            } else {
+                fill
+            };
+            rgba.extend_from_slice(&px);
+        }
+    }
+    Icon::from_rgba(rgba, 16, 16).expect("icon")
+}
+
+fn app_log(line: &str) {
+    let path = std::env::temp_dir().join("Veil-app.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{} {line}", chrono_like_stamp());
+    }
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
