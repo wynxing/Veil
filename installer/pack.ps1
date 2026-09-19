@@ -92,7 +92,15 @@ $destExe = Join-Path $dist $version.SetupFileName
 Copy-Item -LiteralPath $built -Destination $destExe -Force
 
 $sumPath = Join-Path $dist "SHA256SUMS.txt"
-$hash = (Get-FileHash -LiteralPath $destExe -Algorithm SHA256).Hash
+$hasher = [System.Security.Cryptography.SHA256]::Create()
+$stream = [System.IO.File]::OpenRead($destExe)
+try {
+    $hash = ([BitConverter]::ToString($hasher.ComputeHash($stream)) -replace "-", "")
+}
+finally {
+    $stream.Dispose()
+    $hasher.Dispose()
+}
 Set-Content -LiteralPath $sumPath -Encoding ASCII -Value ("{0}  {1}" -f $hash, $version.SetupFileName)
 
 Write-Output ("packed {0} ({1})" -f $destExe, $version.Tag)
