@@ -79,7 +79,10 @@ fn run_panel(mutex: HANDLE) -> Result<(), String> {
         match eframe::run_native(
             "Veil",
             native,
-            Box::new(move |_cc| Ok(Box::new(VeilApp::new(mutex, tray, open_id, restore_id, exit_id)))),
+            Box::new(move |cc| {
+                install_cjk_fonts(&cc.egui_ctx);
+                Ok(Box::new(VeilApp::new(mutex, tray, open_id, restore_id, exit_id)))
+            }),
         ) {
             Ok(()) => return Ok(()),
             Err(err) => {
@@ -482,6 +485,46 @@ fn tray_icon_for(holding: bool) -> Icon {
         }
     }
     Icon::from_rgba(rgba, 16, 16).expect("icon")
+}
+
+fn install_cjk_fonts(ctx: &egui::Context) {
+    let Some((name, data)) = load_windows_cjk_font() else {
+        app_log("未找到系统中文字体，面板中文会显示为空框。");
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("veil_cjk".to_owned(), data.into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(&family) {
+            list.push("veil_cjk".to_owned());
+        }
+    }
+    ctx.set_fonts(fonts);
+    app_log(&format!("已加载系统中文字体：{name}"));
+}
+
+fn load_windows_cjk_font() -> Option<(String, egui::FontData)> {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    let dir = std::path::PathBuf::from(windir).join("Fonts");
+    let candidates = [
+        ("msyh.ttc", 0u32),
+        ("msyh.ttf", 0),
+        ("simhei.ttf", 0),
+        ("simsun.ttc", 0),
+    ];
+    for (file, index) in candidates {
+        let path = dir.join(file);
+        match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => {
+                let mut data = egui::FontData::from_owned(bytes);
+                data.index = index;
+                return Some((path.display().to_string(), data));
+            }
+            Ok(_) => app_log(&format!("字体文件为空：{}", path.display())),
+            Err(err) => app_log(&format!("未读取 {}: {err}", path.display())),
+        }
+    }
+    None
 }
 
 fn app_log(line: &str) {

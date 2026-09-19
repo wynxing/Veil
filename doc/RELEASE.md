@@ -66,7 +66,7 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 
 ## 下一次预览
 
-当前预览版本是 `0.1.3-preview.1`（`v0.1.3-preview.1`）。0.1.2 能装上但开始菜单没有入口，且 Glow 面板会立刻静默退出；这版补开始菜单、WGPU 回退，并把打开失败写到对话框和 `%TEMP%\Veil-app.log`。再改代码：升高 `Version`、合并、再打新 tag。不要复用同一个 MSI 版本号。
+当前预览版本是 `0.1.4-preview.1`（`v0.1.4-preview.1`）。0.1.3 面板能打开，但 egui 默认字体没有中文，按钮和说明显示为空框；这版启动时加载系统雅黑/黑体。再改代码：升高 `Version`、合并、再打新 tag。不要复用同一个 MSI 版本号。
 
 ## 明确延后
 
