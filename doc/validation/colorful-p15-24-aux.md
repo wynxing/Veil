@@ -1,6 +1,6 @@
 # 验证结果：COLORFUL P15 24 内屏加实体外接
 
-状态：不关屏 VALIDATE、探针只停内屏闭环、最小应用只停内屏，以及只停外屏短时闭环已记录。只停外屏在把内屏挪到桌面原点后 apply=0，约 14 秒热键恢复。操作者确认外屏灭了、内屏可以用，只在开关时闪。  
+状态：不关屏 VALIDATE、探针只停内屏闭环、当时最小应用（已不在仓库）只停内屏，以及只停外屏短时闭环已记录。只停外屏在把内屏挪到桌面原点后 apply=0，约 14 秒热键恢复。操作者确认外屏灭了、内屏可以用，只在开关时闪。当前产品在 `src/`，见 [P15 Rust](colorful-p15-24-rust.md)。  
 日期：2026-09-18
 
 第二组硬件。不能把第一组 REDMI + VDD 的保持关闭结论搬到这台机器。VALIDATE 通过不等于保持关闭成立。
@@ -26,9 +26,9 @@ PnP 中还有大量状态为 Unknown 的历史监视器（如 S2719DGF），未�
 
 - **枚举**：能区分内屏与实体外屏；两块都活动；虚拟适配器未活动。
 - **只停内屏、留下外屏**：basic / virtual / refresh 三组 `SDC_VALIDATE` 均为 0，`disabledCount=1`，`remainingActive=1`。扩展桌面下参数组合可接受。这与第一组「仅内屏」或「扩展桌面 + VDD」的 87 不同，也**不是**保持关闭已通过。
-- **只停外屏、留下内屏**：仅清除外屏 ACTIVE、外屏仍是主屏时三组均为 87。把留下的内屏源模式挪到 (0,0) 后三组 VALIDATE 为 0（`adjustedOrigin=true`）。这不是 `SDC_TOPOLOGY_INTERNAL`（仅电脑屏幕）。探针 `run-79b325a2`：apply=0，约 13.9 秒后 `reason=hotkey`，restore=0，拓扑一致，`ok=true`。14 次采样内屏仅 1、外屏仅 0，`gdiMonitorCount=1`。操作者确认：**外屏灭了、内屏可以用，开关会闪烁下而已。** 最小应用仍只提供内屏保持关闭。未做只停外屏的 10 分钟、循环或父进程崩溃。
+- **只停外屏、留下内屏**：仅清除外屏 ACTIVE、外屏仍是主屏时三组均为 87。把留下的内屏源模式挪到 (0,0) 后三组 VALIDATE 为 0（`adjustedOrigin=true`）。这不是 `SDC_TOPOLOGY_INTERNAL`（仅电脑屏幕）。探针 `run-79b325a2`：apply=0，约 13.9 秒后 `reason=hotkey`，restore=0，拓扑一致，`ok=true`。14 次采样内屏仅 1、外屏仅 0，`gdiMonitorCount=1`。操作者确认：**外屏灭了、内屏可以用，开关会闪烁下而已。** 当时最小应用只提供内屏保持关闭。未做只停外屏的 10 分钟、循环或父进程崩溃。
 - **停掉全部路径**：三组均为 87，`remainingActive=0`。按协议不得 apply。
-- **最小应用**：门禁已改为：活动内屏且（活动虚拟屏或活动实体外接）即可；仅内屏仍拒绝。`--check` 的 `blockReason` 为空。崩溃后重新预检：`min-app-preflight/preflight.json`，timer 与热键均 `ok=true`。随后调用与按钮同一路径的 `Session.begin_keep_off()`（未开托盘窗口）：VALIDATE `rc=0`，`adjustedClone=false`，worker `--seconds 0`，`run-95c66af9` apply=0，约 14.1 秒后 `reason=hotkey`，restore=0，拓扑一致，`ok=true`。关屏期间 worker 14 次采样内屏仅 0、外屏仅 1。会话文案「已由 Ctrl+Alt+Shift+F10 恢复」。操作者确认：**内屏整段灭着、外屏一直可用。**
+- **当时最小应用（已不在仓库）**：门禁已改为：活动内屏且（活动虚拟屏或活动实体外接）即可；仅内屏仍拒绝。`--check` 的 `blockReason` 为空。崩溃后重新预检：`min-app-preflight/preflight.json`，timer 与热键均 `ok=true`。随后调用与按钮同一路径的 `Session.begin_keep_off()`（未开托盘窗口）：VALIDATE `rc=0`，`adjustedClone=false`，worker `--seconds 0`，`run-95c66af9` apply=0，约 14.1 秒后 `reason=hotkey`，restore=0，拓扑一致，`ok=true`。关屏期间 worker 14 次采样内屏仅 0、外屏仅 1。会话文案「已由 Ctrl+Alt+Shift+F10 恢复」。操作者确认：**内屏整段灭着、外屏一直可用。**
 - **亮屏预检**：2 秒定时恢复与实际 `Ctrl+Alt+Shift+F10` 均 `ok=true`，凭证 `preflight/preflight.json`。
 - **短时只停内屏（热键）**：`run-430dac5c`，apply=0，约 8.1 秒后 `reason=hotkey`，restore=0，拓扑一致。关屏期间 8 次采样均为 `activeInternal=0`、`activeAuxiliary=1`，`gdiMonitorCount` 从 2 变为 1。操作者确认内屏熄灭，外屏闪了一会后重新点亮。
 - **满 15 秒只停内屏（定时）**：`run-1236f6d1`，apply=0，15.0 秒后 `reason=timer`，restore=0，拓扑一致。15 次采样内屏仅 0、外屏仅 1。操作者确认开关瞬间闪，内屏整段都灭着。
@@ -89,6 +89,6 @@ PnP 中还有大量状态为 Unknown 的历史监视器（如 S2719DGF），未�
 
 ## 下一步
 
-1. C# 产品短时只停内屏、`release` 与热键恢复已另记：[P15 C# 短时](colorful-p15-24-csharp.md)。未做 C# 面板按钮恢复、只停外屏、长时或循环。
+1. Rust 产品机旁见 [P15 Rust](colorful-p15-24-rust.md)，尚未执行。
 2. Python 只停外屏短时闭环已通过。未做只停外屏的 10 分钟、循环或父进程崩溃。
 3. 睡眠唤醒尚未测。

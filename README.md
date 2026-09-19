@@ -2,7 +2,7 @@
 
 Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。首版不做临时关闭。
 
-**项目状态：公开产品实现为 Rust + egui，不是已发布安装包。** 机制可行性已在两台机器上收口。C# 产品源码已移出工作区；C# 机旁报告**不得**写成 Rust 已过。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
+**项目状态：公开产品实现为 Rust + egui，不是已发布安装包。** 机制可行性已在两台机器上收口。Rust 产品机旁：REDMI 短时只停内屏已有系统检查 + 口头；P15 尚未执行。设计见 [产品设计](doc/PRODUCT_DESIGN.md)，实现栈见 [技术架构](doc/ARCHITECTURE.md)，合同见 [PRD](doc/PRD.md)。
 
 本地构建（x64）：
 
@@ -32,9 +32,9 @@ cargo test --manifest-path src\Cargo.toml
 
 ## 已验证的机制（不是全平台兼容）
 
-第一组：XIAOMI REDMI Book 14 2025，仅笔记本内屏。原生停最后一条路径校验 87。已签名 Virtual Display Driver 25.7.23 作为第二目标后，可保持关闭内屏（短时、10 分钟、循环、崩溃恢复）。睡醒后内屏亮起，保持关闭结束且当时未自动再关。详见 [虚拟屏辅助结果](doc/validation/redmi-book-14-2025-vdd.md)。
+第一组：XIAOMI REDMI Book 14 2025，仅笔记本内屏。原生停最后一条路径校验 87。已签名 Virtual Display Driver 25.7.23 作为第二目标后，Python 探针可保持关闭内屏（短时、10 分钟、循环、崩溃恢复）。睡醒后内屏亮起，保持关闭结束且当时未自动再关。详见 [虚拟屏辅助结果](doc/validation/redmi-book-14-2025-vdd.md)。Rust 产品短时只停内屏（`release` + 热键）见 [REDMI Rust](doc/validation/redmi-book-14-2025-rust.md)。不是 Rust MSI 重装，不是面板点选。
 
-第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。Python 探针只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环。C# 产品见 [P15 C#](doc/validation/colorful-p15-24-csharp.md)。C# 安装器 payload 见 [安装器核对](doc/validation/installer-payload-csharp.md)。C# REDMI 安装器路径见 [C# REDMI 短时系统检查](doc/validation/redmi-book-14-2025-csharp.md)。Rust REDMI 短时只停内屏见 [REDMI Rust](doc/validation/redmi-book-14-2025-rust.md)。P15 Rust 见 [P15 Rust](doc/validation/colorful-p15-24-rust.md)（尚未执行）。
+第二组：COLORFUL P15 24，内屏加实体外接 S24Q6-Q24G8，不额外安装虚拟屏。Python 探针只停内屏已有短时、10 分钟、循环与崩溃恢复；只停外屏有短时闭环。见 [P15 外接](doc/validation/colorful-p15-24-aux.md)。Rust 产品见 [P15 Rust](doc/validation/colorful-p15-24-rust.md)（尚未执行）。
 
 ## 文档
 

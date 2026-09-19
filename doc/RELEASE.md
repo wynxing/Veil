@@ -8,8 +8,8 @@
 | --- | --- |
 | 产品要求 | 只发布已验证配置上的行为；能力检测失败则禁用并说明 |
 | 本次流程 | 私有仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX），供协作者下载自用 |
-| 已验证 | 本机曾用 `pack.ps1` 打出无签名 Burn EXE；payload 哈希门禁成立；REDMI 上无签名 MSI 装过禁用态 VDD |
-| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容、把已删除的调研原型打成发布物 |
+| 已验证 | payload 哈希门禁成立；本机可用 `pack.ps1` 打出无签名 Burn EXE |
+| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容、Rust MSI 已在 REDMI 机旁重装 |
 
 预览包能装、能跑，不等于公开产品已发布，也不等于硬件兼容已过。
 
@@ -61,8 +61,8 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 - 下载后核 `SHA256SUMS.txt`。
 - SmartScreen /「未知发布者」是无签名预览的预期现象；这不是发布门禁已通过。
 - 自带 MTT 是显示驱动。不同意则安装时不要装 VDD（`INSTALLVDD=0` / 引导程序选项）。
-- COLORFUL P15 **不要**用该包安装 MTT VDD（已有实体外接）。见 [installer-payload-csharp.md](validation/installer-payload-csharp.md)。
-- 装完仍按验证文档的范围使用；未测项不得当成已完成。
+- COLORFUL P15 **不要**用该包安装 MTT VDD（已有实体外接）。见 [installer-payload.md](validation/installer-payload.md)。
+- 装完仍按验证文档的范围使用；未测项不得当成已完成。Rust MSI 重装尚未机旁执行。
 
 ## 下一次预览
 

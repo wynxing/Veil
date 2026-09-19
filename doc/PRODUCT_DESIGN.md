@@ -1,10 +1,10 @@
 # Veil 公开产品设计
 
-版本：1.6  
-状态：设计已锁定；公开产品实现为 Rust + egui。C# 产品源码已移出工作区；`*-csharp.md` 仍是历史，不得写成 Rust 已过。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。不是已发布能力  
+版本：1.7  
+状态：设计已锁定；公开产品实现为 Rust + egui。Rust REDMI 短时只停内屏已有系统检查 + 口头；P15 Rust 尚未执行。不是已发布能力  
 日期：2026-09-19
 
-本文是可公开产品的完整设计，不是实验室最小应用说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与现存代码处置见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
+本文是可公开产品的完整设计，不是实验室探针说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与仓库布局见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
 
 ## 1. 产品合同
 
@@ -22,7 +22,7 @@
 
 **首版不做。** 临时关闭、系统熄屏入口、把虚拟屏当作可关目标、跨重启自动再关、黑色覆盖层、自研显示驱动、精确还原窗口布局、静默安装驱动、启用测试签名、防睡眠（P1，独立选项，默认不改电源计划）。
 
-**睡眠与重启。** 重启后保持关闭要求清空，屏幕按系统结果亮着。睡眠唤醒后重新枚举：原保持关闭的物理屏仍连接、且仍能留下一条活动路径（另一块物理屏或按需自带 VDD）时，尝试把仍有效的要求再打上；否则结束保持关闭，说明原因，屏幕按系统结果亮着。该「睡醒后再关」在 REDMI 上有一次短时合盖证据（`reapplied` + 开盖后灭口头 + 热键恢复），见 [C# REDMI](validation/redmi-book-14-2025-csharp.md)。长时保持与 P15 未做。再关失败必须停手并告诉用户，禁止循环 apply。
+**睡眠与重启。** 重启后保持关闭要求清空，屏幕按系统结果亮着。睡眠唤醒后重新枚举：原保持关闭的物理屏仍连接、且仍能留下一条活动路径（另一块物理屏或按需自带 VDD）时，尝试把仍有效的要求再打上；否则结束保持关闭，说明原因，屏幕按系统结果亮着。Python 探针在 REDMI 上醒后内屏亮起且未自动再关。Rust 睡醒再关尚未机旁执行。再关失败必须停手并告诉用户，禁止循环 apply。
 
 ## 2. 运行时架构
 
@@ -67,27 +67,27 @@
 
 ## 5. 已验证与仅设计
 
-公开材料必须分开写。下列「已有证据」只证明机制可行，不是全 Windows 兼容声明。
+公开材料必须分开写。下列「已有证据」只证明机制可行或 Rust 产品已跑过的那一步，不是全 Windows 兼容声明。
 
 **已有证据**
 
 | 配置 | 已记录 | 未做 |
 | --- | --- | --- |
-| REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，Python：只停内屏短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。C# 安装器路径：装禁用态 VDD、面板启用后首次短时只停内屏（系统检查 + 内屏灭口头）与 `release` / disable 有系统检查；第二次手动再关未 APPLY；第三次覆盖 `63e1057` 后短时 APPLY、热键恢复；第四次墙钟约 12 分钟，操作者确认稳定黑屏 10 分钟以上；第五次 20×15 秒循环系统检查 20/20（提权启动界面，未逐次口头）。恢复闪屏口头未做。C# 短时合盖：`session-b6b9baa2` `reapplied` + 开盖后灭口头 + 热键恢复。 | 实体外接；C# 恢复闪屏口头；C# 崩溃；睡醒后长时；P15 睡眠；非提权 20 次循环；恢复进程死后面板解绑未机旁复现 |
-| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针 / 已删除的调研原型：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。C# 产品：短时只停内屏；`release.json` 与热键恢复（机旁）；面板「恢复」/「恢复全部」与只停外屏 `adjustedOrigin`（系统检查，外屏口头机旁未做）。 | 只停外屏口头机旁；单屏恢复其余仍关（双物理无 VDD 测不了并发）；C# 长时/循环/崩溃；P15 睡眠；按需 VDD |
+| REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，Python 探针：只停内屏短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。Rust 产品：工作树 exe 沿用已装禁用态 VDD，短时只停内屏的 `release` 与热键均有系统检查 + 口头。 | 实体外接；Rust MSI 重装；egui 面板点选；Rust 长时 / 循环 / 崩溃；睡醒再关；恢复闪屏单独口头 |
+| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。 | Rust 产品机旁；只停外屏口头机旁之外的产品复测；单屏恢复其余仍关（双物理无 VDD 测不了并发）；P15 睡眠；按需 VDD |
 
-细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)、[validation/colorful-p15-24-csharp.md](validation/colorful-p15-24-csharp.md)、[validation/redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md) 与 [validation/installer-payload-csharp.md](validation/installer-payload-csharp.md)。Rust 机旁：[REDMI Rust](validation/redmi-book-14-2025-rust.md) 已有短时只停内屏；[P15 Rust](validation/colorful-p15-24-rust.md) 尚未填写。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
+细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)、[validation/installer-payload.md](validation/installer-payload.md)。Rust 机旁：[REDMI Rust](validation/redmi-book-14-2025-rust.md)；[P15 Rust](validation/colorful-p15-24-rust.md) 尚未填写。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
 
 **设计已写、验收未过（不得宣称完成）**
 
 - 多块物理屏同时保持关闭  
 - 单独恢复其中一块、其余仍关  
-- 按需启用自带 VDD 后关光全部物理屏  
-- 睡醒后再关的长时保持；P15 睡眠  
+- 按需启用自带 VDD 后关光全部物理屏（Rust MSI 路径未过）  
+- 睡醒后再关；P15 睡眠  
 - 安装器、驱动同意、卸载移除 VDD  
 - 托盘小面板作为日常产品界面  
 
-已删除的调研原型只关内屏、无安装包，不是本设计中的公开产品。
+实验室探针只关路径、无安装包，不是本设计中的公开产品。
 
 **发布规则。** 只发布已验证配置上的行为。能力检测失败则禁用并说明。没有第二活动目标（其它物理屏或自带 VDD）时拒绝关最后一块物理屏。
 
@@ -107,16 +107,10 @@
 | 开机自启 | 默认关，面板里可开 |
 | 架构 | 按需路径引擎 + 独立恢复进程 |
 | 实现栈 | Rust（x64 MSVC）+ egui 小面板 + 原生托盘；传统 WiX 安装包；首版含按需自带 VDD。细节见 [ARCHITECTURE.md](ARCHITECTURE.md) |
-| 实验室代码 | Python 探针长期保留；调研原型 `app/` 已移出工作区 |
+| 实验室代码 | Python 探针长期保留；产品只在 `src/` |
 
 ## 7. 实现状态
 
-`src/` 为 Rust Cargo workspace，`installer/` 仍按 [ARCHITECTURE.md](ARCHITECTURE.md) 打包三个 exe。公开产品仍须按第 5 节验收。C# 源码与调研原型已移出工作区，不得标成已发布产品。
+`src/` 为 Rust Cargo workspace，`installer/` 按 [ARCHITECTURE.md](ARCHITECTURE.md) 打包三个 exe。公开产品仍须按第 5 节验收。
 
-Rust 机旁：REDMI 短时只停内屏已有 `release` 与热键两次系统检查 + 口头（[redmi-book-14-2025-rust.md](validation/redmi-book-14-2025-rust.md)）。P15 Rust、Rust 长时 / 循环 / 睡醒 / 面板点选仍未做。下列条目是 C# 历史进度，不得改写成 Rust 已过：
-
-- COLORFUL P15：短时只停内屏、`release` 与热键恢复已观察；面板按钮与只停外屏仅系统检查
-- 单屏恢复、其余仍关（当前双物理拓扑测不了并发多关）
-- C# 安装器启用自带 VDD 后，REDMI 关光内屏（[系统检查 + 内屏灭口头；恢复闪屏未口头](validation/redmi-book-14-2025-csharp.md)）
-- 睡醒后再关的长时（REDMI 短时合盖已有一次）；P15 未执行睡眠
-
+Rust 机旁：REDMI 短时只停内屏已有 `release` 与热键两次系统检查 + 口头（[redmi-book-14-2025-rust.md](validation/redmi-book-14-2025-rust.md)）。仍未做：P15 Rust、Rust 长时 / 循环 / 睡醒 / 面板点选 / MSI 重装。

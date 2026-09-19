@@ -1,7 +1,7 @@
 # Veil 产品需求文档
 
-版本：0.17  
-状态：公开产品实现为 Rust + egui；不是已发布。C# 产品源码已移出工作区；机旁报告仍是历史，不得写成 Rust 已过。  
+版本：0.18  
+状态：公开产品实现为 Rust + egui；不是已发布。  
 日期：2026-09-19
 
 完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。本文是产品合同：用户要什么、首版做什么、什么算成功。未测项不得写成已兼容。
@@ -23,7 +23,7 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 ### 非目标（首版）
 
-临时关闭、系统熄屏入口、自研显示驱动、把虚拟屏当作可关目标、跨重启自动再关、黑色覆盖层、精确还原窗口布局、跨平台、自研画面传输、静默安装驱动、启用测试签名。不承诺全部设备面板断电。不把调研用最小应用当作已发布产品。
+临时关闭、系统熄屏入口、自研显示驱动、把虚拟屏当作可关目标、跨重启自动再关、黑色覆盖层、精确还原窗口布局、跨平台、自研画面传输、静默安装驱动、启用测试签名。不承诺全部设备面板断电。不把实验室探针当作已发布产品。
 
 ### 关屏成功标准
 
@@ -77,12 +77,12 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 | 事件 | 行为要求 | 证据状态 |
 | --- | --- | --- |
-| 面板关闭 | 后台继续维持保持关闭 | 最小应用托盘有原型，产品面板未做 |
+| 面板关闭 | 后台继续维持保持关闭 | 产品面板未做机旁 |
 | 普通键鼠 | 不解除保持关闭 | 已测配置上成立 |
 | 操作失败 | 具体原因，保留恢复入口 | 须在产品界面兑现 |
-| 界面进程退出异常 | 独立恢复进程回放保存拓扑 | REDMI / P15 父进程退出已测 |
+| 界面进程退出异常 | 独立恢复进程回放保存拓扑 | Python 探针 REDMI / P15 父进程退出已测；Rust 未机旁 |
 | 恢复进程自身崩溃 | 不保证回放拓扑；面板必须结束会话并写明原因 | 拓扑回放仍排除。解绑与 disable 仅有单元测试，机旁未复测 |
-| 睡眠唤醒 | 重新枚举；能留下活动路径则尝试再关，否则结束并说明 | Python REDMI：醒后亮起、未再关。C# REDMI 短时合盖：`reapplied` + 开盖后灭口头 + 热键恢复，见 csharp 附录；长时/P15 未做 |
+| 睡眠唤醒 | 重新枚举；能留下活动路径则尝试再关，否则结束并说明 | Python REDMI：醒后亮起、未再关。Rust 睡醒尚未机旁执行 |
 | 重启 | 不恢复关闭要求 | 设计已锁定 |
 | 拔出 | 标记断开，不对其重试 | 未做产品级热插拔矩阵 |
 | 插入 | 默认开启；同一运行期能认出的原设备可重新应用仍有效要求 | 未做 |
@@ -117,23 +117,21 @@ Veil 是可公开分发的 Windows 屏幕保持关闭工具。用户按物理屏
 
 发布范围 = 已验证配置。矩阵与哈希见验证文档，不把实验室日记写进产品口号。
 
-已记录的可行性证据：
+已记录的证据：
 
-- [REDMI 仅内屏 + VDD（Python）](validation/redmi-book-14-2025-vdd.md)  
-- [P15 内屏 + 实体外接（Python）](validation/colorful-p15-24-aux.md)  
-- [P15 C#](validation/colorful-p15-24-csharp.md)（历史，不是 Rust 已过）  
-- [C# REDMI 短时系统检查](validation/redmi-book-14-2025-csharp.md)（历史，不是 Rust 已过）  
-- [C# 安装器 payload](validation/installer-payload-csharp.md)  
+- [REDMI 仅内屏 + VDD（Python 探针）](validation/redmi-book-14-2025-vdd.md)  
+- [P15 内屏 + 实体外接（Python 探针）](validation/colorful-p15-24-aux.md)  
+- [安装器 payload](validation/installer-payload.md)  
+- [REDMI Rust](validation/redmi-book-14-2025-rust.md)（短时只停内屏：`release` 与热键均有系统检查 + 口头；长时 / 循环 / 睡醒 / MSI 重装未做）  
 - [P15 Rust](validation/colorful-p15-24-rust.md)（尚未机旁执行）  
-- [REDMI Rust](validation/redmi-book-14-2025-rust.md)（短时只停内屏：`release` 与热键均有系统检查 + 口头；长时 / 循环 / 睡醒未做）  
 
 未通过 [产品设计](PRODUCT_DESIGN.md) 第 5 节「仅设计」项之前，不得宣称公开产品已完成。
 
 ## 7. 阶段
 
-1. **需求与设计**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态；[ARCHITECTURE.md](ARCHITECTURE.md) 已锁定实现栈与仓库处置。  
+1. **需求与设计**：PRD 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) 已锁定公开形态；[ARCHITECTURE.md](ARCHITECTURE.md) 已锁定实现栈。  
 2. **机制调研（可行性已收口）**：原生不能停最后一条路径；第二目标可以是实体外接或已签名 VDD。证据见 `validation/`。  
-3. **公开产品实现（Rust，未发布）**：`src/` 为 Rust / egui，`installer/` 为 WiX。C# 源码已移出工作区，不得当发布栈。C# 机旁观察不得继承为 Rust 已过。Rust 仍待：P15 短时只停内屏与热键恢复、Rust MSI 重装、长时 / 循环 / 睡醒 / 崩溃。REDMI 短时只停内屏（`release` + 热键）已有系统检查 + 口头。  
+3. **公开产品实现（Rust，未发布）**：`src/` 为 Rust / egui，`installer/` 为 WiX。REDMI 短时只停内屏（`release` + 热键）已有系统检查 + 口头。仍待：P15 短时只停内屏与热键恢复、Rust MSI 重装、长时 / 循环 / 睡醒 / 崩溃、面板点选。  
 4. **兼容与增强**：扩大硬件矩阵；再评估防睡眠等 P1。
 
 没有实测证据时，不得宣称功能完成或硬件兼容。
