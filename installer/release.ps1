@@ -16,7 +16,7 @@ if (-not $Tag) {
     $Tag = $version.Tag
 }
 elseif ($Tag -ne $version.Tag) {
-    throw ("Tag {0} does not match Directory.Build.props tag {1}." -f $Tag, $version.Tag)
+    throw ("Tag {0} does not match src/version.props tag {1}." -f $Tag, $version.Tag)
 }
 
 if (-not $SkipCleanCheck) {
@@ -32,7 +32,7 @@ if (-not (Test-Path $dotnet)) { throw "dotnet SDK not found: $dotnet" }
 
 if (-not $SkipBuild) {
     if (-not $SkipTest) {
-        & $dotnet test (Join-Path $repo "src\Veil.sln") -p:Platform=x64 --configuration Release
+        cargo test --manifest-path (Join-Path $repo "src\Cargo.toml") --release
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
     & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "pack.ps1")

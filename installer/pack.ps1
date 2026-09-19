@@ -28,8 +28,8 @@ if ($needFetch) {
 & $ps -NoProfile -ExecutionPolicy Bypass -File $validate
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
-if (-not (Test-Path $dotnet)) { throw "dotnet SDK not found: $dotnet" }
+$cargo = Get-Command cargo -ErrorAction SilentlyContinue
+if (-not $cargo) { throw "cargo not found. Install Rust MSVC toolchain." }
 
 $outRoot = Join-Path $PSScriptRoot "out"
 $out = Join-Path $outRoot "app"
@@ -38,27 +38,30 @@ if (Test-Path -LiteralPath $outRoot) {
 }
 New-Item -ItemType Directory -Path $out | Out-Null
 
-$publishProjects = @(
-    @{ Name = "app"; Path = (Join-Path $repo "src\Veil.App\Veil.App.csproj") },
-    @{ Name = "recovery"; Path = (Join-Path $repo "src\Veil.Recovery\Veil.Recovery.csproj") },
-    @{ Name = "helper"; Path = (Join-Path $repo "src\Veil.DriverHelper\Veil.DriverHelper.csproj") }
+$manifest = Join-Path $repo "src\Cargo.toml"
+& cargo build --manifest-path $manifest --release --target x86_64-pc-windows-msvc
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$releaseDir = Join-Path $repo "src\target\x86_64-pc-windows-msvc\release"
+$copies = @(
+    @{ Src = "veil_app.exe"; Dest = "Veil.App.exe" },
+    @{ Src = "veil_recovery.exe"; Dest = "Veil.Recovery.exe" },
+    @{ Src = "veil_driver_helper.exe"; Dest = "Veil.DriverHelper.exe" }
 )
-foreach ($item in $publishProjects) {
-    $stage = Join-Path $outRoot ("stage-" + $item.Name)
-    & $dotnet publish $item.Path `
-        -c Release `
-        -r win-x64 `
-        --self-contained true `
-        -p:Platform=x64 `
-        -p:PublishSingleFile=false `
-        -p:PublishTrimmed=false `
-        -p:DebugType=None `
-        -p:DebugSymbols=false `
-        -o $stage
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Copy-Item -Path (Join-Path $stage "*") -Destination $out -Recurse -Force
+foreach ($item in $copies) {
+    $from = Join-Path $releaseDir $item.Src
+    if (-not (Test-Path -LiteralPath $from)) {
+        $from = Join-Path (Join-Path $repo "src\target\release") $item.Src
+    }
+    if (-not (Test-Path -LiteralPath $from)) {
+        throw "Rust release is missing $($item.Src)"
+    }
+    Copy-Item -LiteralPath $from -Destination (Join-Path $out $item.Dest) -Force
 }
 Copy-Item (Join-Path $PSScriptRoot "payload.manifest.json") (Join-Path $out "payload.manifest.json") -Force
+
+$dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
+if (-not (Test-Path $dotnet)) { throw "dotnet SDK not found (needed to compile WiX): $dotnet" }
 
 $appHost = Join-Path $out "Veil.App.exe"
 $recovery = Join-Path $out "Veil.Recovery.exe"

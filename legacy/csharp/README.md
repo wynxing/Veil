@@ -1,0 +1,9 @@
+# 产品源码
+
+C# / .NET 8 / WPF，仅 x64。这是公开产品实现，不是已发布能力。关屏 APPLY 只发生在 `Veil.Recovery`。
+
+```powershell
+dotnet test src\Veil.sln -p:Platform=x64
+```
+
+`app/` 调研原型保持冻结，直到本工程在已测配置上完成与探针等价的机旁闭环。P15 短时只停内屏与热键恢复已观察；面板按钮与只停外屏仅系统检查。REDMI 安装器 VDD 首次短时只停内屏有系统检查，操作者确认内屏灭了；`release` / disable 有系统检查。第二次手动再关未 APPLY。第三次覆盖二进制后短时 APPLY、热键恢复。第四次约 12 分钟稳定黑屏有口头。第五次 20×15 秒循环系统检查 20/20。恢复闪屏口头未做。睡醒再关未闭环。会话目录现有 `events.jsonl`；面板结束时给出 `记录：session-…`。查看：`tools/show-session.ps1`。

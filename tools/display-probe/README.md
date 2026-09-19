@@ -55,7 +55,7 @@ python tools/display-probe/probe.py temp-off --config out/topology.json --receip
 
 15 秒物理闭环通过后，才可把 `--watchdog-seconds` 改为 600 做 10 分钟测试。20 次循环逐次执行、逐次记录，不自动跳过物理观察或失败。短时恢复未通过时，不执行长时、睡眠唤醒和虚拟目标移除测试。
 
-最小应用（托盘原型，不是安装包）见 [app/README.md](../../app/README.md)。保持关闭使用 worker `--seconds 0`，直到热键、`release.json` 或父进程退出。
+产品保持关闭见仓库 `src/`（Rust）。探针 worker `--seconds 0` 仍可用于实验室：直到热键、`release.json` 或父进程退出。调研原型已从仓库移除。
 
 ## 辅助脚本
 

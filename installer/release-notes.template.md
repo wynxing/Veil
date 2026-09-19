@@ -5,6 +5,6 @@
 - 仅面向 **Windows 11 x64**。Windows 10、ARM 与其它机器未测，不得写入支持列表。
 - 已记录过机旁/系统检查的机器：XIAOMI REDMI Book 14 2025（安装器自带 VDD）、COLORFUL P15 24（实体外接）。不是全平台兼容。
 - 自带 MTT 是显示驱动，用于没有外接屏时关掉笔记本屏幕。安装时不同意则不要装 VDD。
-- 产物：`{{SETUP_FILE}}`（自包含 win-x64）。请核对本 Release 的 `SHA256SUMS.txt`。
+- 产物：`{{SETUP_FILE}}`（Rust x64 MSVC + WiX，无 .NET 运行时）。请核对本 Release 的 `SHA256SUMS.txt`。
 
 流程与延后项见仓库 `doc/RELEASE.md`。

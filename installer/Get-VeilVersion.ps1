@@ -8,7 +8,7 @@ function Get-VeilVersion {
         if (-not $installerDir) {
             $installerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
         }
-        $PropsPath = Join-Path (Split-Path -Parent $installerDir) "src\Directory.Build.props"
+        $PropsPath = Join-Path (Split-Path -Parent $installerDir) "src\version.props"
     }
 
     if (-not (Test-Path -LiteralPath $PropsPath)) {
@@ -17,7 +17,7 @@ function Get-VeilVersion {
 
     $text = Get-Content -LiteralPath $PropsPath -Raw -Encoding UTF8
     if ($text -notmatch '<Version>([^<]+)</Version>') {
-        throw "Directory.Build.props is missing <Version>"
+        throw "Version file is missing <Version>"
     }
     $version = $Matches[1].Trim()
     if ($version -notmatch '^\d+\.\d+\.\d+$') {
