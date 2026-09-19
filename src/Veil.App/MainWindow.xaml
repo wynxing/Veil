@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Veil"
+        AutomationProperties.AutomationId="VeilPanel"
         Width="420"
         MinWidth="360"
         Height="460"
@@ -18,7 +19,9 @@
         <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
             <TextBlock Text="{Binding HotkeyStatus}" Margin="0,0,0,8"/>
             <CheckBox Content="开机自启（默认关，不跨重启再关屏）" IsChecked="{Binding StartupEnabled}"/>
-            <Button Content="恢复全部" Margin="0,12,0,0" Padding="10,6" Click="RestoreAll_Click"/>
+            <Button Content="恢复全部" Margin="0,12,0,0" Padding="10,6"
+                    Click="RestoreAll_Click"
+                    AutomationProperties.AutomationId="RestoreAllButton"/>
             <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#444" Text="{Binding Detail}"/>
         </StackPanel>
         <ItemsControl Margin="0,16,0,8" ItemsSource="{Binding Screens}">
@@ -43,10 +46,12 @@
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button Content="保持关闭" Margin="8,0,0,0" Padding="8,4"
                                         Click="KeepOff_Click"
-                                        IsEnabled="{Binding CanKeepOff}"/>
+                                        IsEnabled="{Binding CanKeepOff}"
+                                        AutomationProperties.AutomationId="{Binding KeepOffAutomationId}"/>
                                 <Button Content="恢复" Margin="8,0,0,0" Padding="8,4"
                                         Click="Restore_Click"
-                                        IsEnabled="{Binding CanRestore}"/>
+                                        IsEnabled="{Binding CanRestore}"
+                                        AutomationProperties.AutomationId="{Binding RestoreAutomationId}"/>
                             </StackPanel>
                         </Grid>
                     </Border>

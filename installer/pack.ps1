@@ -15,9 +15,16 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $dotnet = Join-Path $env:ProgramFiles "dotnet\dotnet.exe"
 if (-not (Test-Path $dotnet)) { throw "未找到 .NET SDK： $dotnet" }
 
-& $dotnet publish (Join-Path $repo "src\Veil.App\Veil.App.csproj") -c Release -p:Platform=x64 -o (Join-Path $PSScriptRoot "out\app")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Copy-Item (Join-Path $PSScriptRoot "payload.manifest.json") (Join-Path $PSScriptRoot "out\app\payload.manifest.json") -Force
+$out = Join-Path $PSScriptRoot "out\app"
+foreach ($proj in @(
+        (Join-Path $repo "src\Veil.App\Veil.App.csproj"),
+        (Join-Path $repo "src\Veil.Recovery\Veil.Recovery.csproj"),
+        (Join-Path $repo "src\Veil.DriverHelper\Veil.DriverHelper.csproj")
+    )) {
+    & $dotnet publish $proj -c Release -p:Platform=x64 -o $out
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+Copy-Item (Join-Path $PSScriptRoot "payload.manifest.json") (Join-Path $out "payload.manifest.json") -Force
 
 $wix = Join-Path $PSScriptRoot "Veil.Setup\Veil.Setup.wixproj"
 & $dotnet build $wix -c Release
@@ -26,4 +33,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $bundle = Join-Path $PSScriptRoot "Veil.Setup\Veil.Bundle.wixproj"
 if (Test-Path $bundle) {
     & $dotnet build $bundle -c Release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

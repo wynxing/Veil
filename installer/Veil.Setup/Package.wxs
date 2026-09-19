@@ -16,7 +16,7 @@
       <ComponentGroupRef Id="AppFiles" />
     </Feature>
     <Feature Id="BundledVdd" Title="自带虚拟显示驱动" Description="这是显示驱动，用于没有外接屏时关掉笔记本屏幕。默认安装为禁用设备。" Level="1">
-      <Condition Level="0">INSTALLVDD=0</Condition>
+      <Level Value="0" Condition="INSTALLVDD=0" />
       <ComponentGroupRef Id="VddFiles" />
     </Feature>
 

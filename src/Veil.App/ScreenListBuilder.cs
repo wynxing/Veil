@@ -14,6 +14,8 @@ public sealed class ScreenItem
     public required bool CanRestore { get; init; }
     public required string StatusText { get; init; }
     public required string BlockReason { get; init; }
+    public string KeepOffAutomationId => "KeepOffButton-" + Identity.TargetId;
+    public string RestoreAutomationId => "RestoreButton-" + Identity.TargetId;
 }
 
 public static class ScreenListBuilder

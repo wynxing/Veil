@@ -1,7 +1,7 @@
 # Veil 公开产品设计
 
 版本：1.4  
-状态：设计已锁定；C# 代码已开始；P15 短时只停内屏与热键恢复已有机旁观察，不是已发布能力  
+状态：设计已锁定；C# 代码已开始；P15 短时只停内屏与热键恢复已有机旁观察；面板按钮与只停外屏仅有系统检查。不是已发布能力  
 日期：2026-09-18
 
 本文是可公开产品的完整设计，不是实验室最小应用说明。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与现存代码处置见 [ARCHITECTURE.md](ARCHITECTURE.md)。机制可行性与机旁证据见 [TECH_VALIDATION.md](TECH_VALIDATION.md) 与 `validation/`。没有实测证据的条目不得写成已完成或已兼容。
@@ -22,7 +22,7 @@
 
 **首版不做。** 临时关闭、系统熄屏入口、把虚拟屏当作可关目标、跨重启自动再关、黑色覆盖层、自研显示驱动、精确还原窗口布局、静默安装驱动、启用测试签名、防睡眠（P1，独立选项，默认不改电源计划）。
 
-**睡眠与重启。** 重启后保持关闭要求清空，屏幕按系统结果亮着。睡眠唤醒后重新枚举：原保持关闭的物理屏仍连接、且仍能留下一条活动路径（另一块物理屏或按需自带 VDD）时，尝试把仍有效的要求再打上；否则结束保持关闭，说明原因，屏幕按系统结果亮着。该「睡醒后再关」闭环尚未通过。公开版在闭环通过前：再关失败必须停手并告诉用户，禁止循环 apply。
+**睡眠与重启。** 重启后保持关闭要求清空，屏幕按系统结果亮着。睡眠唤醒后重新枚举：原保持关闭的物理屏仍连接、且仍能留下一条活动路径（另一块物理屏或按需自带 VDD）时，尝试把仍有效的要求再打上；否则结束保持关闭，说明原因，屏幕按系统结果亮着。该「睡醒后再关」闭环尚未通过。公开版在闭环通过前：再关失败必须停手并告诉用户，禁止循环 apply。C# 睡醒机旁仍未执行。
 
 ## 2. 运行时架构
 
@@ -74,9 +74,9 @@
 | 配置 | 已记录 | 未做 |
 | --- | --- | --- |
 | REDMI Book 14 2025，仅内屏 | 原生停最后路径 VALIDATE 87。已签名 MTT VDD 作第二目标后，只停内屏：短时、10 分钟、20 次循环、父进程崩溃恢复、睡醒后内屏亮起且未自动再关。关屏期间禁用虚拟适配器则保持关闭结束。 | 实体外接 |
-| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针 / 冻结 `app/`：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。C# 产品：短时只停内屏；`release.json` 与热键恢复；操作者确认内屏灭、外屏能用、恢复时闪一下。 | C# 面板按钮恢复；C# 只停外屏；单屏恢复其余仍关；C# 长时/循环/崩溃；P15 睡眠；按需 VDD |
+| COLORFUL P15 24，内屏 + S24Q6-Q24G8 | 不额外安装 VDD。Python 探针 / 冻结 `app/`：只停内屏短时、10 分钟、循环、崩溃；只停外屏短时。C# 产品：短时只停内屏；`release.json` 与热键恢复（机旁）；面板「恢复」/「恢复全部」与只停外屏 `adjustedOrigin`（系统检查，外屏口头机旁未做）。 | 只停外屏口头机旁；单屏恢复其余仍关（双物理无 VDD 测不了并发）；C# 长时/循环/崩溃；P15 睡眠；按需 VDD |
 
-细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md) 与 [validation/colorful-p15-24-csharp.md](validation/colorful-p15-24-csharp.md)。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
+细节与哈希见 [validation/redmi-book-14-2025-vdd.md](validation/redmi-book-14-2025-vdd.md)、[validation/colorful-p15-24-aux.md](validation/colorful-p15-24-aux.md)、[validation/colorful-p15-24-csharp.md](validation/colorful-p15-24-csharp.md)、[validation/redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md) 与 [validation/installer-payload-csharp.md](validation/installer-payload-csharp.md)。原始拓扑字节留本机主仓库 `.git/veil-validation-*`，不随 Git 分发。
 
 **设计已写、验收未过（不得宣称完成）**
 
@@ -115,8 +115,8 @@
 
 C# 待机旁复测（未完成，不得把下列未选项写成已验证）：
 
-- COLORFUL P15：短时只停内屏、`release` 与热键恢复已观察；面板按钮恢复、只停外屏未做
-- 单屏恢复、其余仍关
-- 安装器启用自带 VDD 后，REDMI 关光内屏
-- 睡醒后单次再关（失败即停）
+- COLORFUL P15：短时只停内屏、`release` 与热键恢复已观察；面板按钮与只停外屏仅系统检查
+- 单屏恢复、其余仍关（当前双物理拓扑测不了并发多关）
+- 安装器启用自带 VDD 后，REDMI 关光内屏（[未执行](validation/redmi-book-14-2025-csharp.md)）
+- 睡醒后单次再关（失败即停；P15 未执行睡眠）
 

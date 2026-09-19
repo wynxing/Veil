@@ -20,4 +20,4 @@
 
 ## vdd_settings.xml 路径
 
-产品把配置写到 `%ProgramFiles%\Veil\vdd\vdd_settings.xml`。MTT 驱动是否只认该目录、或仍写死 `C:\VirtualDisplayDriver`，**尚未用捆绑 DLL 核对**。未核对该路径前，不得宣称按需 VDD 安装路径已验证。
+产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload-csharp.md](../doc/validation/installer-payload-csharp.md)。这不是 REDMI 安装器路径已通过，也不是可公开安装。

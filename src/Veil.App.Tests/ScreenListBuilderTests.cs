@@ -17,6 +17,8 @@ public sealed class ScreenListBuilderTests
         ]);
         var items = ScreenListBuilder.Build(snap, null, [], false, true, true);
         Assert.Equal(new[] { "Panel", "S24" }, items.Select(i => i.Name));
+        Assert.Equal("KeepOffButton-1", items[0].KeepOffAutomationId);
+        Assert.Equal("RestoreButton-3", items[1].RestoreAutomationId);
         Assert.DoesNotContain(items, i => i.Name.Contains("VDD"));
     }
 

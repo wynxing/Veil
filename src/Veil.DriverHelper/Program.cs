@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Veil.Engine;
 using Veil.Engine.Native;
 
 namespace Veil.DriverHelper;
@@ -46,11 +47,22 @@ internal static class Program
     {
         var payload = ResolvePayload();
         ValidatePayload(payload);
-        WriteSettings(payload.VddDir);
+        IReadOnlyList<string> created;
+        try
+        {
+            created = BundledVddSettings.WriteXml(payload.VddDir, BundledVddSettings.DriverReadsDirectory);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+
         var inf = Path.Combine(payload.VddDir, "MttVDD.inf");
         var rc = Run(payload.Nefcon, $"install \"{inf}\" {CcdConstants.BundledHardwareId} --no-duplicates");
         if (rc != 0)
         {
+            BundledVddSettings.RollbackCreated(created);
             return rc;
         }
 
@@ -65,9 +77,12 @@ internal static class Program
         var inf = Path.Combine(payload.VddDir, "MttVDD.inf");
         if (File.Exists(payload.Nefcon) && File.Exists(inf))
         {
-            return Run(payload.Nefcon, $"remove {CcdConstants.BundledHardwareId} --force");
+            var rc = Run(payload.Nefcon, $"remove {CcdConstants.BundledHardwareId} --force");
+            TryRemoveDriverSettingsCopy();
+            return rc;
         }
 
+        TryRemoveDriverSettingsCopy();
         return 0;
     }
 
@@ -158,21 +173,8 @@ internal static class Program
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    private static void WriteSettings(string vddDir)
-    {
-        Directory.CreateDirectory(vddDir);
-        var xml = """
-            <?xml version="1.0" encoding="utf-8"?>
-            <vdd_settings>
-              <monitors><count>1</count></monitors>
-              <gpu><friendlyname>default</friendlyname></gpu>
-              <global><g_refresh_rate>60</g_refresh_rate></global>
-              <resolutions><resolution><width>1920</width><height>1200</height><refresh_rate>60</refresh_rate></resolution></resolutions>
-              <options><CustomEdid>false</CustomEdid><PreventSpoof>false</PreventSpoof><EdidCeaOverride>false</EdidCeaOverride><HardwareCursor>true</HardwareCursor><SDR10bit>false</SDR10bit><HDRPlus>false</HDRPlus><logging>false</logging><debuglogging>false</debuglogging></options>
-            </vdd_settings>
-            """;
-        File.WriteAllText(Path.Combine(vddDir, "vdd_settings.xml"), xml);
-    }
+    private static void TryRemoveDriverSettingsCopy() =>
+        BundledVddSettings.TryRemoveOwnedFile(BundledVddSettings.DriverReadsDirectory);
 
     private static int Run(string file, string args)
     {

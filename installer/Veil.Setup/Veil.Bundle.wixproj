@@ -4,6 +4,7 @@
     <OutputName>VeilSetup</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
     <DefineConstants>PackageMsi=$(MSBuildThisFileDirectory)bin\$(Configuration)\Veil.msi</DefineConstants>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.Bal.wixext" Version="5.0.2" />
@@ -11,5 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Bundle.wxs" />
+    <Compile Remove="Package.wxs;Files.wxs" />
   </ItemGroup>
 </Project>

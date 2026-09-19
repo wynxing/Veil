@@ -1,7 +1,7 @@
 # Veil 技术架构
 
 版本：1.2  
-状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察，公开产品未发布  
+状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；公开产品未发布  
 日期：2026-09-18
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
@@ -205,7 +205,7 @@ tools/display-probe/      长期保留的 Python 实验室
 app/                      冻结的调研原型，直到 C# 达到同等闭环
 ```
 
-`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。`MttVDD.dll` 读取 `vdd_settings.xml` 的路径尚未用捆绑包核对，不得假装已解决。
+`src/` 与 `installer/` 已在 `product/dotnet-v1` 创建。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。这不是 REDMI 安装已通过，见 [installer-payload-csharp.md](validation/installer-payload-csharp.md)。
 
 ### 8.2 现存路径
 
