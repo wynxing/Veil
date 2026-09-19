@@ -203,4 +203,15 @@ public static class SessionPaths
     public static string Release(string dir) => Path.Combine(dir, "release.json");
     public static string Heartbeat(string dir) => Path.Combine(dir, "heartbeat.json");
     public static string Result(string dir) => Path.Combine(dir, "result.json");
+    public static string Events(string dir) => Path.Combine(dir, "events.jsonl");
+    public static string VddRequest(string dir) => Path.Combine(dir, "vdd-request.json");
+}
+
+public sealed class VddRequestFile
+{
+    [JsonPropertyName("at")]
+    public double At { get; set; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "reapply";
 }
