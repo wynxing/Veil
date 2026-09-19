@@ -1,7 +1,7 @@
 # Veil 技术架构
 
 版本：1.4  
-状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；REDMI 安装器 VDD 首次短时有系统检查，操作者确认内屏灭了；第二次手动再关未 APPLY，面板曾卡在等待 arm。公开产品未发布  
+状态：实现栈已锁定；`src/` 与 `installer/` 已创建；P15 C# 短时只停内屏与热键恢复已观察；REDMI 安装器 VDD 首次短时有系统检查，操作者确认内屏灭了；第二次手动再关未 APPLY；第三次覆盖二进制后 CCD 短时内 0 / 辅 1、热键恢复。公开产品未发布  
 日期：2026-09-19
 
 本文是公开产品的实现架构，不是实验室日记。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，实验规则见 [TECH_VALIDATION.md](TECH_VALIDATION.md)。没有实测证据的条目不得写成已完成或已兼容。
@@ -136,7 +136,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 结束原因需能区分：`hotkey`、`release`、`parent-exit`、`execution-gap`（调度间隙，常见于睡眠）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。
 
-创建恢复进程时使用 `CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`。父进程崩溃不得带走恢复进程。恢复进程自身崩溃仍不保证回放拓扑；界面必须结束该会话并写明原因。有剩余活动物理屏且本会话用过自带 VDD 时，尝试 disable。人工兜底仍是 `Win+Ctrl+Shift+B`，再不行重启。该解绑路径仅有单元测试，机旁未复测。
+创建恢复进程时使用 `CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`。父进程崩溃不得带走恢复进程。恢复进程自身崩溃仍不保证回放拓扑；界面必须结束该会话并写明原因。有剩余活动物理屏且本会话用过自带 VDD 时，尝试 disable。人工兜底仍是 `Win+Ctrl+Shift+B`，再不行重启。该解绑路径有单元测试；REDMI 第三次再关未复现进程中途退出，因此机旁仍未验证解绑。
 
 热键：`MOD_NOREPEAT | MOD_SHIFT | MOD_CONTROL | MOD_ALT` + `VK_F10`（与探针 `0x4007, 0x79` 相同）。注册失败则拒绝关屏，面板必须可见地写「不可用」。
 
@@ -184,7 +184,7 @@ WPF 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台�
 
 退出或恢复全部物理屏后，尽力禁用自带设备，避免留下一块用户没要的虚拟屏。禁用失败要可见，不能假装卸掉了。卸载顺序：恢复物理屏 → 禁用并删除自带设备 → 删文件。
 
-REDMI 上产品安装器路径已有一次短时闭环：装完禁用、面板 enable、只停内屏（系统检查 + 操作者确认内屏灭）、`release` 后 disable。第二次手动再关：恢复进程中途退出、无 `result.json`、未 APPLY，面板卡在「等待 arm」，自带 VDD 留下；见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)。恢复闪屏口头未做。启用/禁用是否处处不需重启、睡眠后设备是否仍在，仍未验证。不可公开安装，也不得写成全平台可用。
+REDMI 上产品安装器路径已有一次短时闭环：装完禁用、面板 enable、只停内屏（系统检查 + 操作者确认内屏灭）、`release` 后 disable。第二次手动再关失败。第三次覆盖 `63e1057` 后再关：CCD 短时内 0 / 辅 1，热键恢复并 disable；见 [redmi-book-14-2025-csharp.md](validation/redmi-book-14-2025-csharp.md)。恢复闪屏口头未做。启用/禁用是否处处不需重启、睡眠后设备是否仍在，仍未验证。不可公开安装，也不得写成全平台可用。
 
 ## 8. 仓库布局与现存代码处置
 

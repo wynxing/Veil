@@ -1,6 +1,6 @@
 # 验证结果：REDMI Book 14 2025 上的 C# 安装器 VDD 短时闭环
 
-状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。**第二次**手动再关未 APPLY：恢复进程中途退出、无 `result.json`、心跳停在「等待 arm」，面板两个按钮灰掉；CCD 仍是内 1 / 辅 1 克隆。恢复闪屏、辅助输出是否可见未口头确认。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
+状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。**第二次**手动再关未 APPLY，面板假死。**第三次**把 `63e1057` 的 Release 覆盖进 `%ProgramFiles%\Veil`（不是新 MSI）：CCD 采样 0–4 为内 0 / 辅 1，约数秒后 `reason=hotkey` 恢复，VDD 回到 Code 22，面板按钮重新可点。不是 15 秒 `release.json` 闭环，也没有复现恢复进程死后面板假死。恢复闪屏、辅助输出是否可见未口头确认。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
 日期：2026-09-19
 
 ## 环境
@@ -12,7 +12,7 @@
 | 拓扑 | 不接外屏。装前仅内屏 `DISPLAY\TMA0813` `targetId=8388688` |
 | 软件 | 工作树 `verify/csharp-redmi-vdd` 打出的 `Veil.msi` / `VeilSetup.exe`；APPLY 仅 `Veil.Recovery` |
 | 安装方式 | `msiexec /i Veil.msi INSTALLVDD=1 /qn`。Burn 无单独驱动同意页；本轮未走交互 Burn UI |
-| 会话 | 首次 `session-93d37ce1`；第二次 `session-193371b1` |
+| 会话 | 首次 `session-93d37ce1`；第二次 `session-193371b1`；第三次 `session-4e437d38` |
 | 证据 | 本机主仓库 `.git/veil-validation-20260919-csharp-redmi/`，不随 Git 分发 |
 
 ## 本轮先做的实验室清理
@@ -61,6 +61,7 @@
 | 6 | 恢复后 disable | 再次 Code 22 | 未口头确认虚拟屏消失 | 系统检查：未留下活动自带 VDD |
 | 7 | 亲手热键 / 10 分钟 / 循环 / 崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
 | 8 | 第二次手动再关 | 无 APPLY、无 `result.json` | 操作者：无黑屏、无闪屏 | 关屏未落地；面板假死 |
+| 9 | 覆盖 `63e1057` 后再关 | 采样 0–4 内 0 / 辅 1；`reason=hotkey` restore=0 | 未口头记画面 | 短时 APPLY 有系统检查；不是 15 秒 release 闭环 |
 
 ## 第二次手动再关（失败）
 
@@ -76,17 +77,27 @@
 
 这与第一次 `session-93d37ce1`（关屏中内 0 / 辅 1）不是同一结果。不能把第二次写成保持关闭成立。
 
-界面关掉后，把该会话拷到证据目录，并在内屏仍活动的前提下禁用留下的 VDD。代码侧补了：恢复进程死后由 App 写 `recovery-exit` 并结束会话；未 arm 也响应 `release.json`；心跳写入失败不再把恢复进程打挂。**这些修复只有单元测试，本机未用新构建再跑关屏。**
+界面关掉后，把该会话拷到证据目录，并在内屏仍活动的前提下禁用留下的 VDD。代码侧补了：恢复进程死后由 App 写 `recovery-exit` 并结束会话；未 arm 也响应 `release.json`；心跳写入失败不再把恢复进程打挂。
+
+## 第三次覆盖二进制后再关
+
+13:55 用 `main` `63e1057` 的 Release 覆盖 `%ProgramFiles%\Veil` 的 App / Recovery / Engine / DriverHelper，**没有**重打 MSI。VDD 覆盖前已是 `CM_PROB_DISABLED`。
+
+`session-4e437d38`：`ready.json` pid 5420，热键已注册；`intent.json` 只关内屏、`vddAssist=true`。脚本没点到启用确认框（本机可能已手动点过 UAC/确定）。
+
+CCD：`enumerate-0` 至 `enumerate-4` 为 `activeInternal=0`、`activeAuxiliary=1`；`enumerate-5` 起回到内 1 / 辅 0。心跳「已保持关闭。」`result.json`：`reason=hotkey`，`ok=true`，`applyRc=0`，`restoreRc=0`，`adjustedClone=false`。约 8 秒内恢复进程已退出——这是热键正常结束，不是再次中途崩溃。脚本后写的 `release.json` 来晚了，不计入本次恢复机制。
+
+恢复后：`ROOT\DISPLAY\0000` 再次 Code 22；枚举哈希与清理后基线相同；面板「保持关闭」可点。未复现「恢复进程死、无 result、面板假死」。未做满 15 秒、未口头确认内屏/闪屏。不可公开安装。
 
 ## 未做
 
 - 操作者口头确认辅助输出是否可见、恢复是否闪一下  
-- 亲手按 `Ctrl+Alt+Shift+F10` 预检  
+- 预检式亲手热键（第三次结果是热键恢复，但不是按预检脚本按的）  
 - Burn 交互同意页；`INSTALLVDD=0` 只装应用  
 - C# 10 分钟、20 次循环、父进程崩溃  
 - 睡醒再关  
 - 代码签名、可公开安装
-- 用含「恢复进程退出解绑」的新构建再跑 REDMI 关屏
+- 用新构建复现「恢复进程死后面板解绑」
 
 ## 证据
 
@@ -111,3 +122,10 @@
 | `manual-orphan-193371b1/session-193371b1/release.json` | `813C03CE27824A5495208AD986F0866AC53C26AA4C13D4431B402CB071FED2B3` |
 | `manual-orphan-193371b1/after-cleanup-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
 | `manual-orphan-193371b1/after-pnp.txt` | `AC937B3BFE72DD1EF1E70DB7925A5694DE6CC330224BDCB22AE28ACC83C73264` |
+| `retest-orphan-fix/before-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
+| `retest-orphan-fix/during/enumerate-0.txt` | `0EF4A07BF5124C2275B0D2134CEE5D489F6A813BD70A90975D6B2F7459EA05F8` |
+| `retest-orphan-fix/during/enumerate-5.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
+| `retest-orphan-fix/session-after/result.json` | `C6355DDD6F99A86FA21254523EF12C2BEBD178AF2A69BD2C095C5C77D55705FF` |
+| `retest-orphan-fix/session-after/intent.json` | `277605327C54BF57230F59FEB260BD631B975C6C3EAB7808C0F7BEF9D9C055C6` |
+| `retest-orphan-fix/after-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
+| `retest-orphan-fix/after-pnp.txt` | `AC937B3BFE72DD1EF1E70DB7925A5694DE6CC330224BDCB22AE28ACC83C73264` |
