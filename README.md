@@ -10,7 +10,11 @@ Veil 是可公开设计中的 Windows 屏幕保持关闭工具：按物理屏决
 dotnet test src\Veil.sln -p:Platform=x64
 ```
 
-安装器需要已核验 payload，见 [installer/README.md](installer/README.md)。无 payload 时安装器构建应失败。安装包未代码签名，不得标「可公开安装」。
+安装器需要已核验 payload，见 [installer/README.md](installer/README.md)。缺文件时可先跑 `installer/FetchPayload.ps1`；无 payload 时安装器构建应失败。安装包未代码签名，不得标「可公开安装」。
+
+## 预览下载（不是可公开安装）
+
+私有仓库在打 `v*` 标签后，会把无签名预览包 `VeilSetup-*-x64.exe` 挂到 [GitHub Releases](https://github.com/wynxing/Veil/releases)。这是协作者自用预览：SmartScreen 会警告，**不得标可公开安装**，也不是公开产品已发布。流程见 [预览发布](doc/RELEASE.md)。
 
 ## 希望解决的问题
 
@@ -41,4 +45,5 @@ dotnet test src\Veil.sln -p:Platform=x64
 - [最小应用](app/README.md)：已冻结的调研原型，仅本机已验证配置。
 - [产品工程](src/)：C# / WPF。P15 短时只停内屏与热键恢复已观察；面板按钮与只停外屏仅有系统检查。不是已发布。
 - [安装器](installer/README.md)：WiX 5；payload 缺失则构建失败。本地包无签名，不可公开安装。
+- [预览发布](doc/RELEASE.md)：私有 Release、版本、fetch/pack/tag。不是可公开安装。
 - [协作规范](AGENTS.md)：工作树开发与清理要求。

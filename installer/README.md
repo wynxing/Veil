@@ -4,11 +4,12 @@
 
 ## 构建
 
-1. 按 [payload/README.md](payload/README.md) 放入已核验的 VDD 与 NefCon。
+1. 运行 `installer/FetchPayload.ps1`，或按 [payload/README.md](payload/README.md) 放入已核验的 VDD 与 NefCon。
 2. 运行 `installer/ValidatePayload.ps1`：缺失或哈希/签名不符会失败。
-3. 运行 `installer/pack.ps1` 发布应用并编译 MSI/Bundle。
+3. 运行 `installer/pack.ps1`：自包含发布应用并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
+4. 打 `v*` 标签后由 CI 挂 GitHub prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
 
-无 payload 时不得打出缺驱动的包。实验室脚本 `tools/display-probe/install-vdd.ps1` 不得被调用。
+无 payload 时不得打出缺驱动的包。实验室脚本 `tools/display-probe/install-vdd.ps1` 不得被调用。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。这不是可公开安装。
 
 ## 安装行为
 

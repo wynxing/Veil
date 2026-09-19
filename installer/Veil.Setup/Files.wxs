@@ -8,50 +8,14 @@
 
   <Fragment>
     <ComponentGroup Id="AppFiles" Directory="INSTALLDIR">
-      <Component Id="VeilAppExe" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.App.exe" KeyPath="yes" />
+      <Component Id="VeilUninstallDisplayName" Guid="c8e4a7b1-2f6d-4a91-9c33-7d1e0b5a4f22">
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Veil"
-                       Name="DisplayName" Value="Veil" Type="string" />
+                       Name="DisplayName" Value="Veil" Type="string" KeyPath="yes" />
       </Component>
-      <Component Id="VeilAppDll" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.App.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilAppRuntime" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.App.runtimeconfig.json" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilAppDeps" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.App.deps.json" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilEngineDll" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.Engine.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilRecoveryExe" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.Recovery.exe" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilRecoveryDll" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.Recovery.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilRecoveryRuntime" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.Recovery.runtimeconfig.json" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilRecoveryDeps" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.Recovery.deps.json" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilDriverHelperExe" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.DriverHelper.exe" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilDriverHelperDll" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.DriverHelper.dll" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilDriverHelperRuntime" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.DriverHelper.runtimeconfig.json" KeyPath="yes" />
-      </Component>
-      <Component Id="VeilDriverHelperDeps" Guid="*">
-        <File Source="$(var.PublishDir)\Veil.DriverHelper.deps.json" KeyPath="yes" />
-      </Component>
-      <Component Id="PayloadManifest" Guid="*">
-        <File Source="$(var.PublishDir)\payload.manifest.json" KeyPath="yes" />
-      </Component>
+      <Files Include="$(var.PublishDir)\**">
+        <Exclude Files="$(var.PublishDir)\*.pdb" />
+        <Exclude Files="$(var.PublishDir)\**\*.pdb" />
+      </Files>
     </ComponentGroup>
 
     <ComponentGroup Id="VddFiles">

@@ -24,7 +24,7 @@ foreach ($name in $manifest.files.PSObject.Properties.Name) {
 }
 
 if ($missing.Count) {
-    throw ("Installer payload missing: {0}. Place verified files in installer/payload/. See installer/payload/README.md" -f ($missing -join ", "))
+    throw ("Installer payload missing: {0}. Run installer/FetchPayload.ps1 or place verified files in installer/payload/. See installer/payload/README.md" -f ($missing -join ", "))
 }
 
 foreach ($signedName in @("vdd/mttvdd.cat", "vdd/MttVDD.dll", "nefcon/x64/nefconc.exe")) {

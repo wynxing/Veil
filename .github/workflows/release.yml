@@ -1,0 +1,38 @@
+name: preview-release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Fetch payload
+        shell: pwsh
+        run: ./installer/FetchPayload.ps1 -Force
+
+      - name: Test
+        run: dotnet test src/Veil.sln -p:Platform=x64 --configuration Release
+
+      - name: Pack
+        shell: pwsh
+        run: ./installer/pack.ps1
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./installer/release.ps1 -SkipBuild -SkipCleanCheck -Tag $env:GITHUB_REF_NAME

@@ -3,7 +3,8 @@
     <OutputType>Package</OutputType>
     <OutputName>Veil</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
-    <DefineConstants>PublishDir=$(MSBuildThisFileDirectory)..\out\app;PayloadDir=$(MSBuildThisFileDirectory)..\payload</DefineConstants>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <DefineConstants>PublishDir=$(MSBuildThisFileDirectory)..\out\app;PayloadDir=$(MSBuildThisFileDirectory)..\payload;ProductVersion=$(ProductVersion)</DefineConstants>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

@@ -3,7 +3,8 @@
     <OutputType>Bundle</OutputType>
     <OutputName>VeilSetup</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
-    <DefineConstants>PackageMsi=$(MSBuildThisFileDirectory)bin\$(Configuration)\Veil.msi</DefineConstants>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
+    <DefineConstants>PackageMsi=$(MSBuildThisFileDirectory)bin\$(Configuration)\Veil.msi;ProductVersion=$(ProductVersion)</DefineConstants>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
