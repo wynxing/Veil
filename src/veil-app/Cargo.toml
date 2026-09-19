@@ -12,7 +12,7 @@ bench = false
 
 [dependencies]
 veil-engine = { path = "../veil-engine" }
-eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
 egui = "0.31"
 tray-icon = "0.19"
 windows-sys = { version = "0.59", features = [

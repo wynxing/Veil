@@ -15,6 +15,12 @@
       <Component Id="VeilApp" Guid="a1f3c8e2-7b14-4d6a-9e20-1c5d8f3a6b47">
         <File Id="VeilAppExe" Source="$(var.PublishDir)\Veil.App.exe" KeyPath="yes" />
       </Component>
+      <Component Id="VeilStartMenu" Directory="VeilMenuDir" Guid="e5b7a2c6-1f58-4a0e-d264-5f912d7e0a8b">
+        <Shortcut Id="VeilStartMenuShortcut" Name="Veil" Description="Veil 屏幕保持关闭"
+                  Target="[#VeilAppExe]" WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="VeilMenuDir" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\Veil" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
       <Component Id="VeilRecovery" Guid="b2e4d9f3-8c25-4e7b-af31-2d6e9a4b7c58">
         <File Id="VeilRecoveryExe" Source="$(var.PublishDir)\Veil.Recovery.exe" KeyPath="yes" />
       </Component>

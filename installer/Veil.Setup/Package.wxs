@@ -13,6 +13,9 @@
         </Directory>
       </Directory>
     </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="VeilMenuDir" Name="Veil" />
+    </StandardDirectory>
 
     <Property Id="INSTALLVDD" Value="1" />
     <Feature Id="App" Title="Veil 应用" Level="1">
