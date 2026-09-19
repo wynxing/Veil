@@ -1,6 +1,6 @@
 # 验证结果：REDMI Book 14 2025 上的 C# 安装器 VDD 短时闭环
 
-状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。面板确认后 `DriverHelper enable`，短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。恢复闪屏、辅助输出是否可见未口头确认。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
+状态：本机已卸实验室 MTT，用无签名 MSI（`INSTALLVDD=1`）装上禁用态自带 VDD。**第一次**短时只停内屏有系统检查；操作者确认关屏期间**内屏灭了**。`release.json` 恢复后设备回到 `CM_PROB_DISABLED`。**第二次**手动再关未 APPLY：恢复进程中途退出、无 `result.json`、心跳停在「等待 arm」，面板两个按钮灰掉；CCD 仍是内 1 / 辅 1 克隆。恢复闪屏、辅助输出是否可见未口头确认。不是已发布、不可公开安装。不得把 Python [redmi-book-14-2025-vdd.md](redmi-book-14-2025-vdd.md) 写成 C# 已过。  
 日期：2026-09-19
 
 ## 环境
@@ -12,7 +12,7 @@
 | 拓扑 | 不接外屏。装前仅内屏 `DISPLAY\TMA0813` `targetId=8388688` |
 | 软件 | 工作树 `verify/csharp-redmi-vdd` 打出的 `Veil.msi` / `VeilSetup.exe`；APPLY 仅 `Veil.Recovery` |
 | 安装方式 | `msiexec /i Veil.msi INSTALLVDD=1 /qn`。Burn 无单独驱动同意页；本轮未走交互 Burn UI |
-| 会话 | `session-93d37ce1` |
+| 会话 | 首次 `session-93d37ce1`；第二次 `session-193371b1` |
 | 证据 | 本机主仓库 `.git/veil-validation-20260919-csharp-redmi/`，不随 Git 分发 |
 
 ## 本轮先做的实验室清理
@@ -60,6 +60,23 @@
 | 5 | `release.json` 恢复 | restore=0，拓扑回到装后基线 | 未口头确认闪一下 | 文件协议恢复成立 |
 | 6 | 恢复后 disable | 再次 Code 22 | 未口头确认虚拟屏消失 | 系统检查：未留下活动自带 VDD |
 | 7 | 亲手热键 / 10 分钟 / 循环 / 崩溃 / 睡醒 | 未跑 | 未做 | 未执行 |
+| 8 | 第二次手动再关 | 无 APPLY、无 `result.json` | 操作者：无黑屏、无闪屏 | 关屏未落地；面板假死 |
+
+## 第二次手动再关（失败）
+
+约 10:28–10:29，已安装的 `Veil.App` 仍在跑（pid 3384，10:12 启动）。新会话 `session-193371b1`：
+
+- `ready.json` pid 1508，`hotkeyRegistered=true`；`arm.json` 已写
+- 心跳一直 `armed=false`、文案「等待 arm。」
+- `intent.json`：只关内屏，`vddAssist=true`
+- 约 1 秒后有 `release.json`；**没有** `result.json`；留下 `heartbeat.json.tmp`
+- `Veil.Recovery` 已不在。未 arm 时恢复进程不看 `release.json`，界面又只等 `result.json`，所以停在「等待 arm。」，保持关闭 / 恢复都灰
+- 当时 CCD：`activeInternal=1`、`activeAuxiliary=1`，同一 `sourceId`，`gdiMonitorCount=1`（克隆）。内屏路径仍活动，所以没有黑屏、也没有闪屏
+- `ROOT\DISPLAY\0000` 仍为 OK；产品该做的恢复后 disable 没做成
+
+这与第一次 `session-93d37ce1`（关屏中内 0 / 辅 1）不是同一结果。不能把第二次写成保持关闭成立。
+
+界面关掉后，把该会话拷到证据目录，并在内屏仍活动的前提下禁用留下的 VDD。代码侧补了：恢复进程死后由 App 写 `recovery-exit` 并结束会话；未 arm 也响应 `release.json`；心跳写入失败不再把恢复进程打挂。**这些修复只有单元测试，本机未用新构建再跑关屏。**
 
 ## 未做
 
@@ -69,6 +86,7 @@
 - C# 10 分钟、20 次循环、父进程崩溃  
 - 睡醒再关  
 - 代码签名、可公开安装
+- 用含「恢复进程退出解绑」的新构建再跑 REDMI 关屏
 
 ## 证据
 
@@ -87,3 +105,9 @@
 | `after/session-93d37ce1/result.json` | `C1B20411079660125CBE6196F1ECB045F91EF4DB161A90F6220CDBFAC8913774` |
 | `after/session-93d37ce1/release.json` | `708077B6E1634D2A52BE81C1B74568053AB4F96BDE5AE6F6F9F622AB9600F2D3` |
 | `driver-status.json` | `89E784812A71E8CFBFC6E3C0993729FC680913F4988285229B5A0803D8789412` |
+| `manual-orphan-193371b1/before-cleanup-enumerate.txt` | `22B9E9B088BF3E6F0E463C53262C3C1BDCD65CD405954898C2ED5A011348A8A7` |
+| `manual-orphan-193371b1/session-193371b1/intent.json` | `AD03D72858FC818B1D454A9AF2E9E9533845BF2190CD8F51A069B8F4C35B40F3` |
+| `manual-orphan-193371b1/session-193371b1/heartbeat.json` | `E3658C5F6DF7C5B063098FA7609F14317248EAE71153C9F158C00B066D822A00` |
+| `manual-orphan-193371b1/session-193371b1/release.json` | `813C03CE27824A5495208AD986F0866AC53C26AA4C13D4431B402CB071FED2B3` |
+| `manual-orphan-193371b1/after-cleanup-enumerate.txt` | `BFA179380F28EDAE11E5B0944A47AFD2072A12B8ACFEA62C6C39FB5195C3694C` |
+| `manual-orphan-193371b1/after-pnp.txt` | `AC937B3BFE72DD1EF1E70DB7925A5694DE6CC330224BDCB22AE28ACC83C73264` |

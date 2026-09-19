@@ -12,6 +12,9 @@ public sealed class RecoveryCoordinator
 {
     public const string EnableVddCancelled = "已取消启用隐藏辅助输出，物理屏未改动。";
     public const string DisableVddFailed = "自带 VDD 未能禁用。";
+    public const string RecoveryExitReason = "recovery-exit";
+    public const string RecoveryExited = "恢复进程已退出。";
+    public const string RecoveryExitedLastPath = "恢复进程已退出，未禁用自带 VDD（避免关掉最后活动路径）。";
 
     private readonly ICcdApi _ccd;
     private readonly Func<string, string?, int> _startRecovery;
@@ -19,6 +22,7 @@ public sealed class RecoveryCoordinator
     private readonly Func<bool>? _confirmEnableVdd;
     private readonly Func<bool> _bundledVddInstalled;
     private readonly TimeSpan _virtualPathWait;
+    private readonly Func<int, bool> _isAlive;
     private string? _directory;
     private int _recoveryPid;
     private IntentFile _intent = new();
@@ -29,7 +33,8 @@ public sealed class RecoveryCoordinator
         Func<string, int>? runDriverHelper = null,
         Func<bool>? confirmEnableVdd = null,
         Func<bool>? bundledVddInstalled = null,
-        TimeSpan? virtualPathWait = null)
+        TimeSpan? virtualPathWait = null,
+        Func<int, bool>? isAlive = null)
     {
         _ccd = ccd;
         _startRecovery = startRecovery ?? StartRecoveryProcess;
@@ -37,6 +42,7 @@ public sealed class RecoveryCoordinator
         _confirmEnableVdd = confirmEnableVdd;
         _bundledVddInstalled = bundledVddInstalled ?? (() => DriverStatus.Installed);
         _virtualPathWait = virtualPathWait ?? TimeSpan.FromSeconds(15);
+        _isAlive = isAlive ?? new Win32ParentWatcher().IsAlive;
     }
 
     public bool HasSession => _directory is not null && !File.Exists(SessionPaths.Result(_directory));
@@ -57,6 +63,18 @@ public sealed class RecoveryCoordinator
         if (_directory is null)
         {
             return;
+        }
+
+        if (!File.Exists(SessionPaths.Result(_directory))
+            && _recoveryPid > 0
+            && !_isAlive(_recoveryPid))
+        {
+            JsonUtil.WriteAtomic(SessionPaths.Result(_directory), new ResultFile
+            {
+                Reason = RecoveryExitReason,
+                Ok = false,
+                Error = RecoveryExited,
+            });
         }
 
         Heartbeat = JsonUtil.TryRead<HeartbeatFile>(SessionPaths.Heartbeat(_directory));
@@ -83,7 +101,7 @@ public sealed class RecoveryCoordinator
             _intent = new IntentFile();
             if (usedBundledVdd)
             {
-                AppendDisableResult();
+                DisableBundledVddAfterSession(result);
             }
         }
     }
@@ -102,6 +120,7 @@ public sealed class RecoveryCoordinator
             "parent-exit" => "界面退出后已恢复。",
             "execution-gap" => "会话中断，已恢复。",
             "unexpected-topology" => "显示拓扑变化，已恢复。",
+            RecoveryExitReason => RecoveryExited,
             _ => string.IsNullOrEmpty(result.Error) ? "恢复已结束。" : result.Error,
         };
         if (result.Ok)
@@ -304,6 +323,19 @@ public sealed class RecoveryCoordinator
 
         proc.WaitForExit(60000);
         return proc.HasExited ? proc.ExitCode : 1;
+    }
+
+    private void DisableBundledVddAfterSession(ResultFile? result)
+    {
+        if (result?.Reason == RecoveryExitReason && !_ccd.QuerySnapshot().ActivePhysical.Any())
+        {
+            StatusText = string.IsNullOrEmpty(StatusText)
+                ? RecoveryExitedLastPath
+                : StatusText + " " + RecoveryExitedLastPath;
+            return;
+        }
+
+        AppendDisableResult();
     }
 
     private void AppendDisableResult()

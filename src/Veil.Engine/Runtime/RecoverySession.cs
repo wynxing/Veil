@@ -44,39 +44,46 @@ public sealed class RecoverySession
 
     public void Start()
     {
-        CcdAbi.EnsureExpectedLayout();
-        var topologyPath = SessionPaths.Topology(_opt.Directory);
-        if (!File.Exists(topologyPath))
+        try
         {
-            Fail("error", "missing topology.json", restore: false);
-            return;
-        }
+            CcdAbi.EnsureExpectedLayout();
+            var topologyPath = SessionPaths.Topology(_opt.Directory);
+            if (!File.Exists(topologyPath))
+            {
+                Fail("error", "missing topology.json", restore: false);
+                return;
+            }
 
-        (_savedPaths, _savedModes) = TopologyBlob.Load(topologyPath);
-        _savedFingerprint = TopologyBlob.Fingerprint(_savedPaths, _savedModes);
-        var current = _opt.Ccd.Capture();
-        if (TopologyBlob.Fingerprint(current.Paths, current.Modes) != _savedFingerprint)
-        {
-            Fail("error", "topology changed since save", restore: false);
-            return;
-        }
+            (_savedPaths, _savedModes) = TopologyBlob.Load(topologyPath);
+            _savedFingerprint = TopologyBlob.Fingerprint(_savedPaths, _savedModes);
+            var current = _opt.Ccd.Capture();
+            if (TopologyBlob.Fingerprint(current.Paths, current.Modes) != _savedFingerprint)
+            {
+                Fail("error", "topology changed since save", restore: false);
+                return;
+            }
 
-        if (!_opt.Hotkey.TryRegister())
-        {
-            Fail("error", "RegisterHotKey failed", restore: false);
-            return;
-        }
+            if (!_opt.Hotkey.TryRegister())
+            {
+                Fail("error", "RegisterHotKey failed", restore: false);
+                return;
+            }
 
-        _hotkeyRegistered = true;
-        JsonUtil.WriteAtomic(SessionPaths.Ready(_opt.Directory), new ReadyFile
+            _hotkeyRegistered = true;
+            JsonUtil.WriteAtomic(SessionPaths.Ready(_opt.Directory), new ReadyFile
+            {
+                Pid = _opt.SelfPid,
+                HotkeyRegistered = true,
+                Hotkey = CcdConstants.HotkeyText,
+            });
+            WriteHeartbeat("等待 arm。");
+            _started = _opt.Clock.Seconds;
+            _previous = _started;
+        }
+        catch (Exception ex)
         {
-            Pid = _opt.SelfPid,
-            HotkeyRegistered = true,
-            Hotkey = CcdConstants.HotkeyText,
-        });
-        WriteHeartbeat("等待 arm。");
-        _started = _opt.Clock.Seconds;
-        _previous = _started;
+            Fail("error", ex.Message, restore: false);
+        }
     }
 
     public void Tick()
@@ -86,6 +93,18 @@ public sealed class RecoverySession
             return;
         }
 
+        try
+        {
+            TickCore();
+        }
+        catch (Exception ex)
+        {
+            Fail("error", ex.Message, restore: _holding || _armed);
+        }
+    }
+
+    private void TickCore()
+    {
         var now = _opt.Clock.Seconds;
         var hotkey = _opt.Hotkey.WasPressed();
         if (!_armed)
@@ -93,6 +112,12 @@ public sealed class RecoverySession
             if (hotkey)
             {
                 Fail("cancelled-before-arm", null, restore: false);
+                return;
+            }
+
+            if (File.Exists(SessionPaths.Release(_opt.Directory)))
+            {
+                Fail("release", "已取消，未改物理屏。", restore: false);
                 return;
             }
 
@@ -478,13 +503,19 @@ public sealed class RecoverySession
             });
         }
 
-        JsonUtil.WriteAtomic(SessionPaths.Heartbeat(_opt.Directory), new HeartbeatFile
+        try
         {
-            HotkeyRegistered = _hotkeyRegistered,
-            Armed = _armed,
-            Screens = screens,
-            Detail = detail,
-        });
+            JsonUtil.WriteAtomic(SessionPaths.Heartbeat(_opt.Directory), new HeartbeatFile
+            {
+                HotkeyRegistered = _hotkeyRegistered,
+                Armed = _armed,
+                Screens = screens,
+                Detail = detail,
+            });
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private void WriteResult()

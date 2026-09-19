@@ -12,6 +12,17 @@ public sealed class RecoveryCoordinatorTests
         Assert.Equal("已恢复全部。", RecoveryCoordinator.FormatResult(new ResultFile { Ok = true, Reason = "release" }));
 
     [Fact]
+    public void FormatResultMapsRecoveryExit() =>
+        Assert.Equal(
+            RecoveryCoordinator.RecoveryExited,
+            RecoveryCoordinator.FormatResult(new ResultFile
+            {
+                Ok = false,
+                Reason = RecoveryCoordinator.RecoveryExitReason,
+                Error = RecoveryCoordinator.RecoveryExited,
+            }));
+
+    [Fact]
     public void FormatResultMapsHotkey() =>
         Assert.Equal("已由 Ctrl+Alt+Shift+F10 恢复。", RecoveryCoordinator.FormatResult(new ResultFile { Ok = true, Reason = "hotkey" }));
 
@@ -171,6 +182,127 @@ public sealed class RecoveryCoordinatorTests
         Assert.False(coordinator.HasSession);
         Assert.True(ccd.QuerySnapshot().ActivePhysical.Count() == 1);
         Assert.False(ccd.QuerySnapshot().HasActiveBundledVdd);
+    }
+
+    [Fact]
+    public void DeadRecoveryUnsticksAndDisablesBundledVdd()
+    {
+        var started = "";
+        var helperCalls = new List<string>();
+        try
+        {
+            var ccd = InternalPlusBundledVdd();
+            var coordinator = new RecoveryCoordinator(
+                ccd,
+                startRecovery: (sessionDir, _) =>
+                {
+                    started = sessionDir;
+                    WriteReady(sessionDir);
+                    return 4242;
+                },
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return 0;
+                },
+                bundledVddInstalled: () => true,
+                isAlive: _ => false);
+
+            var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
+            Assert.Null(coordinator.KeepOff(identity));
+            Assert.True(coordinator.HasSession);
+
+            coordinator.Poll();
+            Assert.False(coordinator.HasSession);
+            Assert.Equal(RecoveryCoordinator.RecoveryExited, coordinator.StatusText);
+            Assert.Contains("disable", helperCalls);
+            var result = JsonUtil.Read<ResultFile>(SessionPaths.Result(started));
+            Assert.Equal(RecoveryCoordinator.RecoveryExitReason, result.Reason);
+            Assert.False(result.Ok);
+        }
+        finally
+        {
+            DeleteSession(started);
+        }
+    }
+
+    [Fact]
+    public void AliveRecoveryWithoutResultKeepsSession()
+    {
+        var started = "";
+        var helperCalls = new List<string>();
+        try
+        {
+            var ccd = InternalPlusBundledVdd();
+            var coordinator = new RecoveryCoordinator(
+                ccd,
+                startRecovery: (sessionDir, _) =>
+                {
+                    started = sessionDir;
+                    WriteReady(sessionDir);
+                    return 4242;
+                },
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return 0;
+                },
+                bundledVddInstalled: () => true,
+                isAlive: _ => true);
+
+            var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
+            Assert.Null(coordinator.KeepOff(identity));
+            coordinator.Poll();
+            Assert.True(coordinator.HasSession);
+            Assert.DoesNotContain("disable", helperCalls);
+            Assert.False(File.Exists(SessionPaths.Result(started)));
+        }
+        finally
+        {
+            DeleteSession(started);
+        }
+    }
+
+    [Fact]
+    public void DeadRecoveryDoesNotDisableVddWhenNoPhysicalRemains()
+    {
+        var started = "";
+        var helperCalls = new List<string>();
+        try
+        {
+            var ccd = InternalPlusBundledVdd();
+            var coordinator = new RecoveryCoordinator(
+                ccd,
+                startRecovery: (sessionDir, _) =>
+                {
+                    started = sessionDir;
+                    WriteReady(sessionDir);
+                    return 4242;
+                },
+                runDriverHelper: verb =>
+                {
+                    helperCalls.Add(verb);
+                    return 0;
+                },
+                bundledVddInstalled: () => true,
+                isAlive: _ => false);
+
+            var identity = ccd.QuerySnapshot().PhysicalScreens.First(r => r.Role == PathRole.Internal).Identity;
+            Assert.Null(coordinator.KeepOff(identity));
+            var internalPath = ccd.Paths[0];
+            internalPath.Flags = 8;
+            ccd.Paths[0] = internalPath;
+            ccd.Rows[0] = ccd.Rows[0] with { Active = false };
+
+            coordinator.Poll();
+            Assert.False(coordinator.HasSession);
+            Assert.DoesNotContain("disable", helperCalls);
+            Assert.Contains(RecoveryCoordinator.RecoveryExitedLastPath, coordinator.StatusText);
+        }
+        finally
+        {
+            DeleteSession(started);
+        }
     }
 
     [Fact]

@@ -12,6 +12,9 @@ public sealed class AppConfirmTests
         Assert.Contains("Gate.EnableVddReason", source);
         Assert.Contains("MessageBoxButton.OKCancel", source);
         Assert.Contains("RecoveryCoordinator.DisableVddFailed", source);
+        var coordinator = File.ReadAllText(FindSource("src", "Veil.App", "RecoveryCoordinator.cs"));
+        Assert.Contains("RecoveryExitReason", coordinator);
+        Assert.Contains("_isAlive", coordinator);
     }
 
     private static string FindSource(params string[] parts)

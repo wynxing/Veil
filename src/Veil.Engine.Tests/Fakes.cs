@@ -66,12 +66,20 @@ internal sealed class FakeCcd : ICcdApi
     public int CloneRc { get; set; }
     public int InternalRc { get; set; }
     public List<uint> Flags { get; } = [];
+    public Exception? CaptureException { get; set; }
 
     public (DisplayConfigPathInfo[] Paths, DisplayConfigModeInfo[] Modes) QueryRaw(uint flags = CcdConstants.QueryFlags) =>
         (ClonePaths(), CloneModes());
 
-    public CcdFrame Capture(uint flags = CcdConstants.QueryFlags) =>
-        new(ClonePaths(), CloneModes(), new DisplaySnapshot(Rows.ToList()));
+    public CcdFrame Capture(uint flags = CcdConstants.QueryFlags)
+    {
+        if (CaptureException is not null)
+        {
+            throw CaptureException;
+        }
+
+        return new(ClonePaths(), CloneModes(), new DisplaySnapshot(Rows.ToList()));
+    }
 
     public DisplaySnapshot QuerySnapshot(uint flags = CcdConstants.QueryFlags) => Capture(flags).Snapshot;
 
@@ -169,6 +177,7 @@ internal sealed class FakeClock : IMonotonicClock
 internal sealed class FakeParent : IParentWatcher
 {
     public bool Alive { get; set; } = true;
+    public Exception? AliveException { get; set; }
 
-    public bool IsAlive(int pid) => Alive;
+    public bool IsAlive(int pid) => AliveException is null ? Alive : throw AliveException;
 }

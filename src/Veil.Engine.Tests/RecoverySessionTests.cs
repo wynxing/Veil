@@ -23,6 +23,59 @@ public sealed class RecoverySessionTests
     }
 
     [Fact]
+    public void ReleaseBeforeArmExitsWithoutApply()
+    {
+        using var dir = new TempSession();
+        var ccd = DualPhysicalCcd();
+        SaveTopology(dir.Path, ccd);
+        var session = new RecoverySession(Options(dir.Path, ccd, new FakeHotkey(), selfPid: 11));
+        session.Start();
+        JsonUtil.WriteAtomic(SessionPaths.Release(dir.Path), new ReleaseFile { At = 1 });
+        session.Tick();
+        Assert.True(session.Exited);
+        Assert.False(ccd.Applied);
+        Assert.Equal("release", session.Result.Reason);
+        Assert.False(session.Result.Ok);
+        Assert.Contains("未改物理屏", session.Result.Error);
+        Assert.True(File.Exists(SessionPaths.Result(dir.Path)));
+    }
+
+    [Fact]
+    public void StartExceptionWritesResult()
+    {
+        using var dir = new TempSession();
+        var ccd = DualPhysicalCcd();
+        SaveTopology(dir.Path, ccd);
+        ccd.CaptureException = new InvalidOperationException("ccd-start");
+        var session = new RecoverySession(Options(dir.Path, ccd, new FakeHotkey(), selfPid: 11));
+        session.Start();
+        Assert.True(session.Exited);
+        Assert.False(ccd.Applied);
+        Assert.Equal("error", session.Result.Reason);
+        Assert.Equal("ccd-start", session.Result.Error);
+        Assert.True(File.Exists(SessionPaths.Result(dir.Path)));
+    }
+
+    [Fact]
+    public void TickExceptionWritesResult()
+    {
+        using var dir = new TempSession();
+        var ccd = DualPhysicalCcd();
+        SaveTopology(dir.Path, ccd);
+        var parent = new FakeParent();
+        var session = new RecoverySession(Options(dir.Path, ccd, new FakeHotkey(), selfPid: 11, parent: parent));
+        session.Start();
+        JsonUtil.WriteAtomic(SessionPaths.Arm(dir.Path), new ArmFile { Pid = 11 });
+        session.Tick();
+        parent.AliveException = new InvalidOperationException("parent-fault");
+        session.Tick();
+        Assert.True(session.Exited);
+        Assert.Equal("error", session.Result.Reason);
+        Assert.Equal("parent-fault", session.Result.Error);
+        Assert.True(File.Exists(SessionPaths.Result(dir.Path)));
+    }
+
+    [Fact]
     public void ArmPidMismatchNeverApplies()
     {
         using var dir = new TempSession();
