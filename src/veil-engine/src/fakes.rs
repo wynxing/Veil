@@ -187,6 +187,11 @@ impl FakeCcd {
         inner.paths[index].flags = 8;
         inner.rows[index].active = false;
     }
+    pub fn activate_path(&self, index: usize) {
+        let mut inner = self.inner.borrow_mut();
+        inner.paths[index].flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
+        inner.rows[index].active = true;
+    }
     pub fn flags(&self) -> Vec<u32> {
         self.inner.borrow().flags.clone()
     }

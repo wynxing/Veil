@@ -3,6 +3,7 @@ use crate::ScreenIdentity;
 use serde::{Deserialize, Serialize};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub struct JsonUtil;
 
@@ -327,12 +328,34 @@ pub struct OpenSessionRelease;
 
 impl OpenSessionRelease {
     pub fn request_all() {
-        let root = SessionPaths::root();
-        if !root.exists() {
+        let _ = Self::write_release_under(&SessionPaths::root());
+    }
+
+    pub fn request_all_and_wait(timeout: Duration) {
+        Self::wait_after_release(&SessionPaths::root(), timeout);
+    }
+
+    pub fn wait_after_release(root: impl AsRef<Path>, timeout: Duration) {
+        let pending = Self::write_release_under(root.as_ref());
+        if pending.is_empty() {
             return;
         }
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if pending.iter().all(|dir| SessionPaths::result(dir).exists()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn write_release_under(root: &Path) -> Vec<PathBuf> {
+        let mut pending = Vec::new();
+        if !root.exists() {
+            return pending;
+        }
         let Ok(entries) = std::fs::read_dir(root) else {
-            return;
+            return pending;
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -348,7 +371,9 @@ impl OpenSessionRelease {
             }
             let at = unix_seconds();
             let _ = JsonUtil::write_atomic(SessionPaths::release(&path), &ReleaseFile { at });
+            pending.push(path);
         }
+        pending
     }
 }
 

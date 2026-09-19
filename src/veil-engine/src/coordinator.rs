@@ -229,13 +229,18 @@ impl RecoveryCoordinator {
     }
 
     fn apply_intent(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
+        if selected.is_empty() {
+            return self.restore_all();
+        }
+        let previous = self.wanted();
+        let shrink = previous.iter().any(|old| !selected.iter().any(|id| id.matches(old)));
+        if shrink {
+            return self.write_shrunk_intent(selected);
+        }
         let mut snapshot = match self.ccd.query_snapshot(CcdConstants::QUERY_FLAGS) {
             Ok(s) => s,
             Err(e) => return Some(e),
         };
-        if selected.is_empty() {
-            return self.restore_all();
-        }
         let mut plan = Gate::plan_keep_off(&snapshot, &selected, (self.hooks.bundled_vdd_installed)());
         if plan.action == KeepOffAction::Blocked {
             return plan.block_reason;
@@ -288,6 +293,23 @@ impl RecoveryCoordinator {
         self.intent = IntentFile {
             keep_off: selected.iter().map(ScreenIdentityDto::from_identity).collect(),
             vdd_assist: plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
+        };
+        let dir = self.directory.as_ref().unwrap();
+        let _ = JsonUtil::write_atomic(SessionPaths::intent(dir), &self.intent);
+        None
+    }
+
+    fn write_shrunk_intent(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
+        if !self.has_session() {
+            return None;
+        }
+        if let Some(error) = self.ensure_recovery() {
+            return Some(error);
+        }
+        let vdd_assist = self.intent.vdd_assist;
+        self.intent = IntentFile {
+            keep_off: selected.iter().map(ScreenIdentityDto::from_identity).collect(),
+            vdd_assist,
         };
         let dir = self.directory.as_ref().unwrap();
         let _ = JsonUtil::write_atomic(SessionPaths::intent(dir), &self.intent);

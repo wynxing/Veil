@@ -1,11 +1,11 @@
 use crate::fakes::{self, FakeCcd, FakeHotkey, RcHotkey, SharedClock, SharedParent};
 use crate::native::{
     CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, DisplayConfigPathSourceInfo,
-    DisplayConfigPathTargetInfo, DisplayConfigSourceMode, DisplayConfigVideoSignalInfo, Luid, PointL,
+    DisplayConfigPathTargetInfo, DisplayConfigSourceMode, DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL,
 };
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, ReadyFile, ReleaseFile, ResultFile,
-    ScreenIdentityDto, SessionPaths, VddRequestFile,
+    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile, ReleaseFile,
+    ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
 };
 use crate::*;
 use std::cell::RefCell;
@@ -455,6 +455,25 @@ fn dual_physical() -> Rc<FakeCcd> {
     ))
 }
 
+fn three_physical() -> Rc<FakeCcd> {
+    Rc::new(FakeCcd::with_paths_rows(
+        vec![
+            fakes::path_default(true, 1),
+            fakes::path_default(false, 2),
+            fakes::path_default(false, 3),
+        ],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![
+            fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1"),
+            fakes::row_simple(PathRole::External, 2, "S24", r"\\?\DISPLAY#PDA#1"),
+            fakes::row_simple(PathRole::External, 3, "S27", r"\\?\DISPLAY#DEL#1"),
+        ],
+    ))
+}
+
 fn internal_plus_vdd() -> Rc<FakeCcd> {
     Rc::new(FakeCcd::with_paths_rows(
         vec![fakes::path_default(true, 1), fakes::path_default(false, 2)],
@@ -482,14 +501,21 @@ fn save_topology(dir: &std::path::Path, ccd: &FakeCcd) {
 }
 
 fn write_keep_internal_off(dir: &std::path::Path, vdd_assist: bool) {
+    write_keep_off(dir, &[(1, r"\\?\DISPLAY#CMN#1")], vdd_assist);
+}
+
+fn write_keep_off(dir: &std::path::Path, targets: &[(u32, &str)], vdd_assist: bool) {
     JsonUtil::write_atomic(
         SessionPaths::intent(dir),
         &IntentFile {
-            keep_off: vec![ScreenIdentityDto {
-                adapter_luid: "0000000000000001".into(),
-                target_id: 1,
-                monitor_path: r"\\?\DISPLAY#CMN#1".into(),
-            }],
+            keep_off: targets
+                .iter()
+                .map(|(id, mon)| ScreenIdentityDto {
+                    adapter_luid: "0000000000000001".into(),
+                    target_id: *id,
+                    monitor_path: (*mon).into(),
+                })
+                .collect(),
             vdd_assist,
         },
     )
@@ -504,12 +530,24 @@ fn options(
     parent: Rc<SharedParent>,
     clock: Rc<SharedClock>,
 ) -> RecoveryOptions {
+    options_ex(dir, ccd, Box::new(hotkey), self_pid, parent, clock, 20.0)
+}
+
+fn options_ex(
+    dir: PathBuf,
+    ccd: Rc<FakeCcd>,
+    hotkey: Box<dyn Hotkey>,
+    self_pid: i32,
+    parent: Rc<SharedParent>,
+    clock: Rc<SharedClock>,
+    vdd_wait_seconds: f64,
+) -> RecoveryOptions {
     RecoveryOptions {
         directory: dir,
         self_pid,
         parent_pid: 22,
         ccd: Box::new(ccd),
-        hotkey: Box::new(hotkey),
+        hotkey,
         clock: Box::new(clock),
         parent: Box::new(parent),
         arm_timeout_seconds: 10.0,
@@ -517,7 +555,7 @@ fn options(
         reapply_settle_attempts: 4,
         reapply_settle_pause: Duration::from_millis(0),
         pause: Box::new(|_| {}),
-        vdd_wait_seconds: 20.0,
+        vdd_wait_seconds,
     }
 }
 
@@ -799,6 +837,190 @@ fn reapply_without_second_target_requests_bundled_vdd() {
     session.tick();
     assert!(!session.exited);
     assert!(std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap().contains("reapplied"));
+}
+
+#[test]
+fn shrinking_intent_reactivates_restored_path_and_keeps_session() {
+    let dir = TempSession::new();
+    let ccd = three_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        false,
+    );
+    session.tick();
+    assert!(!session.exited);
+    assert!(!ccd.rows()[0].active);
+    assert!(!ccd.rows()[1].active);
+    assert!(ccd.rows()[2].active);
+    write_keep_off(&dir.0, &[(2, r"\\?\DISPLAY#PDA#1")], false);
+    session.tick();
+    assert!(!session.exited);
+    assert!(ccd.rows()[0].active);
+    assert!(!ccd.rows()[1].active);
+    assert!(ccd.rows()[2].active);
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("partial-restored"));
+    let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
+    assert!(heartbeat.screens.iter().any(|s| s.target_id == 1 && s.wanted == "开启" && s.confirmed == "已显示"));
+    assert!(heartbeat.screens.iter().any(|s| s.target_id == 2 && s.wanted == "保持关闭" && s.confirmed == "已关闭"));
+}
+
+#[test]
+fn hotkey_press_finishes_and_restores_saved() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let hotkey = Rc::new(RefCell::new(FakeHotkey::new()));
+    let mut session = RecoverySession::new(options_ex(
+        dir.0.clone(),
+        ccd.clone(),
+        Box::new(fakes::RcHotkey(hotkey.clone())),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        20.0,
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    assert!(!ccd.rows()[0].active);
+    hotkey.borrow_mut().pressed = true;
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.reason, "hotkey");
+    assert!(ccd.rows()[0].active);
+    assert!(ccd.rows()[1].active);
+}
+
+#[test]
+fn unexpected_topology_with_selected_lit_reapplies_once_then_finishes() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
+    assert!(!session.exited);
+    ccd.activate_path(0);
+    ccd.update_path_target(1, 99);
+    ccd.set_validate_rc(87);
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.reason, "unexpected-topology");
+    assert!(session.result.reapply_attempted);
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("\"type\":\"interrupt\""));
+    assert!(events.contains("reapply-attempt"));
+}
+
+#[test]
+fn vdd_wait_timeout_finishes_without_looping_apply() {
+    let dir = TempSession::new();
+    let ccd = internal_plus_vdd();
+    save_topology(&dir.0, &ccd);
+    let clock = Rc::new(SharedClock::new(0.0));
+    let mut session = RecoverySession::new(options_ex(
+        dir.0.clone(),
+        ccd.clone(),
+        Box::new(FakeHotkey::new()),
+        11,
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+        1.0,
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, true);
+    session.tick();
+    ccd.set_after_apply(|inner| {
+        inner.paths.truncate(1);
+        inner.rows.truncate(1);
+        inner.rows[0].active = true;
+    });
+    clock.set(10.0);
+    session.tick();
+    assert!(session.result.reapply_attempted);
+    assert!(!session.exited);
+    assert!(SessionPaths::vdd_request(&dir.0).exists());
+    let apply_count = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
+    clock.set(12.0);
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.reason, "execution-gap");
+    let later = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
+    assert!(later <= apply_count + 1, "timeout may restore once, must not loop APPLY");
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(!events.contains("reapplied"));
+    assert!(events.contains("等待自带 VDD 超时"));
+}
+
+#[test]
+fn request_all_and_wait_returns_when_result_appears() {
+    let root = TempSession::new();
+    let session_dir = root.0.join("session-wait");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let result = SessionPaths::result(&session_dir);
+    let writer = session_dir.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(40));
+        JsonUtil::write_atomic(
+            SessionPaths::result(&writer),
+            &ResultFile {
+                ok: true,
+                reason: "release".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    });
+    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2));
+    assert!(SessionPaths::release(&session_dir).exists());
+    assert!(result.exists());
+}
+
+#[test]
+fn restore_one_writes_shrunk_intent_when_targets_already_off() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = three_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(started.clone(), helper, false, true, None, Duration::from_secs(15)),
+    );
+    let snap = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap();
+    let ids: Vec<_> = snap.physical_screens().map(|r| r.identity()).collect();
+    assert!(coordinator.keep_off(ids[0].clone()).is_none());
+    assert!(coordinator.keep_off(ids[1].clone()).is_none());
+    ccd.deactivate_path(0);
+    ccd.deactivate_path(1);
+    assert!(coordinator.restore_one(&ids[0]).is_none());
+    let wanted = coordinator.wanted();
+    assert_eq!(wanted.len(), 1);
+    assert!(wanted[0].matches(&ids[1]));
+    let intent: IntentFile = JsonUtil::read(SessionPaths::intent(started.borrow().as_str())).unwrap();
+    assert_eq!(intent.keep_off.len(), 1);
+    assert_eq!(intent.keep_off[0].target_id, ids[1].target_id);
+    let _ = std::fs::remove_dir_all(started.borrow().as_str());
+}
+
+#[test]
+fn request_all_and_wait_returns_immediately_without_sessions() {
+    let root = TempSession::new();
+    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2));
 }
 
 #[test]

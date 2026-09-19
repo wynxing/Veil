@@ -1,6 +1,6 @@
 # 产品源码
 
-Rust / x64 MSVC。界面是 egui 小面板 + 原生托盘，不是已发布能力。关屏 APPLY 只发生在 `Veil.Recovery`。
+Rust / x64 MSVC。界面是 egui 小面板 + 原生托盘。关屏 APPLY 只发生在 `Veil.Recovery`。首版合同功能已在代码里齐备，预览包可打；不是已发布，机旁仍待装包验收。
 
 ```powershell
 cargo test --manifest-path src\Cargo.toml
