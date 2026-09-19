@@ -83,10 +83,15 @@ fn install_driver() -> i32 {
     );
     if rc != 0 {
         BundledVddSettings::rollback_created(&created);
+        helper_log(&format!("nefcon install failed: {rc}"));
         return rc;
     }
     std::thread::sleep(std::time::Duration::from_secs(2));
-    disable_all()
+    let disable_rc = disable_all();
+    if disable_rc != 0 {
+        helper_log(&format!("install succeeded; disable after install returned {disable_rc}"));
+    }
+    0
 }
 
 fn uninstall_driver() -> i32 {
@@ -385,6 +390,15 @@ fn sha256_file(path: &Path) -> String {
 
 fn hex_upper(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+fn helper_log(line: &str) {
+    let path = std::env::temp_dir().join("Veil-driver-helper.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{line}");
+    }
+    eprintln!("{line}");
 }
 
 fn program_files_veil() -> PathBuf {

@@ -12,10 +12,18 @@
         <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Veil"
                        Name="DisplayName" Value="Veil" Type="string" KeyPath="yes" />
       </Component>
-      <Files Include="$(var.PublishDir)\**">
-        <Exclude Files="$(var.PublishDir)\*.pdb" />
-        <Exclude Files="$(var.PublishDir)\**\*.pdb" />
-      </Files>
+      <Component Id="VeilApp" Guid="a1f3c8e2-7b14-4d6a-9e20-1c5d8f3a6b47">
+        <File Id="VeilAppExe" Source="$(var.PublishDir)\Veil.App.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="VeilRecovery" Guid="b2e4d9f3-8c25-4e7b-af31-2d6e9a4b7c58">
+        <File Id="VeilRecoveryExe" Source="$(var.PublishDir)\Veil.Recovery.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="VeilDriverHelper" Guid="c3f5e0a4-9d36-4f8c-b042-3e7f0b5c8d69">
+        <File Id="VeilDriverHelperExe" Source="$(var.PublishDir)\Veil.DriverHelper.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="PayloadManifest" Guid="d4a6f1b5-0e47-409d-c153-4f801c6d9e7a">
+        <File Id="PayloadManifestFile" Source="$(var.PublishDir)\payload.manifest.json" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <ComponentGroup Id="VddFiles">
