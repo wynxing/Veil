@@ -86,13 +86,74 @@ impl PathRow {
     }
 
     pub fn display_name(&self) -> String {
-        if !self.monitor_name.trim().is_empty() {
-            self.monitor_name.clone()
-        } else if !self.source_name.trim().is_empty() {
-            self.source_name.clone()
-        } else {
-            "未命名".into()
+        resolved_screen_name(
+            Some(&self.monitor_name),
+            Some(&self.source_name),
+            None,
+            &self.monitor_path,
+            false,
+        )
+    }
+
+    pub fn kind_label(&self) -> &'static str {
+        match self.role {
+            PathRole::Internal => "内置",
+            PathRole::External => "外接",
+            _ => "物理",
         }
+    }
+}
+
+pub fn looks_like_device_path(value: &str) -> bool {
+    let text = value.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let upper = text.to_ascii_uppercase();
+    upper.starts_with(r"\\?\")
+        || upper.starts_with(r"\\.\")
+        || (upper.contains("DISPLAY#") && (upper.contains('&') || upper.contains('{')))
+}
+
+pub fn short_monitor_id(monitor_path: &str) -> Option<String> {
+    let upper = monitor_path.to_ascii_uppercase();
+    let rest = upper.split("DISPLAY#").nth(1)?;
+    let id = rest.split('#').next()?.trim();
+    if id.is_empty() || id == "DEFAULT_MONITOR" {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+pub fn resolved_screen_name(
+    monitor_name: Option<&str>,
+    source_name: Option<&str>,
+    previous_name: Option<&str>,
+    monitor_path: &str,
+    omitted: bool,
+) -> String {
+    for candidate in [monitor_name, source_name, previous_name]
+        .into_iter()
+        .flatten()
+    {
+        let text = candidate.trim();
+        if text.is_empty() || looks_like_device_path(text) || text == "未命名" {
+            continue;
+        }
+        return text.to_string();
+    }
+    if let Some(short) = short_monitor_id(monitor_path) {
+        return short;
+    }
+    for candidate in [monitor_name, previous_name].into_iter().flatten() {
+        if let Some(short) = short_monitor_id(candidate) {
+            return short;
+        }
+    }
+    if omitted {
+        "已关闭的物理屏".into()
+    } else {
+        "未命名".into()
     }
 }
 
@@ -204,6 +265,7 @@ pub enum KeepOffAction {
     None,
     Deactivate,
     EnableBundledVdd,
+    InstallBundledVdd,
     Blocked,
 }
 
@@ -222,7 +284,9 @@ impl KeepOffPlan {
     pub fn is_allowed(&self) -> bool {
         matches!(
             self.action,
-            KeepOffAction::Deactivate | KeepOffAction::EnableBundledVdd
+            KeepOffAction::Deactivate
+                | KeepOffAction::EnableBundledVdd
+                | KeepOffAction::InstallBundledVdd
         )
     }
 
@@ -251,6 +315,35 @@ impl KeepOffPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundledVddAvailability {
+    Absent,
+    PayloadOnly,
+    Installed,
+}
+
+impl BundledVddAvailability {
+    pub fn from_flags(installed: bool, payload: bool) -> Self {
+        if installed {
+            Self::Installed
+        } else if payload {
+            Self::PayloadOnly
+        } else {
+            Self::Absent
+        }
+    }
+}
+
+impl From<bool> for BundledVddAvailability {
+    fn from(installed: bool) -> Self {
+        if installed {
+            Self::Installed
+        } else {
+            Self::Absent
+        }
+    }
+}
+
 pub struct Gate;
 
 impl Gate {
@@ -258,13 +351,16 @@ impl Gate {
         "没有第二活动目标（其它物理屏或自带 VDD），无法停用最后一条物理路径。";
     pub const ENABLE_VDD_REASON: &'static str =
         "将启用安装器自带的隐藏虚拟输出，显示拓扑可能短暂变化。";
+    pub const INSTALL_VDD_REASON: &'static str =
+        "将安装并启用安装器自带的隐藏虚拟输出。这是显示驱动，显示拓扑可能短暂变化。";
     pub const THIRD_PARTY_VIRTUAL_IGNORED: &'static str = "第三方虚拟屏不能作为第二目标。";
 
     pub fn plan_keep_off(
         snapshot: &DisplaySnapshot,
         selected: &[ScreenIdentity],
-        bundled_vdd_installed: bool,
+        bundled_vdd: impl Into<BundledVddAvailability>,
     ) -> KeepOffPlan {
+        let bundled_vdd = bundled_vdd.into();
         if selected.is_empty() {
             return KeepOffPlan::none("未选择物理屏。");
         }
@@ -314,7 +410,7 @@ impl Gate {
                 remaining_physical_active: 0,
             };
         }
-        if bundled_vdd_installed {
+        if bundled_vdd == BundledVddAvailability::Installed {
             return KeepOffPlan {
                 action: KeepOffAction::EnableBundledVdd,
                 block_reason: Some(Self::ENABLE_VDD_REASON.into()),
@@ -325,24 +421,40 @@ impl Gate {
                 remaining_physical_active: 0,
             };
         }
+        if bundled_vdd == BundledVddAvailability::PayloadOnly {
+            return KeepOffPlan {
+                action: KeepOffAction::InstallBundledVdd,
+                block_reason: Some(Self::INSTALL_VDD_REASON.into()),
+                adjust_origin: true,
+                needs_bundled_vdd: true,
+                may_adjust_clone: true,
+                selected_active_count: turning_off.len() as i32,
+                remaining_physical_active: 0,
+            };
+        }
         KeepOffPlan::block(Self::LAST_PATH_REASON)
+    }
+
+    pub fn screen_keep_off_plan(
+        snapshot: &DisplaySnapshot,
+        screen: &ScreenIdentity,
+        already_wanted: &[ScreenIdentity],
+        bundled_vdd: impl Into<BundledVddAvailability>,
+    ) -> KeepOffPlan {
+        let mut selected = already_wanted.to_vec();
+        if !selected.iter().any(|id| id.matches(screen)) {
+            selected.push(screen.clone());
+        }
+        Self::plan_keep_off(snapshot, &selected, bundled_vdd)
     }
 
     pub fn screen_keep_off_block_reason(
         snapshot: &DisplaySnapshot,
         screen: &ScreenIdentity,
         already_wanted: &[ScreenIdentity],
-        bundled_vdd_installed: bool,
+        bundled_vdd: impl Into<BundledVddAvailability>,
     ) -> Option<String> {
-        let mut selected = already_wanted.to_vec();
-        if !selected.iter().any(|id| {
-            id.adapter_luid == screen.adapter_luid
-                && id.target_id == screen.target_id
-                && id.monitor_path == screen.monitor_path
-        }) {
-            selected.push(screen.clone());
-        }
-        let plan = Self::plan_keep_off(snapshot, &selected, bundled_vdd_installed);
+        let plan = Self::screen_keep_off_plan(snapshot, screen, already_wanted, bundled_vdd);
         if plan.action == KeepOffAction::Blocked {
             plan.block_reason
         } else {

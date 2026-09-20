@@ -12,6 +12,7 @@ pub mod session;
 pub mod topology;
 
 pub use capability::{
+    looks_like_device_path, resolved_screen_name, short_monitor_id, BundledVddAvailability,
     BundledVddSettings, DisplaySnapshot, Gate, KeepOffAction, KeepOffPlan, PathRole, PathRow,
     Roles, ScreenIdentity,
 };

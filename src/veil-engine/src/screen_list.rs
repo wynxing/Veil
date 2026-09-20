@@ -1,4 +1,4 @@
-use crate::capability::{Gate, PathRole};
+use crate::capability::{resolved_screen_name, Gate, KeepOffAction};
 use crate::session::HeartbeatFile;
 use crate::{DisplaySnapshot, ScreenIdentity};
 
@@ -31,67 +31,112 @@ impl ScreenListBuilder {
         snapshot: &DisplaySnapshot,
         heartbeat: Option<&HeartbeatFile>,
         pending_wanted: &[ScreenIdentity],
-        bundled_vdd_installed: bool,
+        bundled_vdd: impl Into<crate::capability::BundledVddAvailability>,
         recovery_ready: bool,
         hotkey_registered: bool,
     ) -> Vec<ScreenItem> {
+        let bundled_vdd = bundled_vdd.into();
         let mut items = Vec::new();
         for row in snapshot.physical_screens() {
             let hb = heartbeat.and_then(|h| {
                 h.screens.iter().find(|s| {
-                    row.identity()
-                        .matches(&ScreenIdentity::new(&s.adapter_luid, s.target_id, &s.monitor_path))
+                    row.identity().matches(&ScreenIdentity::new(
+                        &s.adapter_luid,
+                        s.target_id,
+                        &s.monitor_path,
+                    ))
                 })
             });
-            let wanted = hb
-                .map(|s| s.wanted.clone())
-                .unwrap_or_else(|| {
-                    if pending_wanted.iter().any(|id| id.matches(&row.identity())) {
-                        "保持关闭".into()
-                    } else {
-                        "开启".into()
-                    }
-                });
-            let mut confirmed = hb
-                .map(|s| s.confirmed.clone())
-                .unwrap_or_else(|| if row.active { "已显示".into() } else { "未知".into() });
+            let wanted = hb.map(|s| s.wanted.clone()).unwrap_or_else(|| {
+                if pending_wanted.iter().any(|id| id.matches(&row.identity())) {
+                    "保持关闭".into()
+                } else {
+                    "开启".into()
+                }
+            });
+            let mut confirmed = hb.map(|s| s.confirmed.clone()).unwrap_or_else(|| {
+                if row.active {
+                    "已显示".into()
+                } else {
+                    "未知".into()
+                }
+            });
             if confirmed == "失败" && hb.is_none() {
                 confirmed = "失败".into();
             }
             let mut already = pending_wanted.to_vec();
             if let Some(h) = heartbeat {
                 for s in h.screens.iter().filter(|s| s.wanted == "保持关闭") {
-                    already.push(ScreenIdentity::new(&s.adapter_luid, s.target_id, &s.monitor_path));
+                    already.push(ScreenIdentity::new(
+                        &s.adapter_luid,
+                        s.target_id,
+                        &s.monitor_path,
+                    ));
                 }
             }
-            let block = if !recovery_ready {
+            let plan = if !recovery_ready {
+                None
+            } else if !hotkey_registered {
+                None
+            } else {
+                Some(Gate::screen_keep_off_plan(
+                    snapshot,
+                    &row.identity(),
+                    &already,
+                    bundled_vdd,
+                ))
+            };
+            let hard_block = if !recovery_ready {
                 Some("恢复进程未就绪。".into())
             } else if !hotkey_registered {
                 Some("紧急热键不可用。".into())
+            } else if plan
+                .as_ref()
+                .is_some_and(|p| p.action == KeepOffAction::Blocked)
+            {
+                plan.as_ref().and_then(|p| p.block_reason.clone())
             } else {
-                Gate::screen_keep_off_block_reason(snapshot, &row.identity(), &already, bundled_vdd_installed)
+                None
             };
-            let can_keep_off = wanted != "保持关闭" && block.is_none();
+            let can_keep_off = wanted != "保持关闭" && hard_block.is_none();
             let can_restore = wanted == "保持关闭";
+            let notice = hard_block.or_else(|| {
+                if plan.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.action,
+                        KeepOffAction::EnableBundledVdd | KeepOffAction::InstallBundledVdd
+                    )
+                }) {
+                    plan.and_then(|p| p.block_reason)
+                } else {
+                    hb.map(|s| s.detail.clone()).filter(|s| !s.is_empty())
+                }
+            });
             items.push(ScreenItem {
                 identity: row.identity(),
-                name: row.display_name(),
-                kind: if row.role == PathRole::Internal {
-                    "内置".into()
-                } else {
-                    "外接".into()
-                },
+                name: resolved_screen_name(
+                    Some(&row.monitor_name),
+                    Some(&row.source_name),
+                    hb.map(|s| s.name.as_str()),
+                    &row.monitor_path,
+                    false,
+                ),
+                kind: row.kind_label().into(),
                 wanted: wanted.clone(),
                 confirmed: confirmed.clone(),
                 can_keep_off,
                 can_restore,
                 status_text: format!("{confirmed}（{wanted}）"),
-                block_reason: block.unwrap_or_else(|| hb.map(|s| s.detail.clone()).unwrap_or_default()),
+                block_reason: notice.unwrap_or_default(),
             });
         }
         if let Some(h) = heartbeat {
             for hb_row in &h.screens {
-                let id = ScreenIdentity::new(&hb_row.adapter_luid, hb_row.target_id, &hb_row.monitor_path);
+                let id = ScreenIdentity::new(
+                    &hb_row.adapter_luid,
+                    hb_row.target_id,
+                    &hb_row.monitor_path,
+                );
                 if items.iter().any(|i| i.identity.matches(&id)) {
                     continue;
                 }
@@ -99,13 +144,19 @@ impl ScreenListBuilder {
                     continue;
                 }
                 items.push(ScreenItem {
-                    identity: id,
-                    name: if hb_row.name.trim().is_empty() {
-                        "已关闭的物理屏".into()
+                    identity: id.clone(),
+                    name: resolved_screen_name(
+                        Some(&hb_row.name),
+                        None,
+                        None,
+                        &hb_row.monitor_path,
+                        true,
+                    ),
+                    kind: if hb_row.kind.trim().is_empty() {
+                        "物理".into()
                     } else {
-                        hb_row.name.clone()
+                        hb_row.kind.clone()
                     },
-                    kind: "物理".into(),
                     wanted: hb_row.wanted.clone(),
                     confirmed: hb_row.confirmed.clone(),
                     can_keep_off: false,

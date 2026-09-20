@@ -222,6 +222,8 @@ pub struct HeartbeatScreen {
     pub monitor_path: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub kind: String,
     #[serde(default = "default_wanted")]
     pub wanted: String,
     #[serde(default = "default_confirmed")]

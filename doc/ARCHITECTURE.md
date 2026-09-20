@@ -144,7 +144,7 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 - DPI：`PerMonitorV2`
 - 退出：先 `release` 并等待恢复结果；超时或失败则报告，不默默退出
 
-托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。
+托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。Windows 上关面板不调用 eframe 0.31 的 `Visible(false)`，也不 `SW_HIDE`：二者都会让 winit 停泵消息，托盘再 `ShowWindow` 会卡住。关面板时把窗口停到屏幕外并保持可见，事件循环继续跑。这是实现对 Windows + eframe 0.31 的约束，不是机旁已验证结论。
 
 ## 7. 安装、驱动与提权
 
@@ -167,6 +167,8 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 具体文件哈希以安装时捆绑的版本为准，写入安装器校验表；更换上游包必须重新核签名与指纹，并在验证文档记一笔。当前文件哈希与 `vdd_settings.xml` 路径见 [installer-payload.md](validation/installer-payload.md)。
 
 ### 7.2 按需启用
+
+自带 VDD 是否已安装，以 PnP 设备实例（`Root\MttVDD`）为准，不只看 `%ProgramFiles%\Veil\vdd\MttVDD.inf`。关光最后一块物理屏时：已有设备则按需启用；仅有已校验安装包、设备未出现时，面板说明将**安装并启用**隐藏辅助输出，用户确认后提权 `install-driver` 再 `enable`。取消或失败则物理屏不改动。没有安装包则按最后路径拒绝。这不是本机已装 VDD、也不是 P15 关光双屏已验证的结论。
 
 `Veil.DriverHelper.exe` 清单要求管理员。仅当用户要关光全部物理屏、且当前没有活动的自带虚拟路径时启动。
 
