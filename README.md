@@ -46,3 +46,5 @@ cargo test --manifest-path src\Cargo.toml
 - [安装器](installer/README.md)：WiX 5；payload 缺失则构建失败。本地包无签名，不可公开安装。
 - [预览发布](doc/RELEASE.md)：私有 Release、版本、fetch/pack/tag。不是可公开安装。
 - [协作规范](AGENTS.md)：工作树开发与清理要求。
+
+可靠性修复已引入协议 v2、恢复结果门禁和设备实例所有权；本轮修改的机旁验收仍未执行，详见 [可靠性修复验收](doc/validation/reliability-v2.md)。

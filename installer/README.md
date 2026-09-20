@@ -17,8 +17,18 @@
 - 驱动同意：自带 MTT 是显示驱动，用于没有外接屏时关掉笔记本屏幕。不同意则 `INSTALLVDD=0`，只装应用。
 - INF 安装后设备保持禁用。
 - 安装时不开机自启、不关屏。
-- 卸载：先对仍打开的会话写 `release.json`，再禁用并移除自带 `Root\MttVDD`，不改装其它虚拟屏。
+- 卸载：先建立维护门禁、请求并确认物理屏恢复，再按安装记录的实例 ID 禁用和移除设备。恢复失败、未知、协议错误或超时停止卸载。提交/回滚动作释放门禁。
 
 ## vdd_settings.xml 路径
 
 产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload.md](../doc/validation/installer-payload.md)。Rust 安装器路径见 [redmi-book-14-2025-rust.md](../doc/validation/redmi-book-14-2025-rust.md)，尚未机旁执行。这不是可公开安装。
+
+## 可靠性门禁（协议 v2）
+
+- `Veil.App --restore-and-exit`：退出码 0 为恢复完成或无需恢复，1 为恢复失败/未知，2 为协议错误/超时。MSI 不忽略这些结果，也不忽略驱动移除失败。
+- 维护标记存于 64 位 HKLM `Software\Veil\Maintenance`，由提权安装动作写入；全局命名互斥串行化门禁与关屏 APPLY。提交/回滚使用嵌入 MSI 的助手，删除安装目录后仍可清理标记。异常断电可能留下标记，此时拒绝关屏；应先通过安装器修复/完成维护，不能默默清除标记。
+- 恢复检查只支持可确认的当前交互用户。SYSTEM 安装动作先确认只有一个登录用户，再通过该会话主令牌和用户环境启动固定的 App 恢复入口。其它用户仍登录（含断开的会话）、无登录用户或令牌/会话查询失败均阻止卸载；先在各用户会话恢复显示并注销其它用户。
+- 新安装将设备实例写入 `%ProgramFiles%\Veil\owned-devices.json`。启用、禁用、移除只匹配此清单。已有未记录的 MTT VDD 不会自动接管；安装停止并保留设备，需先由操作者处理旧安装。此限制也适用于此前沿用实验设备的 REDMI 配置，不代表升级路径已验证。
+- 安装后禁用失败返回安装失败；清理限于本次新建实例和 XML。缺失/损坏的历史会话证明不能用一个 `ok=true` 绕过恢复门禁。
+
+离线与机旁清单见 [可靠性修复验收](../doc/validation/reliability-v2.md)。构建成功不等于安装、升级、卸载已实测。

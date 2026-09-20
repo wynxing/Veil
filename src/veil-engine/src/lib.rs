@@ -1,6 +1,8 @@
 pub mod capability;
 pub mod coordinator;
+pub mod driver_policy;
 pub mod fakes;
+pub mod maintenance;
 pub mod native;
 pub mod planner;
 pub mod process;

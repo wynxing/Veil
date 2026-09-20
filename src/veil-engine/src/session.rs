@@ -1,7 +1,7 @@
 use crate::native::CcdConstants;
 use crate::ScreenIdentity;
 use serde::{Deserialize, Serialize};
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -14,29 +14,31 @@ impl JsonUtil {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let payload = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-        for attempt in 0.. {
-            match write_then_rename(&tmp, path, &payload) {
-                Ok(()) => return Ok(()),
-                Err(e) if e.kind() == ErrorKind::PermissionDenied || e.kind() == ErrorKind::AlreadyExists || e.kind() == ErrorKind::WouldBlock => {
-                    if attempt >= 7 {
-                        return Err(e.to_string());
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+        let tmp = path.with_extension(format!("{}.tmp", unique_session_id()));
+        let result = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+                .map_err(|e| e.to_string())?;
+            file.write_all(payload.as_bytes())
+                .map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            drop(file);
+            let mut last = String::new();
+            for attempt in 0..8 {
+                match replace_file(&tmp, path) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last = e.to_string(),
                 }
-                Err(e) if attempt < 7 && e.kind() == ErrorKind::Other || e.raw_os_error() == Some(32) => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                Err(e) => {
-                    if attempt < 7 {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                    } else {
-                        return Err(e.to_string());
-                    }
+                if attempt < 7 {
+                    std::thread::sleep(Duration::from_millis(20));
                 }
             }
-        }
-        unreachable!()
+            Err(last)
+        })();
+        let _ = std::fs::remove_file(&tmp);
+        result
     }
 
     pub fn read<T: for<'de> Deserialize<'de>>(path: impl AsRef<Path>) -> Result<T, String> {
@@ -52,17 +54,98 @@ impl JsonUtil {
     }
 }
 
-fn write_then_rename(tmp: &Path, dest: &Path, payload: &str) -> std::io::Result<()> {
+fn replace_file(source: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let dest: Vec<u16> = dest.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            dest.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
     {
-        let mut f = std::fs::File::create(tmp)?;
-        f.write_all(payload.as_bytes())?;
-        f.flush()?;
-    }
-    std::fs::rename(tmp, dest).or_else(|_| {
-        std::fs::copy(tmp, dest)?;
-        std::fs::remove_file(tmp)?;
+        Err(std::io::Error::last_os_error())
+    } else {
         Ok(())
+    }
+}
+
+pub const PROTOCOL_VERSION: u32 = 2;
+pub fn request_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = (unix_seconds() * 1_000_000.0) as u64;
+    LAST.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
+        Some(now.max(old + 1))
     })
+    .unwrap()
+    .max(now - 1)
+        + 1
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestoreState {
+    #[default]
+    Unknown,
+    Complete,
+    Partial,
+    NotNeeded,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecoveryState {
+    #[default]
+    Waiting,
+    Holding,
+    Restoring,
+    RestoreFailed,
+    Finished,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadata {
+    pub protocol_version: u32,
+    pub physical_targets: Vec<ScreenIdentityDto>,
+    pub vdd_owned: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreOutcome {
+    pub state: RestoreState,
+    pub message: String,
+}
+impl RestoreOutcome {
+    pub fn complete(message: impl Into<String>) -> Self {
+        Self {
+            state: RestoreState::Complete,
+            message: message.into(),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestoreError {
+    Failed(String),
+    Protocol(String),
+    Timeout(String),
+}
+impl RestoreError {
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Failed(_) => 1,
+            _ => 2,
+        }
+    }
+}
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(s) | Self::Protocol(s) | Self::Timeout(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +170,8 @@ pub struct ArmFile {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentFile {
+    #[serde(default)]
+    pub request_id: u64,
     #[serde(default)]
     pub keep_off: Vec<ScreenIdentityDto>,
     #[serde(default)]
@@ -121,6 +206,8 @@ impl ScreenIdentityDto {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReleaseFile {
+    #[serde(default)]
+    pub request_id: u64,
     pub at: f64,
 }
 
@@ -154,6 +241,10 @@ fn default_confirmed() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatFile {
     #[serde(default)]
+    pub state: RecoveryState,
+    #[serde(default)]
+    pub processed_request_id: u64,
+    #[serde(default)]
     pub hotkey_registered: bool,
     #[serde(default)]
     pub armed: bool,
@@ -166,6 +257,10 @@ pub struct HeartbeatFile {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultFile {
+    #[serde(default)]
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub restore_state: RestoreState,
     #[serde(default)]
     pub ok: bool,
     #[serde(default = "default_reason")]
@@ -218,11 +313,21 @@ impl SessionPaths {
     }
 
     pub fn new_session_directory() -> PathBuf {
-        let dir = Self::root().join(format!("session-{}", unique_session_id()));
+        #[cfg(not(test))]
+        let root = Self::root();
+        #[cfg(test)]
+        let root = std::env::temp_dir().join("veil-coordinator-tests");
+        let dir = root.join(format!("session-{}", unique_session_id()));
         std::fs::create_dir_all(&dir).ok();
         dir
     }
 
+    pub fn metadata(dir: impl AsRef<Path>) -> PathBuf {
+        dir.as_ref().join("session.json")
+    }
+    pub fn baseline(dir: impl AsRef<Path>) -> PathBuf {
+        dir.as_ref().join("baseline.json")
+    }
     pub fn topology(dir: impl AsRef<Path>) -> PathBuf {
         dir.as_ref().join("topology.json")
     }
@@ -327,53 +432,110 @@ impl SessionLog {
 pub struct OpenSessionRelease;
 
 impl OpenSessionRelease {
-    pub fn request_all() {
-        let _ = Self::write_release_under(&SessionPaths::root());
+    pub fn request_all_and_wait(timeout: Duration) -> Result<RestoreOutcome, RestoreError> {
+        Self::wait_after_release(&SessionPaths::root(), timeout)
     }
-
-    pub fn request_all_and_wait(timeout: Duration) {
-        Self::wait_after_release(&SessionPaths::root(), timeout);
-    }
-
-    pub fn wait_after_release(root: impl AsRef<Path>, timeout: Duration) {
-        let pending = Self::write_release_under(root.as_ref());
-        if pending.is_empty() {
-            return;
+    pub fn wait_after_release(
+        root: impl AsRef<Path>,
+        timeout: Duration,
+    ) -> Result<RestoreOutcome, RestoreError> {
+        let mut pending = Vec::new();
+        if !root.as_ref().exists() {
+            return Ok(RestoreOutcome::complete("没有待恢复会话。"));
+        }
+        let entries = std::fs::read_dir(root).map_err(|e| RestoreError::Protocol(e.to_string()))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|e| RestoreError::Protocol(e.to_string()))?
+                .path();
+            if !path.is_dir()
+                || !path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .starts_with("session-")
+            {
+                continue;
+            }
+            if SessionPaths::result(&path).exists() {
+                JsonUtil::read::<ResultFile>(SessionPaths::result(&path))
+                    .map_err(RestoreError::Protocol)?
+                    .restoration_outcome()?;
+                continue;
+            }
+            let meta = JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(&path))
+                .map_err(RestoreError::Protocol)?;
+            if meta.protocol_version != PROTOCOL_VERSION {
+                return Err(RestoreError::Protocol(
+                    "未知会话协议，不能确认恢复。".into(),
+                ));
+            }
+            let request_id = request_id();
+            JsonUtil::write_atomic(
+                SessionPaths::release(&path),
+                &ReleaseFile {
+                    at: unix_seconds(),
+                    request_id,
+                },
+            )
+            .map_err(RestoreError::Protocol)?;
+            pending.push((path, request_id));
         }
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if pending.iter().all(|dir| SessionPaths::result(dir).exists()) {
-                return;
+        loop {
+            let mut done = true;
+            for (dir, request_id) in &pending {
+                if SessionPaths::result(dir).exists() {
+                    JsonUtil::read::<ResultFile>(SessionPaths::result(dir))
+                        .map_err(RestoreError::Protocol)?
+                        .restoration_outcome()?;
+                } else {
+                    done = false;
+                    if let Some(hb) =
+                        JsonUtil::try_read::<HeartbeatFile>(SessionPaths::heartbeat(dir))
+                    {
+                        if hb.state == RecoveryState::RestoreFailed
+                            && hb.processed_request_id >= *request_id
+                        {
+                            return Err(RestoreError::Failed(
+                                hb.detail.unwrap_or_else(|| "恢复失败。".into()),
+                            ));
+                        }
+                    }
+                }
+            }
+            if done {
+                return Ok(RestoreOutcome::complete("全部会话已恢复。"));
+            }
+            if Instant::now() >= deadline {
+                return Err(RestoreError::Timeout("等待恢复超时，未移除驱动。".into()));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-
-    fn write_release_under(root: &Path) -> Vec<PathBuf> {
-        let mut pending = Vec::new();
-        if !root.exists() {
-            return pending;
+}
+impl ResultFile {
+    pub fn restoration_outcome(&self) -> Result<RestoreOutcome, RestoreError> {
+        if self.protocol_version != PROTOCOL_VERSION {
+            return Err(RestoreError::Protocol("未知恢复结果协议。".into()));
         }
-        let Ok(entries) = std::fs::read_dir(root) else {
-            return pending;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if !name.starts_with("session-") {
-                continue;
-            }
-            if SessionPaths::result(&path).exists() {
-                continue;
-            }
-            let at = unix_seconds();
-            let _ = JsonUtil::write_atomic(SessionPaths::release(&path), &ReleaseFile { at });
-            pending.push(path);
+        match self.restore_state {
+            RestoreState::Complete | RestoreState::NotNeeded => Ok(RestoreOutcome {
+                state: self.restore_state,
+                message: if self.restore_state == RestoreState::NotNeeded {
+                    "无需恢复，未执行关屏。".into()
+                } else if self.restored_topology {
+                    "已恢复全部。".into()
+                } else {
+                    "物理输出已恢复，显示布局可能变化。".into()
+                },
+            }),
+            _ => Err(RestoreError::Failed(
+                self.error
+                    .clone()
+                    .unwrap_or_else(|| "恢复未完成；请重试恢复全部。".into()),
+            )),
         }
-        pending
     }
 }
 

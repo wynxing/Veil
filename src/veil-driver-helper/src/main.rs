@@ -3,13 +3,14 @@ use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use veil_engine::{BundledVddSettings, CcdConstants};
+use veil_engine::driver_policy::installation_result;
+use veil_engine::{BundledVddSettings, CcdApi, CcdConstants, Win32CcdApi};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW, CM_Disable_DevNode,
-    CM_Enable_DevNode, CM_Locate_DevNodeW, DIGCF_ALLCLASSES, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
+    CM_Disable_DevNode, CM_Enable_DevNode, CM_Locate_DevNodeW, SetupDiDestroyDeviceInfoList,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
+    SetupDiGetDeviceRegistryPropertyW, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
 };
-use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS, INVALID_HANDLE_VALUE};
 
 const HARDWARE_ID: &str = CcdConstants::BUNDLED_HARDWARE_ID;
 const PUBLISHER_THUMBPRINT: &str = "3CF8CF26D8BA266C3A483AB7D26D4A818E317D76";
@@ -28,6 +29,17 @@ fn main() {
         std::process::exit(0);
     }
     let code = match verb {
+        "restore-displays" => match veil_engine::maintenance::restore_in_user_session(
+            &program_files_veil().join("Veil.App.exe"),
+        ) {
+            Ok(code) => code,
+            Err(e) => {
+                helper_log(&e);
+                1
+            }
+        },
+        "begin-maintenance" => maintenance(true),
+        "end-maintenance" => maintenance(false),
         "status" => status(),
         "enable" => enable_all(),
         "disable" => disable_all(),
@@ -42,7 +54,13 @@ fn main() {
 }
 
 fn status() -> i32 {
-    let ids = find_instance_ids();
+    let ids = match find_instance_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            helper_log(&e);
+            return 2;
+        }
+    };
     println!(
         "{}",
         serde_json::json!({
@@ -54,89 +72,154 @@ fn status() -> i32 {
     0
 }
 
-fn install_driver() -> i32 {
-    let payload = match resolve_payload() {
-        Some(p) => p,
-        None => {
-            let program = program_files_veil();
-            (program.join("vdd"), program.join("nefcon").join("x64").join("nefconc.exe"))
+fn maintenance(active: bool) -> i32 {
+    match veil_engine::maintenance::set_active(active) {
+        Ok(()) => 0,
+        Err(e) => {
+            helper_log(&e);
+            2
         }
-    };
-    if let Err(e) = validate_payload(&payload.0, &payload.1) {
-        eprintln!("{e}");
-        return 2;
     }
-    let created = match BundledVddSettings::write_xml(&[
+}
+
+fn ownership_path() -> PathBuf {
+    program_files_veil().join("owned-devices.json")
+}
+fn owned_ids() -> Result<Vec<String>, String> {
+    let path = ownership_path();
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    veil_engine::JsonUtil::read(path)
+}
+fn checked_owned_ids() -> Result<Vec<String>, String> {
+    let owned = owned_ids()?;
+    let current = find_instance_ids()?;
+    Ok(owned
+        .into_iter()
+        .filter(|id| current.iter().any(|c| c.eq_ignore_ascii_case(id)))
+        .collect())
+}
+fn install_driver() -> i32 {
+    match install_driver_inner() {
+        Ok(()) => 0,
+        Err(e) => {
+            helper_log(&e);
+            2
+        }
+    }
+}
+fn install_driver_inner() -> Result<(), String> {
+    let before = find_instance_ids()?;
+    if !before.is_empty() {
+        return Err("已有 MTT VDD 设备，无法证明由本次安装创建；保留原设备并停止安装。".into());
+    }
+    let payload = resolve_payload().unwrap_or_else(|| {
+        let program = program_files_veil();
+        (
+            program.join("vdd"),
+            program.join("nefcon").join("x64").join("nefconc.exe"),
+        )
+    });
+    validate_payload(&payload.0, &payload.1)?;
+    let created = BundledVddSettings::write_xml(&[
         &payload.0.to_string_lossy(),
         BundledVddSettings::DRIVER_READS_DIRECTORY,
-    ]) {
-        Ok(c) => c,
+    ])?;
+    let rc = run(
+        &payload.1,
+        &format!(
+            "install \"{}\" {HARDWARE_ID} --no-duplicates",
+            payload.0.join("MttVDD.inf").display()
+        ),
+    );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Store exact instance IDs even after partial installation so rollback never matches all MTT devices.
+    let ids = find_instance_ids()?;
+    veil_engine::JsonUtil::write_atomic(ownership_path(), &ids)?;
+    let disable_rc = ids.iter().fold(0, |rc, id| rc | change_state(id, false));
+    if let Err(error) = installation_result(rc, disable_rc, ids.len()) {
+        let cleanup = remove_instances(&ids);
+        if cleanup == 0 {
+            let _ = std::fs::remove_file(ownership_path());
+            BundledVddSettings::rollback_created(&created);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+fn remove_instances(ids: &[String]) -> i32 {
+    let pnputil = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+        .join("System32")
+        .join("pnputil.exe");
+    ids.iter().fold(0, |rc, id| {
+        rc | run(&pnputil, &format!("/remove-device \"{id}\""))
+    })
+}
+fn uninstall_driver() -> i32 {
+    if !ownership_path().exists() {
+        return 0;
+    }
+    let ids = match checked_owned_ids() {
+        Ok(ids) => ids,
         Err(e) => {
-            eprintln!("{e}");
+            helper_log(&e);
             return 2;
         }
     };
-    let inf = payload.0.join("MttVDD.inf");
-    let rc = run(
-        &payload.1,
-        &format!("install \"{}\" {HARDWARE_ID} --no-duplicates", inf.display()),
-    );
+    let rc = ids.iter().fold(0, |rc, id| rc | change_state(id, false));
     if rc != 0 {
-        BundledVddSettings::rollback_created(&created);
-        helper_log(&format!("nefcon install failed: {rc}"));
         return rc;
     }
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let disable_rc = disable_all();
-    if disable_rc != 0 {
-        helper_log(&format!("install succeeded; disable after install returned {disable_rc}"));
+    let rc = remove_instances(&ids);
+    if rc == 0 {
+        let _ = std::fs::remove_file(ownership_path());
+        BundledVddSettings::try_remove_owned_file(BundledVddSettings::DRIVER_READS_DIRECTORY);
     }
-    0
-}
-
-fn uninstall_driver() -> i32 {
-    let _ = disable_all();
-    let payload = resolve_payload().unwrap_or_else(|| {
-        let program = program_files_veil();
-        (program.join("vdd"), program.join("nefcon").join("x64").join("nefconc.exe"))
-    });
-    let inf = payload.0.join("MttVDD.inf");
-    let rc = if payload.1.exists() && inf.exists() {
-        run(&payload.1, &format!("remove {HARDWARE_ID} --force"))
-    } else {
-        0
-    };
-    BundledVddSettings::try_remove_owned_file(BundledVddSettings::DRIVER_READS_DIRECTORY);
     rc
 }
-
 fn enable_all() -> i32 {
+    let _guard = match veil_engine::maintenance::OperationLock::for_keep_off() {
+        Ok(g) => g,
+        Err(e) => {
+            helper_log(&e);
+            return 2;
+        }
+    };
     if !payload_present() {
-        eprintln!("自带 VDD 文件缺失或哈希不符，拒绝启用。");
+        helper_log("自带 VDD 文件缺失或哈希不符，拒绝启用。");
         return 2;
     }
-    let ids = find_instance_ids();
+    let ids = match checked_owned_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            helper_log(&e);
+            return 2;
+        }
+    };
     if ids.is_empty() {
-        eprintln!("未找到自带 Root\\MttVDD 设备。");
+        helper_log("没有可证明属于 Veil 的设备，拒绝启用。");
         return 2;
     }
-    let mut rc = 0;
-    for id in ids {
-        rc |= change_state(&id, true);
-    }
-    rc
+    ids.iter().fold(0, |rc, id| rc | change_state(id, true))
 }
-
 fn disable_all() -> i32 {
-    let ids = find_instance_ids();
-    if ids.is_empty() {
-        return 0;
+    // Recheck after the UAC round trip, immediately before changing device state.
+    match Win32CcdApi.query_snapshot(CcdConstants::QUERY_FLAGS) {
+        Ok(snapshot) if snapshot.active_physical().next().is_some() => {}
+        _ => {
+            helper_log("未确认活动物理输出，保留辅助 VDD。");
+            return 2;
+        }
     }
-    let mut rc = 0;
-    for id in ids {
-        rc |= change_state(&id, false);
-    }
-    rc
+    let ids = match checked_owned_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            helper_log(&e);
+            return 2;
+        }
+    };
+    ids.iter().fold(0, |rc, id| rc | change_state(id, false))
 }
 
 fn change_state(instance_id: &str, enable: bool) -> i32 {
@@ -153,18 +236,21 @@ fn change_state(instance_id: &str, enable: bool) -> i32 {
         unsafe { CM_Disable_DevNode(dev_inst, 0) }
     };
     if rc != 0 {
-        eprintln!("{} {instance_id} -> {rc}", if enable { "enable" } else { "disable" });
+        eprintln!(
+            "{} {instance_id} -> {rc}",
+            if enable { "enable" } else { "disable" }
+        );
         return 1;
     }
     0
 }
 
-fn find_instance_ids() -> Vec<String> {
+fn find_instance_ids() -> Result<Vec<String>, String> {
     let mut found = Vec::new();
     let mut guid = DISPLAY_CLASS;
-    let set = unsafe { SetupDiGetClassDevsW(&mut guid, ptr::null(), ptr::null_mut(), DIGCF_ALLCLASSES) };
+    let set = unsafe { SetupDiGetClassDevsW(&mut guid, ptr::null(), ptr::null_mut(), 0) };
     if set == INVALID_HANDLE_VALUE as isize {
-        return found;
+        return Err("无法枚举显示设备。".into());
     }
     let mut data: SP_DEVINFO_DATA = unsafe { std::mem::zeroed() };
     data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
@@ -179,14 +265,26 @@ fn find_instance_ids() -> Vec<String> {
             found.push(instance);
         }
     }
+    let enumeration_error = unsafe { GetLastError() };
     unsafe { SetupDiDestroyDeviceInfoList(set) };
-    found
+    if enumeration_error != ERROR_NO_MORE_ITEMS {
+        return Err(format!("设备枚举未完成：{enumeration_error}"));
+    }
+    Ok(found)
 }
 
 fn hardware_ids(set: isize, data: &mut SP_DEVINFO_DATA) -> Vec<String> {
     let mut size = 0u32;
     unsafe {
-        SetupDiGetDeviceRegistryPropertyW(set, data, SPDRP_HARDWAREID, ptr::null_mut(), ptr::null_mut(), 0, &mut size);
+        SetupDiGetDeviceRegistryPropertyW(
+            set,
+            data,
+            SPDRP_HARDWAREID,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            &mut size,
+        );
     }
     if size == 0 {
         return vec![];
@@ -215,7 +313,15 @@ fn hardware_ids(set: isize, data: &mut SP_DEVINFO_DATA) -> Vec<String> {
 
 fn instance_id(set: isize, data: &mut SP_DEVINFO_DATA) -> Option<String> {
     let mut buf = vec![0u16; 1024];
-    let ok = unsafe { SetupDiGetDeviceInstanceIdW(set, data, buf.as_mut_ptr(), buf.len() as u32, ptr::null_mut()) };
+    let ok = unsafe {
+        SetupDiGetDeviceInstanceIdW(
+            set,
+            data,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            ptr::null_mut(),
+        )
+    };
     if ok == 0 {
         return None;
     }
@@ -273,7 +379,9 @@ fn payload_present() -> bool {
         let Some(expected) = files.get(key).and_then(|v| v.as_str()) else {
             return false;
         };
-        if sha256_file(&path) != expected.to_ascii_uppercase() && sha256_file(&path) != expected.to_ascii_lowercase() {
+        if sha256_file(&path) != expected.to_ascii_uppercase()
+            && sha256_file(&path) != expected.to_ascii_lowercase()
+        {
             let actual = sha256_file(&path);
             if !actual.eq_ignore_ascii_case(expected) {
                 return false;
@@ -284,10 +392,15 @@ fn payload_present() -> bool {
 }
 
 fn validate_payload(vdd_dir: &Path, nefcon: &Path) -> Result<(), String> {
-    let manifest = find_manifest().ok_or_else(|| "缺少 payload.manifest.json，拒绝安装驱动。".to_string())?;
+    let manifest =
+        find_manifest().ok_or_else(|| "缺少 payload.manifest.json，拒绝安装驱动。".to_string())?;
     let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let thumb = doc.get("publisherThumbprint").and_then(|v| v.as_str()).unwrap_or("");
+        serde_json::from_str(&std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let thumb = doc
+        .get("publisherThumbprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if thumb.is_empty() {
         return Err("manifest 缺少 publisherThumbprint".into());
     }
@@ -394,7 +507,11 @@ fn hex_upper(bytes: &[u8]) -> String {
 
 fn helper_log(line: &str) {
     let path = std::env::temp_dir().join("Veil-driver-helper.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{line}");
     }
@@ -414,10 +531,15 @@ fn exe_dir() -> PathBuf {
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn from_wide_z(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    OsString::from_wide(&buf[..end]).to_string_lossy().into_owned()
+    OsString::from_wide(&buf[..end])
+        .to_string_lossy()
+        .into_owned()
 }

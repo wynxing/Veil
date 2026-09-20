@@ -7,15 +7,26 @@ use crate::ScreenIdentity;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub fn path(internal_tech: bool, active: bool, id: u32, mode_idx: u32, adapter_low: u32) -> DisplayConfigPathInfo {
+pub fn path(
+    internal_tech: bool,
+    active: bool,
+    id: u32,
+    mode_idx: u32,
+    adapter_low: u32,
+) -> DisplayConfigPathInfo {
     let mut item = DisplayConfigPathInfo::default();
-    item.flags = (if active { CcdConstants::DISPLAYCONFIG_PATH_ACTIVE } else { 0 }) | 8;
+    item.flags = (if active {
+        CcdConstants::DISPLAYCONFIG_PATH_ACTIVE
+    } else {
+        0
+    }) | 8;
     item.target_info.output_technology = if internal_tech {
         CcdConstants::OUTPUT_TECHNOLOGY_INTERNAL
     } else {
         5
     };
     item.target_info.id = id;
+    item.target_info.target_available = 1;
     item.target_info.adapter_id = Luid {
         low_part: adapter_low,
         high_part: 0,
@@ -66,7 +77,9 @@ pub fn row(
         adapter_path: adapter_path.into(),
         monitor_name: name.into(),
         monitor_path: monitor_path.into(),
-        placeholder: monitor_path.to_ascii_uppercase().contains("DEFAULT_MONITOR"),
+        placeholder: monitor_path
+            .to_ascii_uppercase()
+            .contains("DEFAULT_MONITOR"),
         role,
         edid_manufacture_id: 0,
         edid_product_code_id: 0,
@@ -92,6 +105,7 @@ struct FakeCcdInner {
     validate_rc: i32,
     apply_rc: i32,
     next_apply_rc: Option<i32>,
+    mutate_on_failure: bool,
     clone_rc: i32,
     internal_rc: i32,
     flags: Vec<u32>,
@@ -117,6 +131,7 @@ impl FakeCcd {
                 validate_rc: 0,
                 apply_rc: 0,
                 next_apply_rc: None,
+                mutate_on_failure: false,
                 clone_rc: 0,
                 internal_rc: 0,
                 flags: vec![],
@@ -147,6 +162,18 @@ impl FakeCcd {
 
     pub fn set_validate_rc(&self, rc: i32) {
         self.inner.borrow_mut().validate_rc = rc;
+    }
+    pub fn set_apply_rc(&self, rc: i32) {
+        self.inner.borrow_mut().apply_rc = rc;
+    }
+    pub fn set_internal_rc(&self, rc: i32) {
+        self.inner.borrow_mut().internal_rc = rc;
+    }
+    pub fn set_clone_rc(&self, rc: i32) {
+        self.inner.borrow_mut().clone_rc = rc;
+    }
+    pub fn mutate_on_failure(&self, value: bool) {
+        self.inner.borrow_mut().mutate_on_failure = value;
     }
     pub fn set_next_apply_rc(&self, rc: i32) {
         self.inner.borrow_mut().next_apply_rc = Some(rc);
@@ -196,10 +223,18 @@ impl FakeCcd {
         self.inner.borrow().flags.clone()
     }
     pub fn applied(&self) -> bool {
-        self.inner.borrow().flags.iter().any(|f| f & CcdConstants::SDC_APPLY != 0)
+        self.inner
+            .borrow()
+            .flags
+            .iter()
+            .any(|f| f & CcdConstants::SDC_APPLY != 0)
     }
     pub fn validated(&self) -> bool {
-        self.inner.borrow().flags.iter().any(|f| f & CcdConstants::SDC_VALIDATE != 0)
+        self.inner
+            .borrow()
+            .flags
+            .iter()
+            .any(|f| f & CcdConstants::SDC_VALIDATE != 0)
     }
     pub fn paths(&self) -> Vec<DisplayConfigPathInfo> {
         self.inner.borrow().paths.clone()
@@ -224,7 +259,10 @@ impl Default for FakeCcd {
 }
 
 impl CcdApi for FakeCcd {
-    fn query_raw(&self, _flags: u32) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
+    fn query_raw(
+        &self,
+        _flags: u32,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
         let inner = self.inner.borrow();
         Ok((inner.paths.clone(), inner.modes.clone()))
     }
@@ -252,27 +290,39 @@ impl CcdApi for FakeCcd {
         })
     }
 
-    fn set(&self, paths: &[DisplayConfigPathInfo], modes: &[DisplayConfigModeInfo], flags: u32) -> Result<i32, String> {
+    fn set(
+        &self,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+        flags: u32,
+    ) -> Result<i32, String> {
         let mut inner = self.inner.borrow_mut();
         inner.flags.push(flags);
         if flags & CcdConstants::SDC_SAVE_TO_DATABASE != 0 {
             return Err("SAVE_TO_DATABASE".into());
         }
         if flags & CcdConstants::SDC_APPLY != 0 {
+            let rc = inner.next_apply_rc.take().unwrap_or(inner.apply_rc);
+            if rc != 0 && !inner.mutate_on_failure {
+                return Ok(rc);
+            }
             inner.paths = paths.to_vec();
             inner.modes = modes.to_vec();
-            if inner.rows.len() == inner.paths.len() {
-                for i in 0..inner.paths.len() {
-                    let active = (inner.paths[i].flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE) != 0;
-                    inner.rows[i].active = active;
-                    inner.rows[i].flags = inner.paths[i].flags;
-                }
+            let applied_paths = inner.paths.clone();
+            for row in &mut inner.rows {
+                let path = applied_paths.iter().find(|p| {
+                    p.target_info.id == row.target_id
+                        && p.target_info.adapter_id.to_hex() == row.adapter_luid
+                });
+                row.active = path
+                    .map(|p| p.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0)
+                    .unwrap_or(false);
+                row.flags = path.map(|p| p.flags).unwrap_or(0);
             }
             if let Some(mut cb) = inner.after_apply.take() {
                 cb(&mut inner);
                 inner.after_apply = Some(cb);
             }
-            let rc = inner.next_apply_rc.take().unwrap_or(inner.apply_rc);
             return Ok(rc);
         }
         Ok(inner.validate_rc)
@@ -403,13 +453,21 @@ impl ParentWatcher for SharedParent {
 }
 
 impl CcdApi for Rc<FakeCcd> {
-    fn query_raw(&self, flags: u32) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
+    fn query_raw(
+        &self,
+        flags: u32,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
         (**self).query_raw(flags)
     }
     fn capture(&self, flags: u32) -> Result<CcdFrame, String> {
         (**self).capture(flags)
     }
-    fn set(&self, paths: &[DisplayConfigPathInfo], modes: &[DisplayConfigModeInfo], flags: u32) -> Result<i32, String> {
+    fn set(
+        &self,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+        flags: u32,
+    ) -> Result<i32, String> {
         (**self).set(paths, modes, flags)
     }
     fn set_topology(&self, topology_flags: u32) -> Result<i32, String> {

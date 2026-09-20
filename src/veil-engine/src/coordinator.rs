@@ -3,8 +3,9 @@ use crate::native::{CcdApi, CcdConstants, ParentWatcher, Win32ParentWatcher};
 use crate::planner::DisplayPlanner;
 use crate::process::ProcessLaunch;
 use crate::session::{
-    ArmFile, HeartbeatFile, IntentFile, JsonUtil, ReadyFile, ReleaseFile, ResultFile, ScreenIdentityDto,
-    SessionLog, SessionPaths, unix_seconds,
+    unix_seconds, ArmFile, HeartbeatFile, IntentFile, JsonUtil, ReadyFile, RecoveryState,
+    ReleaseFile, RestoreError, RestoreOutcome, ResultFile, ScreenIdentityDto, SessionLog,
+    SessionMetadata, SessionPaths, PROTOCOL_VERSION,
 };
 use crate::topology::TopologyBlob;
 use crate::{KeepOffAction, ScreenIdentity};
@@ -15,7 +16,8 @@ pub const ENABLE_VDD_CANCELLED: &str = "已取消启用隐藏辅助输出，物�
 pub const DISABLE_VDD_FAILED: &str = "自带 VDD 未能禁用。";
 pub const RECOVERY_EXIT_REASON: &str = "recovery-exit";
 pub const RECOVERY_EXITED: &str = "恢复进程已退出。";
-pub const RECOVERY_EXITED_LAST_PATH: &str = "恢复进程已退出，未禁用自带 VDD（避免关掉最后活动路径）。";
+pub const RECOVERY_EXITED_LAST_PATH: &str =
+    "恢复进程已退出，未禁用自带 VDD（避免关掉最后活动路径）。";
 
 pub struct RecoveryCoordinatorHooks {
     pub start_recovery: Box<dyn FnMut(&str, Option<&str>) -> i32>,
@@ -48,6 +50,11 @@ pub struct RecoveryCoordinator {
     recovery_pid: i32,
     vdd_request_served: Option<PathBuf>,
     intent: IntentFile,
+    vdd_owned: bool,
+    pending_release: u64,
+    cleanup_attempted: bool,
+    baseline: Option<crate::native::CcdFrame>,
+    last_outcome: Option<Result<RestoreOutcome, RestoreError>>,
     pub is_ready: bool,
     pub hotkey_registered: bool,
     pub heartbeat: Option<HeartbeatFile>,
@@ -63,6 +70,11 @@ impl RecoveryCoordinator {
             recovery_pid: 0,
             vdd_request_served: None,
             intent: IntentFile::default(),
+            vdd_owned: false,
+            pending_release: 0,
+            cleanup_attempted: false,
+            baseline: None,
+            last_outcome: None,
             is_ready: false,
             hotkey_registered: false,
             heartbeat: None,
@@ -71,10 +83,7 @@ impl RecoveryCoordinator {
     }
 
     pub fn has_session(&self) -> bool {
-        match &self.directory {
-            Some(dir) => !SessionPaths::result(dir).exists(),
-            None => false,
-        }
+        self.directory.is_some()
     }
 
     pub fn session_directory(&self) -> Option<&std::path::Path> {
@@ -82,29 +91,62 @@ impl RecoveryCoordinator {
     }
 
     pub fn wanted(&self) -> Vec<ScreenIdentity> {
-        self.intent.keep_off.iter().map(|x| x.to_identity()).collect()
+        self.intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect()
     }
 
     pub fn poll(&mut self) {
         let Some(dir) = self.directory.clone() else {
             return;
         };
-        if !SessionPaths::result(&dir).exists() && self.recovery_pid > 0 && !(self.hooks.is_alive)(self.recovery_pid) {
-            let _ = JsonUtil::write_atomic(
+        if !SessionPaths::result(&dir).exists()
+            && self.recovery_pid > 0
+            && !(self.hooks.is_alive)(self.recovery_pid)
+        {
+            let recorded = JsonUtil::write_atomic(
                 SessionPaths::result(&dir),
                 &ResultFile {
+                    protocol_version: PROTOCOL_VERSION,
                     reason: RECOVERY_EXIT_REASON.into(),
                     ok: false,
                     error: Some(RECOVERY_EXITED.into()),
                     ..Default::default()
                 },
             );
-            SessionLog::append(&dir, "finish", Some(RECOVERY_EXITED), Some(RECOVERY_EXIT_REASON), None, None);
+            self.intent.keep_off.clear();
+            self.is_ready = false;
+            self.hotkey_registered = false;
+            self.heartbeat = None;
+            if let Err(e) = recorded {
+                self.last_outcome = Some(Err(RestoreError::Protocol(e.clone())));
+                self.status_text = Some(e);
+                self.recovery_pid = 0;
+                return;
+            }
+            SessionLog::append(
+                &dir,
+                "finish",
+                Some(RECOVERY_EXITED),
+                Some(RECOVERY_EXIT_REASON),
+                None,
+                None,
+            );
         }
         self.serve_vdd_request();
         self.heartbeat = JsonUtil::try_read(SessionPaths::heartbeat(&dir));
         if let Some(hb) = &self.heartbeat {
             self.hotkey_registered = hb.hotkey_registered;
+            if hb.state == RecoveryState::RestoreFailed
+                && hb.processed_request_id >= self.pending_release
+            {
+                self.intent.keep_off.clear();
+                self.last_outcome = Some(Err(RestoreError::Failed(
+                    hb.detail.clone().unwrap_or_default(),
+                )));
+            }
             self.is_ready = hb.armed || SessionPaths::ready(&dir).exists();
             if let Some(detail) = &hb.detail {
                 if !detail.is_empty() {
@@ -113,25 +155,53 @@ impl RecoveryCoordinator {
             }
         }
         if SessionPaths::result(&dir).exists() {
-            let used_bundled_vdd = self.intent.vdd_assist;
-            let result = JsonUtil::try_read::<ResultFile>(SessionPaths::result(&dir));
-            let session_name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-            self.heartbeat = None;
-            self.status_text = Some(Self::format_result(result.as_ref()));
-            if !session_name.is_empty() {
-                if let Some(text) = &mut self.status_text {
-                    text.push_str(" 记录：");
-                    text.push_str(&session_name);
+            let result = JsonUtil::read::<ResultFile>(SessionPaths::result(&dir));
+            let outcome = result
+                .as_ref()
+                .map_err(|e| RestoreError::Protocol(e.clone()))
+                .and_then(|r| r.restoration_outcome());
+            self.status_text = Some(match &outcome {
+                Ok(o) => o.message.clone(),
+                Err(e) => e.to_string(),
+            });
+            if let Ok(r) = &result {
+                if let Some(error) = &r.error {
+                    self.status_text = Some(format!(
+                        "{error} {}",
+                        self.status_text.as_deref().unwrap_or_default()
+                    ));
                 }
             }
+            if let Some(text) = &mut self.status_text {
+                text.push_str(&format!(
+                    " 记录：{}",
+                    dir.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+            self.last_outcome = Some(outcome.clone());
             self.is_ready = false;
             self.hotkey_registered = false;
-            self.directory = None;
             self.recovery_pid = 0;
-            self.vdd_request_served = None;
             self.intent = IntentFile::default();
-            if used_bundled_vdd {
-                self.disable_bundled_vdd_after_session(result.as_ref());
+            self.heartbeat = None;
+            if outcome.is_ok() {
+                if self.vdd_owned && !self.cleanup_attempted {
+                    self.cleanup_attempted = true;
+                    self.disable_bundled_vdd_after_session(result.as_ref().ok());
+                }
+                if self.vdd_owned {
+                    self.last_outcome = Some(Err(RestoreError::Failed(
+                        self.status_text
+                            .clone()
+                            .unwrap_or_else(|| DISABLE_VDD_FAILED.into()),
+                    )));
+                }
+                // A failed cleanup remains retryable even though physical output is restored.
+                if !self.vdd_owned {
+                    self.directory = None;
+                    self.baseline = None;
+                    self.vdd_request_served = None;
+                }
             }
         }
     }
@@ -140,6 +210,9 @@ impl RecoveryCoordinator {
         let Some(result) = result else {
             return "恢复已结束，状态未知。".into();
         };
+        if let Err(error) = result.restoration_outcome() {
+            return error.to_string();
+        }
         let mut text = match result.reason.as_str() {
             "release" => "已恢复全部。".into(),
             "hotkey" => "已由 Ctrl+Alt+Shift+F10 恢复。".into(),
@@ -159,15 +232,15 @@ impl RecoveryCoordinator {
             return text;
         }
         if let Some(err) = &result.error {
-            if !err.is_empty() && result.reason != "execution-gap" && result.reason != "unexpected-topology" {
+            if !err.is_empty()
+                && result.reason != "execution-gap"
+                && result.reason != "unexpected-topology"
+            {
                 return err.clone();
             }
         }
         if result.reapply_attempted {
             text.push_str(" 已尝试再关一次。");
-        }
-        if restore_failed(result) {
-            text.push_str(" 恢复未完全成功。");
         }
         text
     }
@@ -183,8 +256,34 @@ impl RecoveryCoordinator {
             return;
         }
         self.vdd_request_served = Some(dir.clone());
-        SessionLog::append(dir, "vdd-enable", Some("界面按再关请求启用自带 VDD。"), None, None, None);
-        let _ = (self.hooks.run_driver_helper)("enable");
+        SessionLog::append(
+            dir,
+            "vdd-enable",
+            Some("界面按再关请求启用自带 VDD。"),
+            None,
+            None,
+            None,
+        );
+        self.vdd_owned = true;
+        let saved =
+            JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(dir)).and_then(|mut meta| {
+                meta.vdd_owned = true;
+                JsonUtil::write_atomic(SessionPaths::metadata(dir), &meta)
+            });
+        if let Err(e) = saved {
+            self.status_text = Some(e);
+            if let Some(error) = self.restore_all() {
+                self.status_text = Some(error);
+            }
+            return;
+        }
+        let rc = (self.hooks.run_driver_helper)("enable");
+        if rc != 0 {
+            self.status_text = Some("再次启用辅助输出失败，结束本轮要求。".into());
+            if let Some(e) = self.restore_all() {
+                self.status_text = Some(e);
+            }
+        }
     }
 
     pub fn keep_off(&mut self, identity: ScreenIdentity) -> Option<String> {
@@ -200,40 +299,123 @@ impl RecoveryCoordinator {
     }
 
     pub fn restore_one(&mut self, identity: &ScreenIdentity) -> Option<String> {
-        let selected: Vec<_> = self.wanted().into_iter().filter(|id| !id.matches(identity)).collect();
+        let selected: Vec<_> = self
+            .wanted()
+            .into_iter()
+            .filter(|id| !id.matches(identity))
+            .collect();
         self.apply_intent(selected)
     }
 
     pub fn restore_all(&mut self) -> Option<String> {
-        let Some(dir) = &self.directory else {
+        let Some(dir) = self.directory.clone() else {
             return None;
         };
-        let _ = JsonUtil::write_atomic(SessionPaths::release(dir), &ReleaseFile { at: unix_seconds() });
+        self.last_outcome = None;
+        self.cleanup_attempted = false;
+        let request_id = crate::session::request_id();
+        if let Err(e) = JsonUtil::write_atomic(
+            SessionPaths::release(&dir),
+            &ReleaseFile {
+                at: unix_seconds(),
+                request_id,
+            },
+        ) {
+            return Some(e);
+        }
+        self.pending_release = request_id;
+        if self.recovery_pid <= 0 || !(self.hooks.is_alive)(self.recovery_pid) {
+            if SessionPaths::result(&dir).exists() {
+                if let Err(e) = std::fs::rename(
+                    SessionPaths::result(&dir),
+                    dir.join(format!("result-{}.json", crate::session::request_id())),
+                ) {
+                    return Some(e.to_string());
+                }
+            }
+            self.recovery_pid = (self.hooks.start_recovery)(&dir.to_string_lossy(), None);
+            if self.recovery_pid <= 0 {
+                return Some("无法启动恢复专用进程。".into());
+            }
+        }
+        self.intent.keep_off.clear();
         None
     }
 
-    pub fn restore_all_and_wait(&mut self, timeout: Duration) -> Result<String, String> {
+    pub fn restore_all_and_wait(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<RestoreOutcome, RestoreError> {
         if self.directory.is_none() {
-            return Ok(String::new());
+            return self
+                .last_outcome
+                .clone()
+                .unwrap_or_else(|| Ok(RestoreOutcome::complete("无需恢复。")));
         }
-        self.restore_all();
+        if let Some(e) = self.restore_all() {
+            return Err(RestoreError::Protocol(e));
+        }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             self.poll();
-            if self.directory.is_none() {
-                return Ok(self.status_text.clone().unwrap_or_default());
+            if let Some(outcome) = &self.last_outcome {
+                if outcome.is_err() || self.directory.is_none() {
+                    return outcome.clone();
+                }
             }
             std::thread::sleep(Duration::from_millis(150));
         }
-        Err("恢复超时或失败，未退出。请检查画面，必要时 Win+Ctrl+Shift+B。".into())
+        Err(RestoreError::Timeout(
+            "恢复超时或清理失败，未退出。请重试恢复全部。".into(),
+        ))
     }
 
     fn apply_intent(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
         if selected.is_empty() {
             return self.restore_all();
         }
+        if matches!(self.last_outcome, Some(Err(_))) {
+            return Some("上次恢复未完成，请先恢复全部。".into());
+        }
+        let guard = match crate::maintenance::OperationLock::for_keep_off() {
+            Ok(g) => g,
+            Err(e) => return Some(e),
+        };
+        drop(guard);
+        if self.baseline.is_none() {
+            self.baseline = match self.ccd.capture(CcdConstants::QUERY_FLAGS) {
+                Ok(f) => Some(f),
+                Err(e) => return Some(e),
+            };
+        }
+        let error = self.apply_intent_inner(selected);
+        if let Some(e) = &error {
+            if self.directory.is_some() || self.vdd_owned {
+                if self.directory.is_none() {
+                    if let Err(setup) = self.prepare_directory() {
+                        self.last_outcome = Some(Err(RestoreError::Protocol(setup.clone())));
+                        return Some(format!("{e}；恢复准备失败：{setup}"));
+                    }
+                }
+                if let Some(restore) = self.restore_all() {
+                    self.last_outcome = Some(Err(RestoreError::Protocol(restore.clone())));
+                    return Some(format!("{e}；恢复请求失败：{restore}"));
+                }
+            } else {
+                self.baseline = None;
+            }
+        }
+        error
+    }
+
+    fn apply_intent_inner(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
+        if selected.is_empty() {
+            return self.restore_all();
+        }
         let previous = self.wanted();
-        let shrink = previous.iter().any(|old| !selected.iter().any(|id| id.matches(old)));
+        let shrink = previous
+            .iter()
+            .any(|old| !selected.iter().any(|id| id.matches(old)));
         if shrink {
             return self.write_shrunk_intent(selected);
         }
@@ -241,7 +423,8 @@ impl RecoveryCoordinator {
             Ok(s) => s,
             Err(e) => return Some(e),
         };
-        let mut plan = Gate::plan_keep_off(&snapshot, &selected, (self.hooks.bundled_vdd_installed)());
+        let mut plan =
+            Gate::plan_keep_off(&snapshot, &selected, (self.hooks.bundled_vdd_installed)());
         if plan.action == KeepOffAction::Blocked {
             return plan.block_reason;
         }
@@ -250,6 +433,11 @@ impl RecoveryCoordinator {
                 if !confirm() {
                     return Some(ENABLE_VDD_CANCELLED.into());
                 }
+            }
+            // Mark cleanup responsibility before launching: failure may be partial.
+            self.vdd_owned = true;
+            if let Err(e) = self.prepare_directory() {
+                return Some(e);
             }
             let helper_rc = (self.hooks.run_driver_helper)("enable");
             if helper_rc != 0 {
@@ -267,16 +455,21 @@ impl RecoveryCoordinator {
                 std::thread::sleep(Duration::from_millis(400));
             }
             if !snapshot.has_active_bundled_vdd() {
-                self.append_disable_result();
                 return Some("自带 VDD 未能出现活动虚拟路径，物理屏未改动。".into());
             }
             plan = Gate::plan_keep_off(&snapshot, &selected, true);
             if plan.action != KeepOffAction::Deactivate {
-                self.append_disable_result();
-                return Some(plan.block_reason.unwrap_or_else(|| "启用自带 VDD 后仍无法保持关闭。".into()));
+                return Some(
+                    plan.block_reason
+                        .unwrap_or_else(|| "启用自带 VDD 后仍无法保持关闭。".into()),
+                );
             }
         }
-        let planned = match DisplayPlanner::validate_deactivate(self.ccd.as_ref(), &selected, plan.adjust_origin) {
+        let planned = match DisplayPlanner::validate_deactivate(
+            self.ccd.as_ref(),
+            &selected,
+            plan.adjust_origin,
+        ) {
             Ok(p) => p,
             Err(e) => return Some(e),
         };
@@ -290,12 +483,19 @@ impl RecoveryCoordinator {
         if let Some(error) = self.ensure_recovery() {
             return Some(error);
         }
-        self.intent = IntentFile {
-            keep_off: selected.iter().map(ScreenIdentityDto::from_identity).collect(),
+        let intent = IntentFile {
+            request_id: crate::session::request_id(),
+            keep_off: selected
+                .iter()
+                .map(ScreenIdentityDto::from_identity)
+                .collect(),
             vdd_assist: plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
         };
         let dir = self.directory.as_ref().unwrap();
-        let _ = JsonUtil::write_atomic(SessionPaths::intent(dir), &self.intent);
+        if let Err(e) = JsonUtil::write_atomic(SessionPaths::intent(dir), &intent) {
+            return Some(e);
+        }
+        self.intent = intent;
         None
     }
 
@@ -307,17 +507,27 @@ impl RecoveryCoordinator {
             return Some(error);
         }
         let vdd_assist = self.intent.vdd_assist;
-        self.intent = IntentFile {
-            keep_off: selected.iter().map(ScreenIdentityDto::from_identity).collect(),
+        let intent = IntentFile {
+            request_id: crate::session::request_id(),
+            keep_off: selected
+                .iter()
+                .map(ScreenIdentityDto::from_identity)
+                .collect(),
             vdd_assist,
         };
         let dir = self.directory.as_ref().unwrap();
-        let _ = JsonUtil::write_atomic(SessionPaths::intent(dir), &self.intent);
+        if let Err(e) = JsonUtil::write_atomic(SessionPaths::intent(dir), &intent) {
+            return Some(e);
+        }
+        self.intent = intent;
         None
     }
 
     fn ensure_recovery(&mut self) -> Option<String> {
         self.poll();
+        if matches!(self.last_outcome, Some(Err(_))) {
+            return Some("恢复未完成，拒绝新的关屏。".into());
+        }
         if self.has_session() && self.is_ready {
             return if self.hotkey_registered {
                 None
@@ -325,14 +535,10 @@ impl RecoveryCoordinator {
                 Some("紧急热键不可用。".into())
             };
         }
-        let dir = SessionPaths::new_session_directory();
-        let frame = match self.ccd.capture(CcdConstants::QUERY_FLAGS) {
-            Ok(f) => f,
-            Err(e) => return Some(e),
-        };
-        if let Err(e) = TopologyBlob::save(SessionPaths::topology(&dir), &frame.paths, &frame.modes) {
+        if let Err(e) = self.prepare_directory() {
             return Some(e);
         }
+        let dir = self.directory.clone().unwrap();
         let parent = std::process::id().to_string();
         self.recovery_pid = (self.hooks.start_recovery)(&dir.to_string_lossy(), Some(&parent));
         let deadline = Instant::now() + Duration::from_secs(8);
@@ -347,52 +553,77 @@ impl RecoveryCoordinator {
         match &ready {
             Some(r) if r.pid == self.recovery_pid && r.hotkey_registered => {}
             Some(r) if !r.hotkey_registered => {
-                self.directory = None;
                 return Some("紧急热键不可用。".into());
             }
             _ => {
-                self.directory = None;
                 return Some("恢复进程未就绪。".into());
             }
         }
         let pid = ready.as_ref().unwrap().pid;
-        let _ = JsonUtil::write_atomic(SessionPaths::arm(&dir), &ArmFile { pid });
+        if let Err(e) = JsonUtil::write_atomic(SessionPaths::arm(&dir), &ArmFile { pid }) {
+            return Some(e);
+        }
         self.directory = Some(dir);
         self.is_ready = true;
         self.hotkey_registered = true;
         None
     }
 
-    fn disable_bundled_vdd_after_session(&mut self, result: Option<&ResultFile>) {
-        let no_physical = self
+    fn prepare_directory(&mut self) -> Result<(), String> {
+        let dir = self
+            .directory
+            .clone()
+            .unwrap_or_else(SessionPaths::new_session_directory);
+        self.directory = Some(dir.clone());
+        let baseline = self.baseline.as_ref().ok_or("缺少恢复基线。")?;
+        TopologyBlob::save(
+            SessionPaths::baseline(&dir),
+            &baseline.paths,
+            &baseline.modes,
+        )?;
+        let handshake = self
+            .ccd
+            .capture(CcdConstants::QUERY_FLAGS)
+            .unwrap_or_else(|_| baseline.clone());
+        TopologyBlob::save(
+            SessionPaths::topology(&dir),
+            &handshake.paths,
+            &handshake.modes,
+        )?;
+        JsonUtil::write_atomic(
+            SessionPaths::metadata(&dir),
+            &SessionMetadata {
+                protocol_version: PROTOCOL_VERSION,
+                physical_targets: baseline
+                    .snapshot
+                    .active_physical()
+                    .map(|p| ScreenIdentityDto::from_identity(&p.identity()))
+                    .collect(),
+                vdd_owned: self.vdd_owned,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn disable_bundled_vdd_after_session(&mut self, _result: Option<&ResultFile>) {
+        let safe = self
             .ccd
             .query_snapshot(CcdConstants::QUERY_FLAGS)
-            .map(|s| s.active_physical().next().is_none())
+            .map(|s| s.active_physical().next().is_some())
             .unwrap_or(false);
-        if result.map(|r| r.reason.as_str()) == Some(RECOVERY_EXIT_REASON) && no_physical {
-            self.status_text = Some(match &self.status_text {
-                Some(s) if !s.is_empty() => format!("{s} {RECOVERY_EXITED_LAST_PATH}"),
-                _ => RECOVERY_EXITED_LAST_PATH.into(),
-            });
+        if !safe {
+            self.status_text = Some("未确认活动物理输出，保留自带 VDD；请重试恢复全部。".into());
+            self.last_outcome = Some(Err(RestoreError::Failed(self.status_text.clone().unwrap())));
             return;
         }
-        self.append_disable_result();
-    }
-
-    fn append_disable_result(&mut self) {
         let rc = (self.hooks.run_driver_helper)("disable");
-        if rc == 0 {
-            return;
+        if rc != 0 {
+            self.status_text = Some(DISABLE_VDD_FAILED.into());
+            self.last_outcome = Some(Err(RestoreError::Failed(DISABLE_VDD_FAILED.into())));
+        } else {
+            self.vdd_owned = false;
         }
-        self.status_text = Some(match &self.status_text {
-            Some(s) if !s.is_empty() => format!("{s} {DISABLE_VDD_FAILED}"),
-            _ => DISABLE_VDD_FAILED.into(),
-        });
     }
-}
-
-fn restore_failed(result: &ResultFile) -> bool {
-    matches!(result.restore_rc, Some(rc) if rc > 0) || (result.restore_rc == Some(0) && !result.restored_targets)
 }
 
 fn start_recovery_process(directory: &str, parent_pid: Option<&str>) -> Result<i32, String> {
@@ -402,6 +633,11 @@ fn start_recovery_process(directory: &str, parent_pid: Option<&str>) -> Result<i
         directory,
         parent_pid.unwrap_or("0")
     );
+    let args = if parent_pid.is_none() {
+        format!("{args} --restore-only")
+    } else {
+        args
+    };
     ProcessLaunch::start_detached(&exe.to_string_lossy(), &args)
 }
 

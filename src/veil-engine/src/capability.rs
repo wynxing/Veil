@@ -16,7 +16,11 @@ pub struct ScreenIdentity {
 }
 
 impl ScreenIdentity {
-    pub fn new(adapter_luid: impl Into<String>, target_id: u32, monitor_path: impl Into<String>) -> Self {
+    pub fn new(
+        adapter_luid: impl Into<String>,
+        target_id: u32,
+        monitor_path: impl Into<String>,
+    ) -> Self {
         Self {
             adapter_luid: adapter_luid.into(),
             target_id,
@@ -25,7 +29,9 @@ impl ScreenIdentity {
     }
 
     pub fn matches(&self, other: &ScreenIdentity) -> bool {
-        if !self.adapter_luid.eq_ignore_ascii_case(&other.adapter_luid) || self.target_id != other.target_id {
+        if !self.adapter_luid.eq_ignore_ascii_case(&other.adapter_luid)
+            || self.target_id != other.target_id
+        {
             return false;
         }
         if self.monitor_path.is_empty() || other.monitor_path.is_empty() {
@@ -37,7 +43,11 @@ impl ScreenIdentity {
 
 impl std::fmt::Display for ScreenIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.adapter_luid, self.target_id, self.monitor_path)
+        write!(
+            f,
+            "{}:{}:{}",
+            self.adapter_luid, self.target_id, self.monitor_path
+        )
     }
 }
 
@@ -147,8 +157,14 @@ impl Roles {
         )
     }
 
-    pub fn looks_virtual(adapter_path: &str, monitor_path: &str, monitor_name: &str, source_name: &str) -> bool {
-        let blob = format!("{adapter_path} {monitor_path} {monitor_name} {source_name}").to_lowercase();
+    pub fn looks_virtual(
+        adapter_path: &str,
+        monitor_path: &str,
+        monitor_name: &str,
+        source_name: &str,
+    ) -> bool {
+        let blob =
+            format!("{adapter_path} {monitor_path} {monitor_name} {source_name}").to_lowercase();
         Self::VIRTUAL_NEEDLES.iter().any(|n| blob.contains(n))
     }
 
@@ -204,7 +220,10 @@ pub struct KeepOffPlan {
 
 impl KeepOffPlan {
     pub fn is_allowed(&self) -> bool {
-        matches!(self.action, KeepOffAction::Deactivate | KeepOffAction::EnableBundledVdd)
+        matches!(
+            self.action,
+            KeepOffAction::Deactivate | KeepOffAction::EnableBundledVdd
+        )
     }
 
     pub fn none(detail: impl Into<String>) -> Self {
@@ -235,8 +254,10 @@ impl KeepOffPlan {
 pub struct Gate;
 
 impl Gate {
-    pub const LAST_PATH_REASON: &'static str = "没有第二活动目标（其它物理屏或自带 VDD），无法停用最后一条物理路径。";
-    pub const ENABLE_VDD_REASON: &'static str = "将启用安装器自带的隐藏虚拟输出，显示拓扑可能短暂变化。";
+    pub const LAST_PATH_REASON: &'static str =
+        "没有第二活动目标（其它物理屏或自带 VDD），无法停用最后一条物理路径。";
+    pub const ENABLE_VDD_REASON: &'static str =
+        "将启用安装器自带的隐藏虚拟输出，显示拓扑可能短暂变化。";
     pub const THIRD_PARTY_VIRTUAL_IGNORED: &'static str = "第三方虚拟屏不能作为第二目标。";
 
     pub fn plan_keep_off(
@@ -347,24 +368,35 @@ impl BundledVddSettings {
     pub fn write_xml(directories: &[&str]) -> Result<Vec<String>, String> {
         let mut created = Vec::new();
         let mut seen = Vec::new();
-        for dir in directories {
-            if dir.trim().is_empty() {
-                continue;
-            }
-            if seen.iter().any(|s: &String| s.eq_ignore_ascii_case(dir)) {
-                continue;
-            }
-            seen.push((*dir).to_string());
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            let path = std::path::Path::new(dir).join(Self::FILE_NAME);
-            if path.exists() {
-                if !Self::owns_file(&path) {
-                    return Err(format!("已有他人的 {}：{}", Self::FILE_NAME, path.display()));
+        let result = (|| -> Result<(), String> {
+            for dir in directories {
+                if dir.trim().is_empty() {
+                    continue;
                 }
-                continue;
+                if seen.iter().any(|s: &String| s.eq_ignore_ascii_case(dir)) {
+                    continue;
+                }
+                seen.push((*dir).to_string());
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                let path = std::path::Path::new(dir).join(Self::FILE_NAME);
+                if path.exists() {
+                    if !Self::owns_file(&path) {
+                        return Err(format!(
+                            "已有他人的 {}：{}",
+                            Self::FILE_NAME,
+                            path.display()
+                        ));
+                    }
+                    continue;
+                }
+                std::fs::write(&path, Self::XML).map_err(|e| e.to_string())?;
+                created.push(path.to_string_lossy().into_owned());
             }
-            std::fs::write(&path, Self::XML).map_err(|e| e.to_string())?;
-            created.push(path.to_string_lossy().into_owned());
+            Ok(())
+        })();
+        if let Err(e) = result {
+            Self::rollback_created(&created);
+            return Err(e);
         }
         Ok(created)
     }

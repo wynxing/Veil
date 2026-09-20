@@ -34,12 +34,10 @@ fn run(args: Vec<String>) -> i32 {
     };
     let dir = PathBuf::from(&directory);
     let _ = std::fs::create_dir_all(&dir);
-    let mut options = RecoveryOptions::defaults(
-        dir,
-        Box::new(Win32CcdApi),
-        Box::new(Win32Hotkey::default()),
-    );
+    let mut options =
+        RecoveryOptions::defaults(dir, Box::new(Win32CcdApi), Box::new(Win32Hotkey::default()));
     options.parent_pid = parent_pid;
+    options.restore_only = args.iter().any(|a| a == "--restore-only");
     let mut session = RecoverySession::new(options);
     session.run_until_exit(None);
     if session.result.ok {

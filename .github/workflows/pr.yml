@@ -1,0 +1,23 @@
+name: reliability-checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo test --manifest-path src/Cargo.toml --workspace
+      - run: cargo check --manifest-path src/Cargo.toml --workspace --all-targets
+      - name: Build installer without running it
+        shell: pwsh
+        run: ./installer/pack.ps1

@@ -1,11 +1,12 @@
 use crate::capability::{DisplaySnapshot, Gate, KeepOffAction};
 use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey, MonotonicClock,
-    ParentWatcher,
+    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey,
+    MonotonicClock, ParentWatcher,
 };
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, ReadyFile, ResultFile, SessionLog,
-    SessionPaths, VddRequestFile,
+    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, ReadyFile, RecoveryState,
+    ReleaseFile, RestoreState, ResultFile, SessionLog, SessionMetadata, SessionPaths,
+    VddRequestFile, PROTOCOL_VERSION,
 };
 use crate::topology::{PathOps, TopologyBlob};
 use crate::ScreenIdentity;
@@ -13,6 +14,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub struct RecoveryOptions {
+    pub restore_only: bool,
     pub directory: PathBuf,
     pub self_pid: i32,
     pub parent_pid: i32,
@@ -31,6 +33,7 @@ pub struct RecoveryOptions {
 impl RecoveryOptions {
     pub fn defaults(directory: PathBuf, ccd: Box<dyn CcdApi>, hotkey: Box<dyn Hotkey>) -> Self {
         Self {
+            restore_only: false,
             directory,
             self_pid: std::process::id() as i32,
             parent_pid: 0,
@@ -49,6 +52,12 @@ impl RecoveryOptions {
 }
 
 pub struct RecoverySession {
+    state: RecoveryState,
+    processed_request: u64,
+    processed_release: u64,
+    last_release_text: Option<String>,
+    physical_targets: Vec<ScreenIdentity>,
+    baseline_changed: bool,
     opt: RecoveryOptions,
     saved_paths: Vec<DisplayConfigPathInfo>,
     saved_modes: Vec<DisplayConfigModeInfo>,
@@ -72,6 +81,12 @@ pub struct RecoverySession {
 impl RecoverySession {
     pub fn new(opt: RecoveryOptions) -> Self {
         Self {
+            state: RecoveryState::Waiting,
+            processed_request: 0,
+            processed_release: 0,
+            last_release_text: None,
+            physical_targets: vec![],
+            baseline_changed: false,
             opt,
             saved_paths: vec![],
             saved_modes: vec![],
@@ -89,6 +104,7 @@ impl RecoverySession {
             expected_targets: None,
             intent: IntentFile::default(),
             result: ResultFile {
+                protocol_version: PROTOCOL_VERSION,
                 reason: "not-armed".into(),
                 ok: false,
                 ..Default::default()
@@ -99,27 +115,67 @@ impl RecoverySession {
 
     pub fn start(&mut self) {
         if let Err(ex) = self.start_inner() {
-            self.fail("error", Some(&ex), false);
+            if self.saved_paths.is_empty() {
+                self.result.error = Some(ex);
+                self.result.reason = "error".into();
+                self.result.restore_state = RestoreState::Unknown;
+                self.write_result();
+            } else {
+                self.fail("error", Some(&ex), true);
+            }
         }
     }
 
     fn start_inner(&mut self) -> Result<(), String> {
         CcdAbi::ensure_expected_layout()?;
-        let topology_path = SessionPaths::topology(&self.opt.directory);
-        if !topology_path.exists() {
-            self.fail("error", Some("missing topology.json"), false);
-            return Ok(());
+        let meta: SessionMetadata = JsonUtil::read(SessionPaths::metadata(&self.opt.directory))?;
+        if meta.protocol_version != PROTOCOL_VERSION {
+            return Err("未知会话协议，拒绝关屏。".into());
         }
-        let (paths, modes) = TopologyBlob::load(&topology_path)?;
+        self.baseline_changed = meta.vdd_owned;
+        self.physical_targets = meta
+            .physical_targets
+            .iter()
+            .map(|id| id.to_identity())
+            .collect();
+        let (paths, modes) = TopologyBlob::load(SessionPaths::baseline(&self.opt.directory))?;
         self.saved_fingerprint = TopologyBlob::fingerprint(&paths, &modes);
+        self.saved_identities = paths
+            .iter()
+            .map(|p| {
+                self.physical_targets
+                    .iter()
+                    .find(|id| {
+                        id.adapter_luid == p.target_info.adapter_id.to_hex()
+                            && id.target_id == p.target_info.id
+                    })
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        ScreenIdentity::new(p.target_info.adapter_id.to_hex(), p.target_info.id, "")
+                    })
+            })
+            .collect();
         self.saved_paths = paths;
         self.saved_modes = modes;
-        let current = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS)?;
-        if TopologyBlob::fingerprint(&current.paths, &current.modes) != self.saved_fingerprint {
-            self.fail("error", Some("topology changed since save"), false);
+        if self.opt.restore_only {
+            if let Some(r) =
+                JsonUtil::try_read::<ReleaseFile>(SessionPaths::release(&self.opt.directory))
+            {
+                self.processed_release = r.request_id;
+            }
+            self.armed = true;
+            self.hotkey_registered = self.opt.hotkey.try_register();
+            self.finish("release", true);
             return Ok(());
         }
-        self.saved_identities = current.snapshot.paths.iter().map(|p| p.identity()).collect();
+        let (handshake_paths, handshake_modes) =
+            TopologyBlob::load(SessionPaths::topology(&self.opt.directory))?;
+        let current = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS)?;
+        if TopologyBlob::fingerprint(&current.paths, &current.modes)
+            != TopologyBlob::fingerprint(&handshake_paths, &handshake_modes)
+        {
+            return Err("topology changed since save".into());
+        }
         if !self.opt.hotkey.try_register() {
             self.fail("error", Some("RegisterHotKey failed"), false);
             return Ok(());
@@ -133,7 +189,14 @@ impl RecoverySession {
                 hotkey: CcdConstants::HOTKEY_TEXT.into(),
             },
         )?;
-        SessionLog::append(&self.opt.directory, "ready", Some("热键已注册。"), None, None, None);
+        SessionLog::append(
+            &self.opt.directory,
+            "ready",
+            Some("热键已注册。"),
+            None,
+            None,
+            None,
+        );
         self.write_heartbeat("等待 arm。", None, false);
         self.started = self.opt.clock.seconds();
         self.previous = self.started;
@@ -145,7 +208,12 @@ impl RecoverySession {
             return;
         }
         if let Err(ex) = self.tick_core() {
-            self.fail("error", Some(&ex), self.holding || self.armed);
+            if self.state == RecoveryState::RestoreFailed {
+                self.result.error = Some(ex.clone());
+                self.write_heartbeat(&ex, None, true);
+            } else {
+                self.fail("error", Some(&ex), self.holding || self.armed);
+            }
         }
     }
 
@@ -161,7 +229,8 @@ impl RecoverySession {
                 self.fail("release", Some("已取消，未改物理屏。"), false);
                 return Ok(());
             }
-            if let Some(arm) = JsonUtil::try_read::<ArmFile>(SessionPaths::arm(&self.opt.directory)) {
+            if let Some(arm) = JsonUtil::try_read::<ArmFile>(SessionPaths::arm(&self.opt.directory))
+            {
                 if arm.pid != self.opt.self_pid {
                     self.fail("error", Some("arm PID mismatch"), false);
                     return Ok(());
@@ -173,7 +242,11 @@ impl RecoverySession {
                 return Ok(());
             }
             if now - self.started >= self.opt.arm_timeout_seconds {
-                self.fail("not-armed", Some("recovery worker not ready within timeout"), false);
+                self.fail(
+                    "not-armed",
+                    Some("recovery worker not ready within timeout"),
+                    false,
+                );
             }
             return Ok(());
         }
@@ -182,11 +255,31 @@ impl RecoverySession {
             return Ok(());
         }
         if SessionPaths::release(&self.opt.directory).exists() {
-            self.finish("release", true);
-            return Ok(());
+            let text = std::fs::read_to_string(SessionPaths::release(&self.opt.directory))
+                .map_err(|e| e.to_string());
+            match text {
+                Ok(text) if self.last_release_text.as_deref() != Some(&text) => {
+                    self.last_release_text = Some(text.clone());
+                    let release: ReleaseFile =
+                        serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                    if release.request_id == 0 {
+                        return Err("恢复请求缺少编号。".into());
+                    }
+                    if release.request_id > self.processed_release {
+                        self.processed_release = release.request_id;
+                        self.finish("release", true);
+                        return Ok(());
+                    }
+                }
+                Err(e) if self.state != RecoveryState::RestoreFailed => return Err(e),
+                _ => {}
+            }
         }
         if self.opt.parent_pid > 0 && !self.opt.parent.is_alive(self.opt.parent_pid)? {
             self.finish("parent-exit", true);
+            return Ok(());
+        }
+        if self.state == RecoveryState::RestoreFailed {
             return Ok(());
         }
         if self.waiting_vdd {
@@ -198,6 +291,10 @@ impl RecoverySession {
             return Ok(());
         }
         self.previous = now;
+        if crate::maintenance::is_active()? {
+            self.finish("maintenance", true);
+            return Ok(());
+        }
         self.apply_intent_if_needed();
         if self.exited {
             return Ok(());
@@ -207,7 +304,12 @@ impl RecoverySession {
                 let frame = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS)?;
                 let current = PathOps::active_targets(&frame.paths);
                 if current != expected {
-                    let selected: Vec<_> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+                    let selected: Vec<_> = self
+                        .intent
+                        .keep_off
+                        .iter()
+                        .map(|x| x.to_identity())
+                        .collect();
                     if keep_off_still_holds(&frame.snapshot, &selected) {
                         self.expected_targets = Some(current);
                         SessionLog::append(
@@ -251,33 +353,60 @@ impl RecoverySession {
         if self.last_intent_text.as_deref() == Some(&text) {
             return;
         }
-        let intent = match JsonUtil::read::<IntentFile>(&path) {
+        let intent = match serde_json::from_str::<IntentFile>(&text) {
             Ok(v) => v,
             Err(ex) => {
-                self.write_heartbeat(&format!("intent 无效：{ex}"), None, false);
+                self.fail("error", Some(&format!("intent 无效：{ex}")), true);
                 return;
             }
         };
-        let previous: Vec<ScreenIdentity> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+        let previous: Vec<ScreenIdentity> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect();
+        if intent.request_id == 0 {
+            self.fail("error", Some("关屏请求缺少编号。"), true);
+            return;
+        }
+        if intent.request_id <= self.processed_request {
+            return;
+        }
+        self.processed_request = intent.request_id;
         self.last_intent_text = Some(text);
         self.intent = intent;
-        let selected: Vec<_> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+        let selected: Vec<_> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect();
         if selected.is_empty() {
             self.finish("release", true);
             return;
         }
-        let shrink = previous.iter().any(|old| !selected.iter().any(|id| id.matches(old)));
+        let shrink = previous
+            .iter()
+            .any(|old| !selected.iter().any(|id| id.matches(old)));
         let ok = if shrink {
             self.try_apply_from_saved(&selected)
         } else {
             self.try_apply(&selected, false)
         };
-        if !ok && !shrink {
-            self.last_intent_text = None;
+        if !ok && !self.exited && self.state != RecoveryState::RestoreFailed {
+            self.fail("error", Some("操作失败，已结束本轮关闭要求。"), true);
         }
     }
 
     fn try_apply_from_saved(&mut self, selected: &[ScreenIdentity]) -> bool {
+        let _guard = match crate::maintenance::OperationLock::for_keep_off() {
+            Ok(g) => g,
+            Err(e) => {
+                self.result.error = Some(e);
+                return false;
+            }
+        };
         if self.saved_paths.is_empty() || self.saved_identities.len() != self.saved_paths.len() {
             self.write_heartbeat("保存拓扑无法用于单屏恢复。", Some(selected), true);
             return false;
@@ -286,7 +415,11 @@ impl RecoverySession {
             .iter()
             .any(|id| !self.saved_identities.iter().any(|saved| saved.matches(id)))
         {
-            self.write_heartbeat("保存拓扑与当前设备对不上，未恢复该屏。", Some(selected), true);
+            self.write_heartbeat(
+                "保存拓扑与当前设备对不上，未恢复该屏。",
+                Some(selected),
+                true,
+            );
             return false;
         }
         let prepared = match PathOps::deactivate(
@@ -306,11 +439,11 @@ impl RecoverySession {
             self.write_heartbeat("无法从保存拓扑恢复该屏，未 APPLY。", Some(selected), true);
             return false;
         }
-        let rc = match self
-            .opt
-            .ccd
-            .set(&prepared.paths, &prepared.modes, CcdConstants::VALIDATE_FLAGS)
-        {
+        let rc = match self.opt.ccd.set(
+            &prepared.paths,
+            &prepared.modes,
+            CcdConstants::VALIDATE_FLAGS,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 self.write_heartbeat(&e, Some(selected), true);
@@ -326,20 +459,25 @@ impl RecoverySession {
                 Some(false),
                 Some(rc),
             );
-            self.write_heartbeat(&format!("无法从保存拓扑恢复该屏：校验 {rc}。"), Some(selected), true);
+            self.write_heartbeat(
+                &format!("无法从保存拓扑恢复该屏：校验 {rc}。"),
+                Some(selected),
+                true,
+            );
             return false;
         }
-        let apply_rc = match self
-            .opt
-            .ccd
-            .set(&prepared.paths, &prepared.modes, CcdConstants::APPLY_FLAGS)
-        {
-            Ok(v) => v,
-            Err(e) => {
-                self.write_heartbeat(&e, Some(selected), true);
-                return false;
-            }
-        };
+        let apply_rc =
+            match self
+                .opt
+                .ccd
+                .set(&prepared.paths, &prepared.modes, CcdConstants::APPLY_FLAGS)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    self.write_heartbeat(&e, Some(selected), true);
+                    return false;
+                }
+            };
         self.result.apply_rc = Some(apply_rc);
         self.result.adjusted_origin = Some(prepared.adjusted_origin);
         if apply_rc != 0 {
@@ -354,6 +492,7 @@ impl RecoverySession {
             self.write_heartbeat(&format!("APPLY 失败：{apply_rc}。"), Some(selected), true);
             return false;
         }
+        self.state = RecoveryState::Holding;
         self.holding = true;
         self.expected_targets = Some(PathOps::active_targets(&prepared.paths));
         SessionLog::append(
@@ -369,6 +508,13 @@ impl RecoverySession {
     }
 
     fn try_apply(&mut self, selected: &[ScreenIdentity], is_reapply: bool) -> bool {
+        let _guard = match crate::maintenance::OperationLock::for_keep_off() {
+            Ok(g) => g,
+            Err(e) => {
+                self.result.error = Some(e);
+                return false;
+            }
+        };
         let frame = match self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) {
             Ok(f) => f,
             Err(e) => {
@@ -386,7 +532,10 @@ impl RecoverySession {
                 self.request_bundled_vdd();
                 return false;
             }
-            let enable = plan.block_reason.clone().unwrap_or_else(|| Gate::ENABLE_VDD_REASON.into());
+            let enable = plan
+                .block_reason
+                .clone()
+                .unwrap_or_else(|| Gate::ENABLE_VDD_REASON.into());
             SessionLog::append(
                 &self.opt.directory,
                 "apply-blocked",
@@ -399,7 +548,10 @@ impl RecoverySession {
             return false;
         }
         if plan.action == KeepOffAction::Blocked {
-            let blocked = plan.block_reason.clone().unwrap_or_else(|| Gate::LAST_PATH_REASON.into());
+            let blocked = plan
+                .block_reason
+                .clone()
+                .unwrap_or_else(|| Gate::LAST_PATH_REASON.into());
             SessionLog::append(
                 &self.opt.directory,
                 "apply-blocked",
@@ -409,10 +561,6 @@ impl RecoverySession {
                 None,
             );
             self.write_heartbeat(&blocked, Some(selected), true);
-            if is_reapply {
-                let reason = self.result.reason.clone();
-                self.finish(&reason, true);
-            }
             return false;
         }
         let identities: Vec<_> = frame.snapshot.paths.iter().map(|p| p.identity()).collect();
@@ -429,6 +577,7 @@ impl RecoverySession {
             .collect();
         if still_active.is_empty() {
             if frame.snapshot.active_paths().next().is_some() {
+                self.state = RecoveryState::Holding;
                 self.holding = true;
                 self.expected_targets = Some(PathOps::active_targets(&frame.paths));
                 SessionLog::append(
@@ -458,11 +607,20 @@ impl RecoverySession {
                 Some(is_reapply),
                 None,
             );
-            self.write_heartbeat("VALIDATE 后没有剩余活动路径，未 APPLY。", Some(selected), true);
+            self.write_heartbeat(
+                "VALIDATE 后没有剩余活动路径，未 APPLY。",
+                Some(selected),
+                true,
+            );
             return false;
         }
-        let prepared = match PathOps::deactivate(&frame.paths, &frame.modes, &identities, &still_active, plan.adjust_origin)
-        {
+        let prepared = match PathOps::deactivate(
+            &frame.paths,
+            &frame.modes,
+            &identities,
+            &still_active,
+            plan.adjust_origin,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 self.write_heartbeat(&e, Some(selected), true);
@@ -470,13 +628,21 @@ impl RecoverySession {
             }
         };
         if !prepared.can_apply() {
-            self.write_heartbeat("VALIDATE 后没有剩余活动路径，未 APPLY。", Some(selected), true);
+            self.write_heartbeat(
+                "VALIDATE 后没有剩余活动路径，未 APPLY。",
+                Some(selected),
+                true,
+            );
             return false;
         }
         let mut paths = prepared.paths.clone();
         let mut modes = prepared.modes.clone();
         let mut adjusted_clone = false;
-        let mut rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::VALIDATE_FLAGS) {
+        let mut rc = match self
+            .opt
+            .ccd
+            .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
+        {
             Ok(v) => v,
             Err(e) => {
                 self.write_heartbeat(&e, Some(selected), true);
@@ -496,8 +662,11 @@ impl RecoverySession {
                 }
             };
             if clone_rc != 0 {
-                self.write_heartbeat(&format!("无法改为共用源拓扑：{clone_rc}。"), Some(selected), true);
-                self.restore_saved();
+                self.write_heartbeat(
+                    &format!("无法改为共用源拓扑：{clone_rc}。"),
+                    Some(selected),
+                    true,
+                );
                 return false;
             }
             adjusted_clone = true;
@@ -505,7 +674,6 @@ impl RecoverySession {
                 Ok(f) => f,
                 Err(e) => {
                     self.write_heartbeat(&e, Some(selected), true);
-                    self.restore_saved();
                     return false;
                 }
             };
@@ -521,33 +689,38 @@ impl RecoverySession {
                 })
                 .cloned()
                 .collect();
-            let prepared = match PathOps::deactivate(&frame.paths, &frame.modes, &identities, &still_active, plan.adjust_origin)
-            {
+            let prepared = match PathOps::deactivate(
+                &frame.paths,
+                &frame.modes,
+                &identities,
+                &still_active,
+                plan.adjust_origin,
+            ) {
                 Ok(p) => p,
                 Err(e) => {
                     self.write_heartbeat(&e, Some(selected), true);
-                    self.restore_saved();
                     return false;
                 }
             };
             if !prepared.can_apply() {
                 self.write_heartbeat("改为共用源后仍无法留下活动路径。", Some(selected), true);
-                self.restore_saved();
                 return false;
             }
             paths = prepared.paths;
             modes = prepared.modes;
-            rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::VALIDATE_FLAGS) {
+            rc = match self
+                .opt
+                .ccd
+                .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
+            {
                 Ok(v) => v,
                 Err(e) => {
                     self.write_heartbeat(&e, Some(selected), true);
-                    self.restore_saved();
                     return false;
                 }
             };
             if rc != 0 {
                 self.write_heartbeat(&format!("无法保持关闭：校验 {rc}。"), Some(selected), true);
-                self.restore_saved();
                 return false;
             }
         }
@@ -584,12 +757,10 @@ impl RecoverySession {
                 Some(apply_rc),
             );
             self.write_heartbeat(&format!("APPLY 失败：{apply_rc}。"), Some(selected), true);
-            self.restore_saved();
-            if is_reapply {
-                self.finish("error", false);
-            }
+
             return false;
         }
+        self.state = RecoveryState::Holding;
         self.holding = true;
         self.expected_targets = Some(PathOps::active_targets(&paths));
         SessionLog::append(
@@ -627,12 +798,27 @@ impl RecoverySession {
             None,
         );
         self.restore_saved();
-        let selected: Vec<_> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+        if self.result.restore_state != RestoreState::Complete {
+            self.fail(reason, Some("中断后恢复未完成。"), false);
+            return;
+        }
+        let selected: Vec<_> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect();
         if !self.reapply_attempted && !selected.is_empty() {
             self.reapply_attempted = true;
             self.result.reapply_attempted = true;
-            SessionLog::append(&self.opt.directory, "reapply-attempt", None, Some(reason), None, None);
-            self.write_heartbeat("会话中断，尝试再关一次。", Some(&selected), false);
+            SessionLog::append(
+                &self.opt.directory,
+                "reapply-attempt",
+                None,
+                Some(reason),
+                None,
+                None,
+            );
             self.wait_for_selected_physical(&selected);
             if self.try_apply(&selected, true) && self.holding {
                 self.previous = self.opt.clock.seconds();
@@ -643,7 +829,9 @@ impl RecoverySession {
                 return;
             }
         }
-        self.finish(reason, false);
+        if !self.exited && self.state != RecoveryState::RestoreFailed {
+            self.finish(reason, true);
+        }
     }
 
     fn finish(&mut self, reason: &str, restore: bool) {
@@ -651,68 +839,140 @@ impl RecoverySession {
             return;
         }
         self.result.reason = reason.into();
+        self.intent.keep_off.clear();
+        self.waiting_vdd = false;
+        self.armed = true;
         if restore {
             self.restore_saved();
         }
         self.result.ok = matches!(reason, "hotkey" | "release" | "parent-exit")
-            && (self.result.apply_rc.is_none() || self.result.apply_rc == Some(0))
-            && self.result.restore_rc == Some(0)
-            && self.result.restored_targets
-            && self.result.restored_topology;
-        let hb = finish_heartbeat(reason);
-        self.write_heartbeat(&hb, None, false);
+            && self.result.restore_state == RestoreState::Complete;
+        let complete = matches!(
+            self.result.restore_state,
+            RestoreState::Complete | RestoreState::NotNeeded
+        );
+        self.state = if complete {
+            RecoveryState::Finished
+        } else {
+            RecoveryState::RestoreFailed
+        };
+        self.holding = false;
+        self.expected_targets = None;
+        let detail = if complete {
+            finish_heartbeat(reason)
+        } else {
+            "恢复未完成，已停止自动操作；请按热键或点恢复全部重试。".into()
+        };
+        self.write_heartbeat(&detail, None, !complete);
         SessionLog::append(
             &self.opt.directory,
             "finish",
-            Some(&hb),
+            Some(&detail),
             Some(reason),
-            Some(self.result.reapply_attempted),
+            None,
             self.result.apply_rc,
         );
-        self.write_result();
+        // Keep the worker and hotkey available after a failed restoration.
+        if complete || reason == "parent-exit" || self.opt.parent_pid == 0 {
+            self.write_result();
+        }
     }
 
     fn fail(&mut self, reason: &str, error: Option<&str>, restore: bool) {
-        self.result.reason = reason.into();
-        self.result.error = error.map(|s| s.to_string());
-        self.result.ok = false;
-        if restore {
-            self.restore_saved();
+        let restore = restore || (!self.armed && self.baseline_changed);
+        self.result.error = error.map(str::to_owned);
+        if !self.armed && !restore && !self.baseline_changed {
+            self.result.reason = reason.into();
+            self.result.restore_state = RestoreState::NotNeeded;
+            self.write_result();
+            return;
         }
-        let detail = error.unwrap_or(reason);
-        self.write_heartbeat(detail, None, false);
-        SessionLog::append(&self.opt.directory, "finish", Some(detail), Some(reason), None, None);
-        self.write_result();
+        if !self.armed && restore && !self.baseline_changed {
+            self.result.reason = reason.into();
+            self.result.restore_state = RestoreState::Unknown;
+            self.write_result();
+            return;
+        }
+        self.armed = true;
+        self.finish(reason, restore);
     }
 
     fn restore_saved(&mut self) {
+        self.state = RecoveryState::Restoring;
+        self.write_heartbeat("正在恢复物理输出。", None, false);
+        self.result.restore_state = RestoreState::Unknown;
+        self.result.restored_targets = false;
+        self.result.restored_topology = false;
+        self.result.fallback_rc = None;
         if self.saved_paths.is_empty() {
             return;
         }
         self.result.restore_rc = self
             .opt
             .ccd
-            .set(&self.saved_paths, &self.saved_modes, CcdConstants::APPLY_FLAGS)
+            .set(
+                &self.saved_paths,
+                &self.saved_modes,
+                CcdConstants::APPLY_FLAGS,
+            )
             .ok();
-        if let Ok(after) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) {
-            self.result.restored_targets =
-                PathOps::active_targets(&after.paths) == PathOps::active_targets(&self.saved_paths);
-            self.result.restored_topology =
-                TopologyBlob::fingerprint(&after.paths, &after.modes) == self.saved_fingerprint;
-        }
-        if self.result.restore_rc != Some(0) || !self.result.restored_targets {
+        self.observe_restoration(10);
+        if self.result.restore_state != RestoreState::Complete {
             self.result.fallback_rc = self
                 .opt
                 .ccd
                 .set_topology(CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_INTERNAL)
                 .ok();
+            self.observe_restoration(11);
         }
         self.holding = false;
         self.expected_targets = None;
     }
 
+    fn observe_restoration(&mut self, attempts: usize) {
+        for attempt in 0..attempts {
+            let active = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS);
+            let connected = self.opt.ccd.connected_physical();
+            self.result.restore_state = match (active, connected) {
+                (Ok(frame), Ok(connected)) => {
+                    self.result.restored_topology =
+                        TopologyBlob::fingerprint(&frame.paths, &frame.modes)
+                            == self.saved_fingerprint;
+                    let physical: Vec<_> = frame
+                        .snapshot
+                        .active_physical()
+                        .map(|p| p.identity())
+                        .collect();
+                    let complete = !physical.is_empty()
+                        && self.physical_targets.iter().all(|id| {
+                            !connected.iter().any(|c| c.matches(id))
+                                || physical.iter().any(|p| p.matches(id))
+                        });
+                    self.result.restored_targets = complete;
+                    if complete {
+                        RestoreState::Complete
+                    } else {
+                        RestoreState::Partial
+                    }
+                }
+                _ => RestoreState::Unknown,
+            };
+            if self.result.restore_state == RestoreState::Complete {
+                return;
+            }
+            if attempt + 1 < attempts {
+                (self.opt.pause)(Duration::from_millis(150));
+            }
+        }
+    }
+
     fn write_heartbeat(&mut self, detail: &str, selected: Option<&[ScreenIdentity]>, failed: bool) {
-        let owned: Vec<ScreenIdentity> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+        let owned: Vec<ScreenIdentity> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect();
         let selected = selected.unwrap_or(&owned);
         let snapshot = self
             .opt
@@ -751,12 +1011,20 @@ impl RecoverySession {
                 name: row.display_name(),
                 wanted: wanted.into(),
                 confirmed: confirmed.into(),
-                detail: if wanted == "保持关闭" { detail.into() } else { String::new() },
+                detail: if wanted == "保持关闭" {
+                    detail.into()
+                } else {
+                    String::new()
+                },
             });
         }
         for id in selected {
             if screens.iter().any(|s| {
-                id.matches(&ScreenIdentity::new(&s.adapter_luid, s.target_id, &s.monitor_path))
+                id.matches(&ScreenIdentity::new(
+                    &s.adapter_luid,
+                    s.target_id,
+                    &s.monitor_path,
+                ))
             }) {
                 continue;
             }
@@ -779,6 +1047,8 @@ impl RecoverySession {
         let _ = JsonUtil::write_atomic(
             SessionPaths::heartbeat(&self.opt.directory),
             &HeartbeatFile {
+                state: self.state,
+                processed_request_id: self.processed_request.max(self.processed_release),
                 hotkey_registered: self.hotkey_registered,
                 armed: self.armed,
                 screens,
@@ -788,18 +1058,36 @@ impl RecoverySession {
     }
 
     fn write_result(&mut self) {
+        if let Err(error) =
+            JsonUtil::write_atomic(SessionPaths::result(&self.opt.directory), &self.result)
+        {
+            self.state = RecoveryState::RestoreFailed;
+            self.write_heartbeat(&format!("无法写入恢复结果：{error}"), None, true);
+            if self.result.reason == "parent-exit" || self.opt.parent_pid == 0 {
+                if self.hotkey_registered {
+                    self.opt.hotkey.unregister();
+                    self.hotkey_registered = false;
+                }
+                self.exited = true;
+            }
+            return;
+        }
         if self.hotkey_registered {
             self.opt.hotkey.unregister();
             self.hotkey_registered = false;
         }
-        let _ = JsonUtil::write_atomic(SessionPaths::result(&self.opt.directory), &self.result);
         self.exited = true;
     }
 
     fn wait_for_selected_physical(&mut self, selected: &[ScreenIdentity]) {
         let attempts = self.opt.reapply_settle_attempts.max(1);
         for i in 0..attempts {
-            if let Ok(snap) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS).map(|f| f.snapshot) {
+            if let Ok(snap) = self
+                .opt
+                .ccd
+                .capture(CcdConstants::QUERY_FLAGS)
+                .map(|f| f.snapshot)
+            {
                 if selected.iter().any(|id| {
                     snap.paths
                         .iter()
@@ -833,13 +1121,18 @@ impl RecoverySession {
     fn request_bundled_vdd(&mut self) {
         self.waiting_vdd = true;
         self.vdd_wait_start = self.opt.clock.seconds();
-        let _ = JsonUtil::write_atomic(
+        let write = JsonUtil::write_atomic(
             SessionPaths::vdd_request(&self.opt.directory),
             &VddRequestFile {
                 at: self.vdd_wait_start,
                 reason: "reapply".into(),
             },
         );
+        if let Err(e) = write {
+            self.waiting_vdd = false;
+            self.fail("error", Some(&e), true);
+            return;
+        }
         SessionLog::append(
             &self.opt.directory,
             "vdd-request",
@@ -869,7 +1162,12 @@ impl RecoverySession {
             self.finish(&reason, true);
             return;
         }
-        let Ok(snap) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS).map(|f| f.snapshot) else {
+        let Ok(snap) = self
+            .opt
+            .ccd
+            .capture(CcdConstants::QUERY_FLAGS)
+            .map(|f| f.snapshot)
+        else {
             return;
         };
         if !snap.has_active_bundled_vdd() {
@@ -877,14 +1175,19 @@ impl RecoverySession {
         }
         let _ = std::fs::remove_file(SessionPaths::vdd_request(&self.opt.directory));
         SessionLog::append(&self.opt.directory, "vdd-ready", None, None, None, None);
-        let selected: Vec<_> = self.intent.keep_off.iter().map(|x| x.to_identity()).collect();
+        let selected: Vec<_> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|x| x.to_identity())
+            .collect();
         self.waiting_vdd = false;
         if self.try_apply(&selected, true) && self.holding {
             self.previous = now;
             return;
         }
         let reason = self.result.reason.clone();
-        self.finish(&reason, false);
+        self.finish(&reason, true);
     }
 }
 
@@ -893,7 +1196,11 @@ fn keep_off_still_holds(snapshot: &DisplaySnapshot, selected: &[ScreenIdentity])
         return false;
     }
     for id in selected {
-        if let Some(row) = snapshot.paths.iter().find(|p| p.is_physical() && id.matches(&p.identity())) {
+        if let Some(row) = snapshot
+            .paths
+            .iter()
+            .find(|p| p.is_physical() && id.matches(&p.identity()))
+        {
             if row.active {
                 return false;
             }

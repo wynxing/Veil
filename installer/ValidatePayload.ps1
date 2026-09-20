@@ -5,14 +5,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$systemModules = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\Modules"
-if (-not $env:PSModulePath) {
-    $env:PSModulePath = $systemModules
+# Resolve the module from this PowerShell runtime, not an inherited PS7/PS5 module path.
+if (-not (Get-Module -Name Microsoft.PowerShell.Security)) {
+    Import-Module (Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1") -ErrorAction Stop
 }
-elseif ($env:PSModulePath -notlike ("*" + $systemModules + "*")) {
-    $env:PSModulePath = $systemModules + ";" + $env:PSModulePath
-}
-Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
 
 function Get-VeilFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)

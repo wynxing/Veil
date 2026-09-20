@@ -33,6 +33,9 @@ if (-not $cargo) { throw "cargo not found. Install Rust MSVC toolchain." }
 
 $outRoot = Join-Path $PSScriptRoot "out"
 $out = Join-Path $outRoot "app"
+$resolvedOut = [IO.Path]::GetFullPath($outRoot)
+$expectedOut = [IO.Path]::GetFullPath((Join-Path $repo "installer\out"))
+if ($resolvedOut -ne $expectedOut) { throw "Unexpected output directory: $resolvedOut" }
 if (Test-Path -LiteralPath $outRoot) {
     Remove-Item -LiteralPath $outRoot -Recurse -Force
 }
@@ -42,7 +45,8 @@ $manifest = Join-Path $repo "src\Cargo.toml"
 & cargo build --manifest-path $manifest --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$releaseDir = Join-Path $repo "src\target\x86_64-pc-windows-msvc\release"
+$targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $repo "src\target" }
+$releaseDir = Join-Path $targetRoot "x86_64-pc-windows-msvc\release"
 $copies = @(
     @{ Src = "veil_app.exe"; Dest = "Veil.App.exe" },
     @{ Src = "veil_recovery.exe"; Dest = "Veil.Recovery.exe" },
@@ -51,7 +55,7 @@ $copies = @(
 foreach ($item in $copies) {
     $from = Join-Path $releaseDir $item.Src
     if (-not (Test-Path -LiteralPath $from)) {
-        $from = Join-Path (Join-Path $repo "src\target\release") $item.Src
+        $from = Join-Path (Join-Path $targetRoot "release") $item.Src
     }
     if (-not (Test-Path -LiteralPath $from)) {
         throw "Rust release is missing $($item.Src)"

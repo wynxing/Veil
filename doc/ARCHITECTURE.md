@@ -22,7 +22,7 @@
 | 项 | 选择 | 说明 |
 | --- | --- | --- |
 | 语言与运行时 | Rust，x64 MSVC（`x86_64-pc-windows-msvc`） | 结构体尺寸与探针 ABI 单测对齐；首版不发布 x86 / ARM |
-| 界面 | egui 小面板 + 原生托盘（非 wgpu） | 单击托盘打开；不是设置中心；不引入浏览器控件 |
+| 界面 | egui 小面板 + 原生托盘（优先 wgpu，初始化失败尝试 glow） | 单击托盘打开；不是设置中心；不引入浏览器控件 |
 | 安装 | 传统安装包：WiX 5 引导 EXE（Burn）+ 应用 MSI | 便于提权安装已签名驱动；不用 MSIX |
 | 首版范围 | 含按需自带 VDD | 无第二物理屏时，允许关光全部物理屏 |
 | 关屏机制 | CCD `SetDisplayConfig` 停路径 | 不写 `SDC_SAVE_TO_DATABASE` |
@@ -94,7 +94,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 | --- | --- | --- |
 | 关一块或多块，关完仍有活动物理屏 | VALIDATE 0 且剩余活动路径 ≥ 1 | 清除目标路径 ACTIVE。若被关的是当前主屏（留下的源不在原点），把留下的源模式挪到 `(0,0)` |
 | 关完后物理路径变为 0 | 用户已同意安装自带 VDD | 提权启用自带设备 → 确认出现活动虚拟路径 → 再停全部物理路径 |
-| 任一前一步失败 | — | 不 APPLY，保持当前已确认状态，写出原因 |
+| 任一前一步失败 | — | 结束本轮关闭要求，执行一次恢复；恢复未确认则保留恢复入口 |
 
 已验证事实（不是全平台保证）：
 
@@ -120,7 +120,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 | 文件 | 写入方 | 含义 |
 | --- | --- | --- |
-| 拓扑 JSON（path/mode 原始字节） | App，在 arm 前 | 回放基准；不含设备实例隐私以外的额外字段 |
+| 拓扑 JSON（path/mode 原始字节） | App，在 arm 前 | 启用 VDD 后的握手快照；恢复使用启用前 baseline.json；不含设备实例隐私以外的额外字段 |
 | `ready.json` | Recovery | `pid`、`hotkeyRegistered` |
 | `arm.json` | App | 必须等于 Recovery 的 pid，之后才允许 APPLY |
 | `release.json` | App | 用户恢复全部 / 退出 |
@@ -128,15 +128,15 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 | `events.jsonl` | Recovery（App 在补写 result 时也可追加） | 追加时间线：ready / apply / settle / interrupt / reapply / finish。给操作者复盘，不是心跳替代 |
 | `vdd-request.json` | Recovery 再关需要自带 VDD 时 | 界面 Poll 后提权 enable 一次；VDD 出现后再 APPLY。未完成不得循环 APPLY |
 
-结束原因需能区分：`hotkey`、`release`、`parent-exit`、`execution-gap`（调度间隙，常见于睡眠）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。
+结束原因需能区分：`hotkey`、`release`、`parent-exit`、`execution-gap`（调度间隙，常见于睡眠）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。协议 v2 的编号、结构化结果及卸载门禁见 [可靠性修复验收](validation/reliability-v2.md)。
 
-创建恢复进程时使用 `CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`。父进程崩溃不得带走恢复进程。恢复进程自身崩溃仍不保证回放拓扑；界面必须结束该会话并写明原因。有剩余活动物理屏且本会话用过自带 VDD 时，尝试 disable。人工兜底仍是 `Win+Ctrl+Shift+B`，再不行重启。该解绑路径有单元测试；机旁仍未验证解绑。
+创建恢复进程时使用 `CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`。父进程崩溃不得带走恢复进程。恢复进程自身崩溃仍不保证回放拓扑；界面保留失败上下文，用户再次恢复时启动 `--restore-only` 进程。只有重新枚举确认活动物理屏，且本次操作承担启用责任时才尝试 disable；状态未知则保留辅助输出。人工兜底仍是 `Win+Ctrl+Shift+B`，再不行重启。该解绑路径有单元测试；机旁仍未验证解绑。
 
 热键：`MOD_NOREPEAT | MOD_SHIFT | MOD_CONTROL | MOD_ALT` + `VK_F10`（与探针 `0x4007, 0x79` 相同）。注册失败则拒绝关屏，面板必须可见地写「不可用」。
 
 ## 6. 界面进程
 
-egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台要求仍由恢复进程维持。默认不用 wgpu，避免拓扑变化时交换链丢失。
+egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台要求仍由恢复进程维持。当前实现优先使用 wgpu，初始化失败尝试 glow。拓扑切换时的窗口与渲染稳定性仍待机旁验证。
 
 - 单击托盘：打开/前置面板
 - 右键：打开面板、恢复全部、退出
@@ -224,7 +224,7 @@ Rust 引擎在 P15 与 REDMI 上关屏时，必须重新做机旁观察。移植
 5. DriverHelper 按需启用 + REDMI 关光内屏：工作树 exe 沿用已装 VDD 做过短时；不是 MSI 重装  
 6. 睡醒单次再关（失败即停）：代码已有；尚未机旁  
 7. 单屏恢复：缩小 intent 时从保存拓扑一次 APPLY；离线测试已有，机旁未做  
-8. 卸载恢复：`--restore-and-exit` 等待 `result.json`；机旁未做  
+8. 卸载恢复：`--restore-and-exit` 检查结构化恢复结果和维护门禁，失败阻止卸载；机旁未做
 
 第 4–5 步未通过前，不得把「无外接关笔记本」写成已发布能力；双物理屏路径可以按已测范围单独验收，但不能因此把 VDD 从首版设计里拿掉。
 

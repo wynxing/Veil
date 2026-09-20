@@ -26,17 +26,31 @@
       <ComponentGroupRef Id="VddFiles" />
     </Feature>
 
-    <CustomAction Id="RestoreDisplays" FileRef="VeilAppExe" ExeCommand="--restore-and-exit"
-                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <!-- Embedded helper remains available to rollback/commit after RemoveFiles. -->
+    <Binary Id="MaintenanceHelper" SourceFile="$(var.PublishDir)\Veil.DriverHelper.exe" />
+    <CustomAction Id="BeginMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="begin-maintenance"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="RollbackMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="end-maintenance"
+                  Execute="rollback" Impersonate="no" Return="check" />
+    <CustomAction Id="CommitMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="end-maintenance"
+                  Execute="commit" Impersonate="no" Return="check" />
+    <CustomAction Id="RestoreDisplays" BinaryRef="MaintenanceHelper" ExeCommand="restore-displays"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="RollbackVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
+                  Execute="rollback" Impersonate="no" Return="check" />
     <CustomAction Id="InstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="install-driver"
                   Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction Id="UninstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
-                  Execute="deferred" Impersonate="no" Return="ignore" />
+                  Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
-      <Custom Action="RestoreDisplays" Before="InstallValidate" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="UninstallVdd" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
-      <Custom Action="InstallVdd" After="InstallFiles" Condition="NOT Installed AND INSTALLVDD=1" />
+      <Custom Action="RollbackMaintenance" After="InstallInitialize" />
+      <Custom Action="BeginMaintenance" After="RollbackMaintenance" />
+      <Custom Action="RestoreDisplays" After="BeginMaintenance" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="UninstallVdd" After="RestoreDisplays" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="CommitMaintenance" After="UninstallVdd" />
+      <Custom Action="RollbackVdd" After="InstallFiles" Condition="NOT Installed AND INSTALLVDD=1" />
+      <Custom Action="InstallVdd" After="RollbackVdd" Condition="NOT Installed AND INSTALLVDD=1" />
     </InstallExecuteSequence>
   </Package>
 </Wix>

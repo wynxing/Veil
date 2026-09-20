@@ -1,12 +1,14 @@
 use crate::fakes::{self, FakeCcd, FakeHotkey, RcHotkey, SharedClock, SharedParent};
 use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, DisplayConfigPathSourceInfo,
-    DisplayConfigPathTargetInfo, DisplayConfigSourceMode, DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL,
+    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
+    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
+    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL,
 };
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile, ReleaseFile,
-    ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
+    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
+    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
 };
+use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
 use crate::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -38,8 +40,20 @@ fn query_and_set_flags_match_probe() {
 
 #[test]
 fn last_physical_without_bundled_vdd_is_blocked() {
-    let snap = DisplaySnapshot::new(vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN1540#1")], 0);
-    let plan = Gate::plan_keep_off(&snap, &[fakes::id(1, "0000000000000001", r"\\?\DISPLAY#CMN1540#1")], false);
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN1540#1",
+        )],
+        0,
+    );
+    let plan = Gate::plan_keep_off(
+        &snap,
+        &[fakes::id(1, "0000000000000001", r"\\?\DISPLAY#CMN1540#1")],
+        false,
+    );
     assert_eq!(plan.action, KeepOffAction::Blocked);
     assert!(plan.block_reason.unwrap().contains("第二活动目标"));
     assert!(!plan.needs_bundled_vdd);
@@ -48,7 +62,14 @@ fn last_physical_without_bundled_vdd_is_blocked() {
 
 #[test]
 fn game_viewer_even_with_internal_tech_does_not_unlock_last_physical() {
-    let viewer = Roles::classify(false, true, r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV#1", "GameViewer", r"\\.\DISPLAY3");
+    let viewer = Roles::classify(
+        false,
+        true,
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV#1",
+        "GameViewer",
+        r"\\.\DISPLAY3",
+    );
     assert_eq!(viewer, PathRole::Virtual);
     let snap = DisplaySnapshot::new(
         vec![
@@ -118,7 +139,15 @@ fn bundled_vdd_allows_closing_all_physical() {
 
 #[test]
 fn installed_but_inactive_vdd_requests_enable() {
-    let snap = DisplaySnapshot::new(vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN1540#1")], 0);
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN1540#1",
+        )],
+        0,
+    );
     let plan = Gate::plan_keep_off(&snap, &[snap.paths[0].identity()], true);
     assert_eq!(plan.action, KeepOffAction::EnableBundledVdd);
     assert!(plan.needs_bundled_vdd);
@@ -165,9 +194,20 @@ fn physical_list_omits_virtual() {
 
 #[test]
 fn virtual_needles_win_over_internal_technology() {
-    let role = Roles::classify(false, true, r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV0001", "GameViewer", r"\\.\DISPLAY1");
+    let role = Roles::classify(
+        false,
+        true,
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "GameViewer",
+        r"\\.\DISPLAY1",
+    );
     assert_eq!(role, PathRole::Virtual);
-    assert!(!Roles::is_bundled_vdd(r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV0001", "GameViewer"));
+    assert!(!Roles::is_bundled_vdd(
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "GameViewer"
+    ));
 }
 
 #[test]
@@ -178,15 +218,34 @@ fn placeholder_is_not_physical() {
 
 #[test]
 fn game_viewer_is_virtual_but_not_bundled() {
-    let role = Roles::classify(false, false, r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV0001", "GameViewer", r"\\.\DISPLAY3");
+    let role = Roles::classify(
+        false,
+        false,
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "GameViewer",
+        r"\\.\DISPLAY3",
+    );
     assert_eq!(role, PathRole::Virtual);
-    assert!(!Roles::is_bundled_vdd(r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV0001", "GameViewer"));
+    assert!(!Roles::is_bundled_vdd(
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "GameViewer"
+    ));
 }
 
 #[test]
 fn mtt_vdd_hardware_path_is_bundled_without_friendly_name() {
-    assert!(Roles::is_bundled_vdd(r"ROOT#MttVDD\0000", r"\\?\DISPLAY#ABC123#1", "Generic Monitor"));
-    assert!(!Roles::is_bundled_vdd(r"ROOT\DISPLAY\0000", r"\\?\DISPLAY#GVV0001", "VDD by MTT"));
+    assert!(Roles::is_bundled_vdd(
+        r"ROOT#MttVDD\0000",
+        r"\\?\DISPLAY#ABC123#1",
+        "Generic Monitor"
+    ));
+    assert!(!Roles::is_bundled_vdd(
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "VDD by MTT"
+    ));
 }
 
 #[test]
@@ -209,7 +268,14 @@ fn mtt_vdd_is_bundled_virtual() {
 
 #[test]
 fn external_dp_is_physical() {
-    let role = Roles::classify(false, false, r"PCI\VEN_8086", r"\\?\DISPLAY#PDA0238#1", "S24Q6-Q24G8", r"\\.\DISPLAY1");
+    let role = Roles::classify(
+        false,
+        false,
+        r"PCI\VEN_8086",
+        r"\\?\DISPLAY#PDA0238#1",
+        "S24Q6-Q24G8",
+        r"\\.\DISPLAY1",
+    );
     assert_eq!(role, PathRole::External);
 }
 
@@ -226,14 +292,27 @@ fn deactivation_preserves_auxiliary_union_and_original() {
         fakes::id(2, "0000000000000001", ""),
         fakes::id(3, "0000000000000001", ""),
     ];
-    let result = PathOps::deactivate(&original, &[], &identities, &[fakes::id(1, "0000000000000001", "")], false).unwrap();
+    let result = PathOps::deactivate(
+        &original,
+        &[],
+        &identities,
+        &[fakes::id(1, "0000000000000001", "")],
+        false,
+    )
+    .unwrap();
     assert_eq!(result.disabled_count, 1);
     assert_eq!(result.remaining_active, 1);
     assert_eq!(before, struct_bytes(&original));
-    assert_eq!(result.paths[0].flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE, 0);
+    assert_eq!(
+        result.paths[0].flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE,
+        0
+    );
     assert_eq!(result.paths[0].flags, 8);
     assert_eq!(result.paths[0].source_info.mode_info_idx, 0x0001FFFF);
-    assert_eq!(struct_bytes(&[original[1]]), struct_bytes(&[result.paths[1]]));
+    assert_eq!(
+        struct_bytes(&[original[1]]),
+        struct_bytes(&[result.paths[1]])
+    );
 }
 
 #[test]
@@ -254,7 +333,8 @@ fn remaining_source_moves_to_origin_without_mutating_input() {
         position: PointL { x: 2560, y: 12 },
     });
     let original = struct_bytes(&[source_mode]);
-    let (shifted, moved) = PathOps::move_remaining_to_origin(&[remaining], &[target_mode, source_mode]);
+    let (shifted, moved) =
+        PathOps::move_remaining_to_origin(&[remaining], &[target_mode, source_mode]);
     assert!(moved);
     assert_eq!(shifted[1].source_mode().position.x, 0);
     assert_eq!(shifted[1].source_mode().position.y, 0);
@@ -293,8 +373,18 @@ fn closing_primary_external_moves_origin() {
         position: PointL { x: 0, y: 0 },
         ..Default::default()
     });
-    let identities = vec![fakes::id(1, "0000000000000001", ""), fakes::id(2, "0000000000000001", "")];
-    let result = PathOps::deactivate(&paths, &modes, &identities, &[fakes::id(2, "0000000000000001", "")], true).unwrap();
+    let identities = vec![
+        fakes::id(1, "0000000000000001", ""),
+        fakes::id(2, "0000000000000001", ""),
+    ];
+    let result = PathOps::deactivate(
+        &paths,
+        &modes,
+        &identities,
+        &[fakes::id(2, "0000000000000001", "")],
+        true,
+    )
+    .unwrap();
     assert!(result.adjusted_origin);
     assert_eq!(result.modes[0].source_mode().position.x, 0);
     assert_eq!(result.disabled_count, 1);
@@ -321,7 +411,14 @@ fn origin_adjust_moves_only_one_remaining_source() {
         fakes::id(2, "0000000000000001", ""),
         fakes::id(3, "0000000000000002", ""),
     ];
-    let result = PathOps::deactivate(&paths, &modes, &identities, &[fakes::id(1, "0000000000000001", "")], true).unwrap();
+    let result = PathOps::deactivate(
+        &paths,
+        &modes,
+        &identities,
+        &[fakes::id(1, "0000000000000001", "")],
+        true,
+    )
+    .unwrap();
     assert!(result.adjusted_origin);
     let moved = result
         .modes
@@ -344,7 +441,10 @@ fn topology_round_trip_preserves_path_bytes() {
     let (out_paths, out_modes) = blob.to_arrays().unwrap();
     assert_eq!(struct_bytes(&paths), struct_bytes(&out_paths));
     assert_eq!(struct_bytes(&modes), struct_bytes(&out_modes));
-    assert_eq!(TopologyBlob::fingerprint(&paths, &modes), TopologyBlob::fingerprint(&out_paths, &out_modes));
+    assert_eq!(
+        TopologyBlob::fingerprint(&paths, &modes),
+        TopologyBlob::fingerprint(&out_paths, &out_modes)
+    );
 }
 
 #[test]
@@ -364,7 +464,8 @@ fn validate_never_sets_apply() {
             fakes::row_simple(PathRole::External, 2, "S24", r"\\?\DISPLAY#PDA#1"),
         ],
     );
-    let result = DisplayPlanner::validate_deactivate(&ccd, &[ccd.rows()[0].identity()], true).unwrap();
+    let result =
+        DisplayPlanner::validate_deactivate(&ccd, &[ccd.rows()[0].identity()], true).unwrap();
     assert!(result.ok());
     assert!(!result.used_apply);
     for flags in ccd.flags() {
@@ -379,9 +480,15 @@ fn zero_remaining_does_not_count_as_ok() {
     let ccd = FakeCcd::with_paths_rows(
         vec![fakes::path_default(true, 1)],
         vec![],
-        vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN1540#1")],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN1540#1",
+        )],
     );
-    let result = DisplayPlanner::validate_deactivate(&ccd, &[ccd.rows()[0].identity()], false).unwrap();
+    let result =
+        DisplayPlanner::validate_deactivate(&ccd, &[ccd.rows()[0].identity()], false).unwrap();
     assert!(!result.ok());
     assert_eq!(result.remaining_active, 0);
     assert!(ccd.flags().is_empty());
@@ -389,7 +496,10 @@ fn zero_remaining_does_not_count_as_ok() {
 
 #[test]
 fn driver_reads_hardcoded_lab_directory() {
-    assert_eq!(BundledVddSettings::DRIVER_READS_DIRECTORY, r"C:\VirtualDisplayDriver");
+    assert_eq!(
+        BundledVddSettings::DRIVER_READS_DIRECTORY,
+        r"C:\VirtualDisplayDriver"
+    );
     assert_eq!(BundledVddSettings::FILE_NAME, "vdd_settings.xml");
     assert!(BundledVddSettings::XML.contains("<count>1</count>"));
     assert!(BundledVddSettings::XML.contains("<width>1920</width>"));
@@ -402,18 +512,26 @@ fn write_xml_copies_into_install_and_driver_directories() {
     let install = root.join("program-vdd");
     let driver = root.join("driver-read");
     let _ = std::fs::remove_dir_all(&root);
-    BundledVddSettings::write_xml(&[&install.to_string_lossy(), &driver.to_string_lossy()]).unwrap();
+    BundledVddSettings::write_xml(&[&install.to_string_lossy(), &driver.to_string_lossy()])
+        .unwrap();
     let a = install.join(BundledVddSettings::FILE_NAME);
     let b = driver.join(BundledVddSettings::FILE_NAME);
     assert!(a.exists());
     assert!(b.exists());
     let a_text = std::fs::read_to_string(&a).unwrap().replace("\r\n", "\n");
     assert_eq!(BundledVddSettings::XML.replace("\r\n", "\n"), a_text);
-    assert_eq!(std::fs::read_to_string(&a).unwrap(), std::fs::read_to_string(&b).unwrap());
-    assert!(BundledVddSettings::try_remove_owned_file(&install.to_string_lossy()));
+    assert_eq!(
+        std::fs::read_to_string(&a).unwrap(),
+        std::fs::read_to_string(&b).unwrap()
+    );
+    assert!(BundledVddSettings::try_remove_owned_file(
+        &install.to_string_lossy()
+    ));
     assert!(!a.exists());
     std::fs::write(&b, "<vdd_settings>foreign</vdd_settings>").unwrap();
-    assert!(!BundledVddSettings::try_remove_owned_file(&driver.to_string_lossy()));
+    assert!(!BundledVddSettings::try_remove_owned_file(
+        &driver.to_string_lossy()
+    ));
     assert!(b.exists());
     assert!(BundledVddSettings::write_xml(&[&driver.to_string_lossy()]).is_err());
     let extra = root.join("rollback");
@@ -438,7 +556,13 @@ impl Drop for TempSession {
     }
 }
 fn uuid_like() -> String {
-    format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
+    format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
 }
 
 fn dual_physical() -> Rc<FakeCcd> {
@@ -498,6 +622,21 @@ fn internal_plus_vdd() -> Rc<FakeCcd> {
 
 fn save_topology(dir: &std::path::Path, ccd: &FakeCcd) {
     TopologyBlob::save(SessionPaths::topology(dir), &ccd.paths(), &ccd.modes()).unwrap();
+    TopologyBlob::save(SessionPaths::baseline(dir), &ccd.paths(), &ccd.modes()).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(dir),
+        &crate::session::SessionMetadata {
+            protocol_version: crate::session::PROTOCOL_VERSION,
+            physical_targets: ccd
+                .rows()
+                .iter()
+                .filter(|p| p.is_physical() && p.active)
+                .map(|p| ScreenIdentityDto::from_identity(&p.identity()))
+                .collect(),
+            vdd_owned: false,
+        },
+    )
+    .unwrap();
 }
 
 fn write_keep_internal_off(dir: &std::path::Path, vdd_assist: bool) {
@@ -508,6 +647,7 @@ fn write_keep_off(dir: &std::path::Path, targets: &[(u32, &str)], vdd_assist: bo
     JsonUtil::write_atomic(
         SessionPaths::intent(dir),
         &IntentFile {
+            request_id: crate::session::request_id(),
             keep_off: targets
                 .iter()
                 .map(|(id, mon)| ScreenIdentityDto {
@@ -543,6 +683,7 @@ fn options_ex(
     vdd_wait_seconds: f64,
 ) -> RecoveryOptions {
     RecoveryOptions {
+        restore_only: false,
         directory: dir,
         self_pid,
         parent_pid: 22,
@@ -566,7 +707,14 @@ fn arm_with_intent(
     clock: Rc<SharedClock>,
     vdd_assist: bool,
 ) -> RecoverySession {
-    let mut session = RecoverySession::new(options(dir.to_path_buf(), ccd, FakeHotkey::new(), 11, parent, clock));
+    let mut session = RecoverySession::new(options(
+        dir.to_path_buf(),
+        ccd,
+        FakeHotkey::new(),
+        11,
+        parent,
+        clock,
+    ));
     session.start();
     JsonUtil::write_atomic(SessionPaths::arm(dir), &ArmFile { pid: 11 }).unwrap();
     session.tick();
@@ -611,13 +759,25 @@ fn release_before_arm_exits_without_apply() {
         Rc::new(SharedClock::new(0.0)),
     ));
     session.start();
-    JsonUtil::write_atomic(SessionPaths::release(&dir.0), &ReleaseFile { at: 1.0 }).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::release(&dir.0),
+        &ReleaseFile {
+            at: 1.0,
+            request_id: crate::session::request_id(),
+        },
+    )
+    .unwrap();
     session.tick();
     assert!(session.exited);
     assert!(!ccd.applied());
     assert_eq!(session.result.reason, "release");
     assert!(!session.result.ok);
-    assert!(session.result.error.as_deref().unwrap_or("").contains("未改物理屏"));
+    assert!(session
+        .result
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("未改物理屏"));
     assert!(SessionPaths::result(&dir.0).exists());
 }
 
@@ -684,7 +844,12 @@ fn arm_pid_mismatch_never_applies() {
     session.tick();
     assert!(session.exited);
     assert!(!ccd.applied());
-    assert!(session.result.error.as_deref().unwrap_or("").contains("arm PID"));
+    assert!(session
+        .result
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("arm PID"));
 }
 
 #[test]
@@ -711,24 +876,47 @@ fn apply_happens_only_after_matching_arm_and_intent() {
     assert!(ccd.validated());
     assert!(ccd.applied());
     assert!(ccd.flags().iter().any(|f| *f == CcdConstants::APPLY_FLAGS));
-    assert!(!ccd.flags().iter().any(|f| f & CcdConstants::SDC_SAVE_TO_DATABASE != 0));
+    assert!(!ccd
+        .flags()
+        .iter()
+        .any(|f| f & CcdConstants::SDC_SAVE_TO_DATABASE != 0));
     let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
     assert!(heartbeat.screens.iter().any(|s| s.confirmed == "已关闭"));
-    assert!(!heartbeat.screens.iter().any(|s| s.wanted == "保持关闭" && s.confirmed == "已关闭" && s.detail.contains("失败")));
+    assert!(!heartbeat
+        .screens
+        .iter()
+        .any(|s| s.wanted == "保持关闭" && s.confirmed == "已关闭" && s.detail.contains("失败")));
 }
 
 #[test]
-fn failed_validate_does_not_apply_and_shows_failure_not_closed() {
+fn failed_validate_does_not_retry_and_restores_all() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     ccd.set_validate_rc(87);
     save_topology(&dir.0, &ccd);
-    let session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
-    assert!(!ccd.applied());
-    let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
-    assert!(heartbeat.screens.iter().any(|s| s.confirmed == "失败"));
-    assert!(!heartbeat.screens.iter().any(|s| s.confirmed == "已关闭"));
-    assert!(!session.exited);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    assert!(session.exited);
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert!(ccd.rows().iter().all(|p| p.active));
+    let flags = ccd.flags();
+    for _ in 0..20 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+    assert_eq!(
+        flags
+            .iter()
+            .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+            .count(),
+        1,
+        "only restoration may APPLY"
+    );
 }
 
 #[test]
@@ -737,10 +925,17 @@ fn apply_failure_restores() {
     let ccd = dual_physical();
     ccd.set_next_apply_rc(31);
     save_topology(&dir.0, &ccd);
-    let session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
+    let session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
     assert!(ccd.applied());
     assert_eq!(session.result.restore_rc, Some(0));
-    assert!(!session.exited);
+    assert!(session.exited);
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
 }
 
 #[test]
@@ -749,7 +944,13 @@ fn parent_exit_restores_and_writes_result() {
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
     let parent = Rc::new(SharedParent::new());
-    let mut session = arm_with_intent(&dir.0, ccd, parent.clone(), Rc::new(SharedClock::new(0.0)), false);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd,
+        parent.clone(),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
     *parent.alive.borrow_mut() = false;
     session.tick();
     assert!(session.exited);
@@ -762,7 +963,13 @@ fn topology_churn_while_physical_still_off_does_not_burn_reapply() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
-    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
     assert!(!session.exited);
     ccd.update_path_target(1, 99);
     session.tick();
@@ -779,12 +986,28 @@ fn execution_gap_restores_then_reapplies_once() {
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
     let clock = Rc::new(SharedClock::new(0.0));
-    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), clock.clone(), false);
-    let apply_count = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+        false,
+    );
+    let apply_count = ccd
+        .flags()
+        .iter()
+        .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+        .count();
     clock.set(10.0);
     session.tick();
     assert!(session.result.reapply_attempted);
-    assert!(ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count() > apply_count);
+    assert!(
+        ccd.flags()
+            .iter()
+            .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+            .count()
+            > apply_count
+    );
     assert!(!session.exited);
     clock.set(20.0);
     session.tick();
@@ -798,13 +1021,29 @@ fn stale_capture_after_restore_still_reapplies() {
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
     let clock = Rc::new(SharedClock::new(0.0));
-    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), clock.clone(), false);
-    let apply_count = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+        false,
+    );
+    let apply_count = ccd
+        .flags()
+        .iter()
+        .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+        .count();
     ccd.set_stale_captures(2);
     clock.set(10.0);
     session.tick();
     assert!(session.result.reapply_attempted);
-    assert!(ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count() > apply_count);
+    assert!(
+        ccd.flags()
+            .iter()
+            .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+            .count()
+            > apply_count
+    );
     assert!(!session.exited);
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("reapply-settle"));
@@ -818,7 +1057,13 @@ fn reapply_without_second_target_requests_bundled_vdd() {
     let ccd = internal_plus_vdd();
     save_topology(&dir.0, &ccd);
     let clock = Rc::new(SharedClock::new(0.0));
-    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), clock.clone(), true);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+        true,
+    );
     ccd.set_after_apply(|inner| {
         inner.paths.truncate(1);
         inner.rows.truncate(1);
@@ -836,7 +1081,9 @@ fn reapply_without_second_target_requests_bundled_vdd() {
     ccd.set_paths_rows(fresh.paths(), fresh.rows());
     session.tick();
     assert!(!session.exited);
-    assert!(std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap().contains("reapplied"));
+    assert!(std::fs::read_to_string(SessionPaths::events(&dir.0))
+        .unwrap()
+        .contains("reapplied"));
 }
 
 #[test]
@@ -874,8 +1121,14 @@ fn shrinking_intent_reactivates_restored_path_and_keeps_session() {
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("partial-restored"));
     let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
-    assert!(heartbeat.screens.iter().any(|s| s.target_id == 1 && s.wanted == "开启" && s.confirmed == "已显示"));
-    assert!(heartbeat.screens.iter().any(|s| s.target_id == 2 && s.wanted == "保持关闭" && s.confirmed == "已关闭"));
+    assert!(heartbeat
+        .screens
+        .iter()
+        .any(|s| s.target_id == 1 && s.wanted == "开启" && s.confirmed == "已显示"));
+    assert!(heartbeat
+        .screens
+        .iter()
+        .any(|s| s.target_id == 2 && s.wanted == "保持关闭" && s.confirmed == "已关闭"));
 }
 
 #[test]
@@ -912,7 +1165,13 @@ fn unexpected_topology_with_selected_lit_reapplies_once_then_finishes() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
-    let mut session = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
     assert!(!session.exited);
     ccd.activate_path(0);
     ccd.update_path_target(1, 99);
@@ -956,13 +1215,24 @@ fn vdd_wait_timeout_finishes_without_looping_apply() {
     assert!(session.result.reapply_attempted);
     assert!(!session.exited);
     assert!(SessionPaths::vdd_request(&dir.0).exists());
-    let apply_count = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
+    let apply_count = ccd
+        .flags()
+        .iter()
+        .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+        .count();
     clock.set(12.0);
     session.tick();
     assert!(session.exited);
     assert_eq!(session.result.reason, "execution-gap");
-    let later = ccd.flags().iter().filter(|f| **f == CcdConstants::APPLY_FLAGS).count();
-    assert!(later <= apply_count + 1, "timeout may restore once, must not loop APPLY");
+    let later = ccd
+        .flags()
+        .iter()
+        .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+        .count();
+    assert!(
+        later <= apply_count + 1,
+        "timeout may restore once, must not loop APPLY"
+    );
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(!events.contains("reapplied"));
     assert!(events.contains("等待自带 VDD 超时"));
@@ -973,6 +1243,14 @@ fn request_all_and_wait_returns_when_result_appears() {
     let root = TempSession::new();
     let session_dir = root.0.join("session-wait");
     std::fs::create_dir_all(&session_dir).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&session_dir),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let result = SessionPaths::result(&session_dir);
     let writer = session_dir.clone();
     std::thread::spawn(move || {
@@ -980,6 +1258,8 @@ fn request_all_and_wait_returns_when_result_appears() {
         JsonUtil::write_atomic(
             SessionPaths::result(&writer),
             &ResultFile {
+                protocol_version: PROTOCOL_VERSION,
+                restore_state: RestoreState::Complete,
                 ok: true,
                 reason: "release".into(),
                 ..Default::default()
@@ -987,7 +1267,7 @@ fn request_all_and_wait_returns_when_result_appears() {
         )
         .unwrap();
     });
-    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2));
+    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2)).unwrap();
     assert!(SessionPaths::release(&session_dir).exists());
     assert!(result.exists());
 }
@@ -999,7 +1279,14 @@ fn restore_one_writes_shrunk_intent_when_targets_already_off() {
     let ccd = three_physical();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper, false, true, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper,
+            false,
+            true,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let snap = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap();
     let ids: Vec<_> = snap.physical_screens().map(|r| r.identity()).collect();
@@ -1011,7 +1298,8 @@ fn restore_one_writes_shrunk_intent_when_targets_already_off() {
     let wanted = coordinator.wanted();
     assert_eq!(wanted.len(), 1);
     assert!(wanted[0].matches(&ids[1]));
-    let intent: IntentFile = JsonUtil::read(SessionPaths::intent(started.borrow().as_str())).unwrap();
+    let intent: IntentFile =
+        JsonUtil::read(SessionPaths::intent(started.borrow().as_str())).unwrap();
     assert_eq!(intent.keep_off.len(), 1);
     assert_eq!(intent.keep_off[0].target_id, ids[1].target_id);
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
@@ -1020,7 +1308,7 @@ fn restore_one_writes_shrunk_intent_when_targets_already_off() {
 #[test]
 fn request_all_and_wait_returns_immediately_without_sessions() {
     let root = TempSession::new();
-    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2));
+    OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2)).unwrap();
 }
 
 #[test]
@@ -1028,8 +1316,17 @@ fn dual_physical_never_uses_clone_flags() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
-    let _ = arm_with_intent(&dir.0, ccd.clone(), Rc::new(SharedParent::new()), Rc::new(SharedClock::new(0.0)), false);
-    assert!(!ccd.flags().iter().any(|f| f & CcdConstants::SDC_TOPOLOGY_CLONE != 0));
+    let _ = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    assert!(!ccd
+        .flags()
+        .iter()
+        .any(|f| f & CcdConstants::SDC_TOPOLOGY_CLONE != 0));
 }
 
 fn coord_hooks(
@@ -1058,7 +1355,8 @@ fn coord_hooks(
         }),
         run_driver_helper: Box::new(move |verb| {
             helper2.borrow_mut().push(verb.into());
-            if verb == "disable" && helper2.borrow().iter().filter(|v| *v == "disable").count() > 0 {
+            if verb == "disable" && helper2.borrow().iter().filter(|v| *v == "disable").count() > 0
+            {
                 // default success; tests override by checking after
             }
             0
@@ -1074,6 +1372,8 @@ fn coord_hooks(
 fn format_result_maps_release() {
     assert_eq!(
         RecoveryCoordinator::format_result(Some(&ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
             ok: true,
             reason: "release".into(),
             ..Default::default()
@@ -1086,6 +1386,7 @@ fn format_result_maps_release() {
 fn format_result_maps_recovery_exit() {
     assert_eq!(
         RecoveryCoordinator::format_result(Some(&ResultFile {
+            protocol_version: PROTOCOL_VERSION,
             ok: false,
             reason: RecoveryCoordinator::RECOVERY_EXIT_REASON.into(),
             error: Some(RecoveryCoordinator::RECOVERY_EXITED.into()),
@@ -1099,6 +1400,8 @@ fn format_result_maps_recovery_exit() {
 fn format_result_maps_hotkey() {
     assert_eq!(
         RecoveryCoordinator::format_result(Some(&ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
             ok: true,
             reason: "hotkey".into(),
             ..Default::default()
@@ -1111,6 +1414,8 @@ fn format_result_maps_hotkey() {
 fn format_result_maps_unexpected_topology_after_reapply() {
     assert_eq!(
         RecoveryCoordinator::format_result(Some(&ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
             ok: false,
             reason: "unexpected-topology".into(),
             apply_rc: Some(0),
@@ -1131,7 +1436,14 @@ fn poll_enables_bundled_vdd_once_when_reapply_requests_it() {
     let ccd = internal_plus_vdd();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper.clone(), true, true, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            true,
+            true,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let identity = ccd
         .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1163,7 +1475,14 @@ fn session_result_clears_keep_off_heartbeat() {
     let ccd = dual_physical();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper.clone(), false, true, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            false,
+            true,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let identity = ccd
         .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1177,6 +1496,8 @@ fn session_result_clears_keep_off_heartbeat() {
     JsonUtil::write_atomic(
         SessionPaths::heartbeat(started.borrow().as_str()),
         &HeartbeatFile {
+            state: Default::default(),
+            processed_request_id: 0,
             hotkey_registered: true,
             armed: true,
             detail: Some("已保持关闭。".into()),
@@ -1195,6 +1516,8 @@ fn session_result_clears_keep_off_heartbeat() {
     JsonUtil::write_atomic(
         SessionPaths::result(started.borrow().as_str()),
         &ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
             ok: true,
             reason: "release".into(),
             restore_rc: Some(0),
@@ -1207,20 +1530,35 @@ fn session_result_clears_keep_off_heartbeat() {
     assert!(!coordinator.has_session());
     assert!(coordinator.heartbeat.is_none());
     assert!(coordinator.wanted().is_empty());
-    assert!(coordinator.status_text.as_deref().unwrap().starts_with("已恢复全部。"));
-    assert!(coordinator.status_text.as_deref().unwrap().contains("记录："));
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .starts_with("已恢复全部。"));
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .contains("记录："));
     assert!(!coordinator.hotkey_registered);
     assert!(!helper.borrow().iter().any(|v| v == "disable"));
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
 #[test]
-fn session_result_disables_bundled_vdd_and_shows_failure() {
+fn session_result_does_not_disable_preexisting_vdd() {
     let started = Rc::new(RefCell::new(String::new()));
     let helper = Rc::new(RefCell::new(Vec::new()));
     let helper2 = helper.clone();
     let ccd = internal_plus_vdd();
-    let mut hooks = coord_hooks(started.clone(), helper.clone(), true, true, None, Duration::from_secs(15));
+    let mut hooks = coord_hooks(
+        started.clone(),
+        helper.clone(),
+        true,
+        true,
+        None,
+        Duration::from_secs(15),
+    );
     hooks.run_driver_helper = Box::new(move |verb| {
         helper2.borrow_mut().push(verb.into());
         if verb == "disable" {
@@ -1241,6 +1579,8 @@ fn session_result_disables_bundled_vdd_and_shows_failure() {
     JsonUtil::write_atomic(
         SessionPaths::heartbeat(started.borrow().as_str()),
         &HeartbeatFile {
+            state: Default::default(),
+            processed_request_id: 0,
             hotkey_registered: true,
             armed: true,
             detail: Some("已保持关闭。".into()),
@@ -1259,6 +1599,8 @@ fn session_result_disables_bundled_vdd_and_shows_failure() {
     JsonUtil::write_atomic(
         SessionPaths::result(started.borrow().as_str()),
         &ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
             ok: true,
             reason: "hotkey".into(),
             restore_rc: Some(0),
@@ -1269,13 +1611,7 @@ fn session_result_disables_bundled_vdd_and_shows_failure() {
     .unwrap();
     coordinator.poll();
     assert!(!coordinator.has_session());
-    assert!(helper.borrow().iter().any(|v| v == "disable"));
-    assert!(coordinator
-        .status_text
-        .as_deref()
-        .unwrap()
-        .contains(RecoveryCoordinator::DISABLE_VDD_FAILED));
-    assert!(coordinator.status_text.as_deref().unwrap().contains("Ctrl+Alt+Shift+F10"));
+    assert!(!helper.borrow().iter().any(|v| v == "disable"));
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
@@ -1288,7 +1624,12 @@ fn cancelled_enable_prompt_does_not_touch_helper_or_screens() {
             info_type: 1,
             ..Default::default()
         }],
-        vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1")],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
     ));
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
@@ -1301,24 +1642,43 @@ fn cancelled_enable_prompt_does_not_touch_helper_or_screens() {
             Duration::from_secs(15),
         ),
     );
-    let identity = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap().physical_screens().next().unwrap().identity();
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
     assert_eq!(
         coordinator.keep_off(identity).as_deref(),
         Some(RecoveryCoordinator::ENABLE_VDD_CANCELLED)
     );
     assert!(helper.borrow().is_empty());
     assert!(!coordinator.has_session());
-    assert_eq!(ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap().active_physical().count(), 1);
+    assert_eq!(
+        ccd.query_snapshot(CcdConstants::QUERY_FLAGS)
+            .unwrap()
+            .active_physical()
+            .count(),
+        1
+    );
 }
 
 #[test]
-fn dead_recovery_unsticks_and_disables_bundled_vdd() {
+fn dead_recovery_retains_restore_context_and_preexisting_vdd() {
     let started = Rc::new(RefCell::new(String::new()));
     let helper = Rc::new(RefCell::new(Vec::new()));
     let ccd = internal_plus_vdd();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper.clone(), true, false, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            true,
+            false,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let identity = ccd
         .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1329,11 +1689,20 @@ fn dead_recovery_unsticks_and_disables_bundled_vdd() {
         .identity();
     assert!(coordinator.keep_off(identity).is_none());
     coordinator.poll();
-    assert!(!coordinator.has_session());
-    assert!(coordinator.status_text.as_deref().unwrap().starts_with(RecoveryCoordinator::RECOVERY_EXITED));
-    assert!(coordinator.status_text.as_deref().unwrap().contains("记录："));
-    assert!(helper.borrow().iter().any(|v| v == "disable"));
-    let result: ResultFile = JsonUtil::read(SessionPaths::result(started.borrow().as_str())).unwrap();
+    assert!(coordinator.has_session());
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .starts_with(RecoveryCoordinator::RECOVERY_EXITED));
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .contains("记录："));
+    assert!(!helper.borrow().iter().any(|v| v == "disable"));
+    let result: ResultFile =
+        JsonUtil::read(SessionPaths::result(started.borrow().as_str())).unwrap();
     assert_eq!(result.reason, RecoveryCoordinator::RECOVERY_EXIT_REASON);
     assert!(!result.ok);
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
@@ -1346,7 +1715,14 @@ fn alive_recovery_without_result_keeps_session() {
     let ccd = internal_plus_vdd();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper.clone(), true, true, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            true,
+            true,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let identity = ccd
         .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1370,7 +1746,14 @@ fn dead_recovery_does_not_disable_vdd_when_no_physical_remains() {
     let ccd = internal_plus_vdd();
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
-        coord_hooks(started.clone(), helper.clone(), true, false, None, Duration::from_secs(15)),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            true,
+            false,
+            None,
+            Duration::from_secs(15),
+        ),
     );
     let identity = ccd
         .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1382,18 +1765,18 @@ fn dead_recovery_does_not_disable_vdd_when_no_physical_remains() {
     assert!(coordinator.keep_off(identity).is_none());
     ccd.deactivate_path(0);
     coordinator.poll();
-    assert!(!coordinator.has_session());
+    assert!(coordinator.has_session());
     assert!(!helper.borrow().iter().any(|v| v == "disable"));
     assert!(coordinator
         .status_text
         .as_deref()
         .unwrap()
-        .contains(RecoveryCoordinator::RECOVERY_EXITED_LAST_PATH));
+        .contains(RecoveryCoordinator::RECOVERY_EXITED));
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
 #[test]
-fn confirmed_enable_then_missing_virtual_path_disables() {
+fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() {
     let helper = Rc::new(RefCell::new(Vec::new()));
     let ccd = Rc::new(FakeCcd::with_paths_rows(
         vec![fakes::path_default(true, 1)],
@@ -1401,7 +1784,12 @@ fn confirmed_enable_then_missing_virtual_path_disables() {
             info_type: 1,
             ..Default::default()
         }],
-        vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1")],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
     ));
     let mut coordinator = RecoveryCoordinator::new(
         Box::new(ccd.clone()),
@@ -1414,10 +1802,36 @@ fn confirmed_enable_then_missing_virtual_path_disables() {
             Duration::ZERO,
         ),
     );
-    let identity = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap().physical_screens().next().unwrap().identity();
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
     let error = coordinator.keep_off(identity);
-    assert_eq!(error.as_deref(), Some("自带 VDD 未能出现活动虚拟路径，物理屏未改动。"));
-    assert_eq!(*helper.borrow(), vec!["enable".to_string(), "disable".to_string()]);
+    assert_eq!(
+        error.as_deref(),
+        Some("自带 VDD 未能出现活动虚拟路径，物理屏未改动。")
+    );
+    assert_eq!(*helper.borrow(), vec!["enable".to_string()]);
+    let dir = coordinator.session_directory().unwrap().to_path_buf();
+    assert!(SessionPaths::release(&dir).exists());
+    JsonUtil::write_atomic(
+        SessionPaths::result(&dir),
+        &ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    coordinator.poll();
+    assert_eq!(
+        *helper.borrow(),
+        vec!["enable".to_string(), "disable".to_string()]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
     assert!(!coordinator.has_session());
 }
 
@@ -1448,7 +1862,15 @@ fn virtual_screens_are_not_listed() {
 
 #[test]
 fn last_physical_is_disabled_with_reason() {
-    let snap = DisplaySnapshot::new(vec![fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1")], 0);
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+        0,
+    );
     let items = ScreenListBuilder::build(&snap, None, &[], false, true, true);
     assert!(!items[0].can_keep_off);
     assert!(items[0].block_reason.contains("第二活动目标"));
@@ -1499,7 +1921,15 @@ fn hotkey_unavailable_blocks_keep_off() {
 
 #[test]
 fn heartbeat_keeps_closed_screen_when_snapshot_omits_it() {
-    let snap = DisplaySnapshot::new(vec![fakes::row_simple(PathRole::External, 2, "S24", r"\\?\DISPLAY#PDA#1")], 0);
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::External,
+            2,
+            "S24",
+            r"\\?\DISPLAY#PDA#1",
+        )],
+        0,
+    );
     let hb = HeartbeatFile {
         screens: vec![HeartbeatScreen {
             adapter_luid: "0000000000000001".into(),
@@ -1513,7 +1943,9 @@ fn heartbeat_keeps_closed_screen_when_snapshot_omits_it() {
         ..Default::default()
     };
     let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
-    assert!(items.iter().any(|i| i.name == "Panel" && i.confirmed == "已关闭" && i.can_restore));
+    assert!(items
+        .iter()
+        .any(|i| i.name == "Panel" && i.confirmed == "已关闭" && i.can_restore));
     assert!(items.iter().any(|i| i.name == "S24"));
 }
 
@@ -1538,4 +1970,682 @@ fn cleared_heartbeat_after_restore_shows_active_screens_on() {
 #[allow(dead_code)]
 fn _rc_hotkey() {
     let _ = RcHotkey(Rc::new(RefCell::new(FakeHotkey::new())));
+}
+
+fn publish_release(dir: &std::path::Path) {
+    JsonUtil::write_atomic(
+        SessionPaths::release(dir),
+        &ReleaseFile {
+            at: 0.0,
+            request_id: crate::session::request_id(),
+        },
+    )
+    .unwrap();
+}
+fn complete_result() -> ResultFile {
+    ResultFile {
+        protocol_version: PROTOCOL_VERSION,
+        restore_state: RestoreState::Complete,
+        restored_targets: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn failed_restore_keeps_hotkey_and_requires_explicit_retry() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let hotkey = Rc::new(RefCell::new(FakeHotkey::new()));
+    let mut session = RecoverySession::new(options_ex(
+        dir.0.clone(),
+        ccd.clone(),
+        Box::new(fakes::RcHotkey(hotkey.clone())),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        20.0,
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    ccd.set_apply_rc(31);
+    ccd.set_internal_rc(31);
+    publish_release(&dir.0);
+    session.tick();
+    assert!(!session.exited);
+    assert!(hotkey.borrow().registered);
+    assert_eq!(session.result.restore_state, RestoreState::Partial);
+    let hb: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
+    assert_eq!(hb.state, RecoveryState::RestoreFailed);
+    assert!(hb.screens.iter().all(|s| s.wanted == "开启"));
+    let flags = ccd.flags();
+    for _ in 0..30 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+    ccd.set_apply_rc(0);
+    hotkey.borrow_mut().pressed = true;
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert!(!hotkey.borrow().registered);
+}
+
+#[test]
+fn failed_release_can_be_retried_with_new_request_number() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_apply_rc(31);
+    ccd.set_internal_rc(31);
+    publish_release(&dir.0);
+    session.tick();
+    assert!(!session.exited);
+    let flags = ccd.flags();
+    session.tick();
+    assert_eq!(flags, ccd.flags());
+    ccd.set_apply_rc(0);
+    publish_release(&dir.0);
+    session.tick();
+    assert!(session.exited);
+}
+
+#[test]
+fn malformed_release_does_not_loop_restoration() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_apply_rc(31);
+    ccd.set_internal_rc(31);
+    std::fs::write(SessionPaths::release(&dir.0), "{").unwrap();
+    session.tick();
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+}
+
+#[test]
+fn parent_exit_after_restore_failure_finishes_once_with_failure() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let parent = Rc::new(SharedParent::new());
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        parent.clone(),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_apply_rc(31);
+    ccd.set_internal_rc(31);
+    publish_release(&dir.0);
+    session.tick();
+    *parent.alive.borrow_mut() = false;
+    session.tick();
+    assert!(session.exited);
+    assert!(session.result.restoration_outcome().is_err());
+    let flags = ccd.flags();
+    session.tick();
+    assert_eq!(flags, ccd.flags());
+}
+
+#[test]
+fn single_restore_failure_ends_all_close_requirements() {
+    let dir = TempSession::new();
+    let ccd = three_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        false,
+    );
+    session.tick();
+    ccd.set_validate_rc(31);
+    write_keep_off(&dir.0, &[(2, r"\\?\DISPLAY#PDA#1")], false);
+    session.tick();
+    assert!(session.exited);
+    assert!(ccd.rows().iter().all(|p| p.active));
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+}
+
+#[test]
+fn failed_additional_close_restores_pre_session_baseline() {
+    let dir = TempSession::new();
+    let ccd = three_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_next_apply_rc(31);
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        false,
+    );
+    session.tick();
+    assert!(session.exited);
+    assert!(ccd.rows().iter().all(|p| p.active));
+}
+
+#[test]
+fn clone_failure_cannot_repeat_on_later_ticks() {
+    let dir = TempSession::new();
+    let ccd = internal_plus_vdd();
+    save_topology(&dir.0, &ccd);
+    ccd.set_validate_rc(87);
+    ccd.set_clone_rc(31);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        true,
+    );
+    assert!(session.exited);
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+    assert_eq!(
+        flags
+            .iter()
+            .filter(|f| **f == (CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_CLONE))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn failed_reapply_restores_and_does_not_loop() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let clock = Rc::new(SharedClock::new(0.0));
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+        false,
+    );
+    ccd.set_validate_rc(31);
+    clock.set(5.0);
+    session.tick();
+    assert!(session.exited);
+    assert!(ccd.rows().iter().all(|p| p.active));
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+}
+
+#[test]
+fn restoration_waits_for_delayed_enumeration() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_stale_captures(4);
+    publish_release(&dir.0);
+    session.tick();
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert_eq!(session.result.fallback_rc, None);
+}
+
+#[test]
+fn restore_only_never_consumes_close_intent() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    ccd.deactivate_path(0);
+    write_keep_internal_off(&dir.0, false);
+    let mut opt = options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    );
+    opt.restore_only = true;
+    let mut session = RecoverySession::new(opt);
+    session.start();
+    assert!(session.exited);
+    assert!(ccd.rows().iter().all(|p| p.active));
+    assert!(!ccd.validated());
+}
+
+#[test]
+fn disconnected_target_does_not_block_verified_physical_recovery() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_after_apply(|view| {
+        view.paths[1].target_info.target_available = 0;
+        view.paths[1].flags &= !1;
+        view.rows[1].active = false;
+    });
+    publish_release(&dir.0);
+    session.tick();
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert!(!session.result.restored_topology);
+}
+
+#[test]
+fn enumeration_error_during_restore_is_unknown_not_success() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    ccd.set_capture_error("unavailable");
+    publish_release(&dir.0);
+    session.tick();
+    assert_eq!(session.result.restore_state, RestoreState::Unknown);
+    assert!(!session.exited);
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+}
+
+#[test]
+fn unknown_session_protocol_never_applies() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    JsonUtil::write_atomic(SessionPaths::metadata(&dir.0), &SessionMetadata::default()).unwrap();
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    assert!(session.exited);
+    assert!(!ccd.applied());
+    assert!(session.result.restoration_outcome().is_err());
+}
+
+#[test]
+fn atomic_write_failure_is_bounded_and_preserves_destination() {
+    let dir = TempSession::new();
+    let path = dir.0.join("locked.json");
+    JsonUtil::write_atomic(&path, &complete_result()).unwrap();
+    use std::os::windows::fs::OpenOptionsExt;
+    let handle = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&path)
+        .unwrap();
+    let start = std::time::Instant::now();
+    assert!(JsonUtil::write_atomic(&path, &ResultFile::default()).is_err());
+    assert!(start.elapsed() < Duration::from_secs(2));
+    assert!(JsonUtil::read::<ResultFile>(&path)
+        .unwrap()
+        .restoration_outcome()
+        .is_ok());
+    drop(handle);
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+}
+
+#[test]
+fn uninstall_rejects_failed_corrupt_and_legacy_results() {
+    for payload in [
+        "{",
+        r#"{"ok":true}"#,
+        r#"{"protocolVersion":2,"restoreState":"partial"}"#,
+    ] {
+        let root = TempSession::new();
+        let dir = root.0.join("session-failed");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(SessionPaths::result(&dir), payload).unwrap();
+        assert!(OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO).is_err());
+    }
+}
+
+#[test]
+fn uninstall_timeout_returns_protocol_exit_code() {
+    let root = TempSession::new();
+    let dir = root.0.join("session-pending");
+    std::fs::create_dir(&dir).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&dir),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO)
+            .unwrap_err()
+            .exit_code(),
+        2
+    );
+}
+
+#[test]
+fn missing_protocol_fields_are_not_defaulted_to_success() {
+    let result: ResultFile =
+        serde_json::from_str(r#"{"ok":true,"restoreRc":0,"restoredTargets":true}"#).unwrap();
+    assert!(result.restoration_outcome().is_err());
+    let mut result = complete_result();
+    result.ok = false;
+    assert!(
+        result.restoration_outcome().is_ok(),
+        "operation failure is independent of restoration"
+    );
+}
+
+fn owned_coordinator(
+    disable_rc: i32,
+) -> (
+    RecoveryCoordinator,
+    Rc<FakeCcd>,
+    Rc<RefCell<String>>,
+    Rc<RefCell<Vec<String>>>,
+) {
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = internal_plus_vdd();
+    ccd.deactivate_path(1);
+    let mut hooks = coord_hooks(
+        started.clone(),
+        helper.clone(),
+        true,
+        true,
+        Some(true),
+        Duration::from_millis(10),
+    );
+    let calls = helper.clone();
+    let hardware = ccd.clone();
+    hooks.run_driver_helper = Box::new(move |verb| {
+        calls.borrow_mut().push(verb.into());
+        if verb == "enable" {
+            hardware.activate_path(1);
+            0
+        } else {
+            disable_rc
+        }
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_none());
+    (coordinator, ccd, started, helper)
+}
+
+#[test]
+fn owned_vdd_is_preserved_without_verified_physical_output_for_every_reason() {
+    for reason in ["release", "hotkey", "parent-exit", "error", "recovery-exit"] {
+        let (mut coordinator, ccd, dir, calls) = owned_coordinator(0);
+        ccd.deactivate_path(0);
+        let mut result = complete_result();
+        result.reason = reason.into();
+        JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+        coordinator.poll();
+        assert!(coordinator.has_session());
+        assert!(!calls.borrow().iter().any(|v| v == "disable"));
+        assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+        std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+    }
+}
+
+#[test]
+fn owned_vdd_cleanup_enumeration_failure_is_fail_closed() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(0);
+    JsonUtil::write_atomic(
+        SessionPaths::result(dir.borrow().as_str()),
+        &complete_result(),
+    )
+    .unwrap();
+    ccd.set_capture_error("unavailable");
+    coordinator.poll();
+    assert!(coordinator.has_session());
+    assert!(!calls.borrow().iter().any(|v| v == "disable"));
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn failed_cleanup_does_not_loop_uac_and_blocks_repeated_exit() {
+    let (mut coordinator, _, dir, calls) = owned_coordinator(1);
+    JsonUtil::write_atomic(
+        SessionPaths::result(dir.borrow().as_str()),
+        &complete_result(),
+    )
+    .unwrap();
+    for _ in 0..10 {
+        coordinator.poll();
+    }
+    assert_eq!(calls.borrow().iter().filter(|v| *v == "disable").count(), 1);
+    assert!(coordinator.has_session());
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn coordinator_retains_pre_enable_baseline() {
+    let (_, _, dir, _) = owned_coordinator(0);
+    let (baseline, _) = TopologyBlob::load(SessionPaths::baseline(dir.borrow().as_str())).unwrap();
+    let (handshake, _) = TopologyBlob::load(SessionPaths::topology(dir.borrow().as_str())).unwrap();
+    assert_eq!(PathOps::active_targets(&baseline).len(), 1);
+    assert_eq!(PathOps::active_targets(&handshake).len(), 2);
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn failed_intent_write_does_not_commit_local_wanted() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let ccd = dual_physical();
+    let mut hooks = coord_hooks(
+        started.clone(),
+        Rc::new(RefCell::new(vec![])),
+        false,
+        true,
+        None,
+        Duration::ZERO,
+    );
+    let original = std::mem::replace(&mut hooks.start_recovery, Box::new(|_, _| 0));
+    let mut original = original;
+    hooks.start_recovery = Box::new(move |dir, parent| {
+        let pid = original(dir, parent);
+        std::fs::create_dir(SessionPaths::intent(dir)).unwrap();
+        pid
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_some());
+    assert!(coordinator.wanted().is_empty());
+    assert!(SessionPaths::release(started.borrow().as_str()).exists());
+    std::fs::remove_dir_all(started.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn failed_release_write_is_reported_instead_of_success() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let ccd = dual_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            started.clone(),
+            Rc::new(RefCell::new(vec![])),
+            false,
+            true,
+            None,
+            Duration::ZERO,
+        ),
+    );
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_none());
+    std::fs::create_dir(SessionPaths::release(started.borrow().as_str())).unwrap();
+    assert!(coordinator.restore_all().is_some());
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    assert!(coordinator.has_session());
+    std::fs::remove_dir_all(started.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn partial_apply_failure_rolls_back_instead_of_assuming_no_effect() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    ccd.mutate_on_failure(true);
+    ccd.set_next_apply_rc(31);
+    let session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        false,
+    );
+    assert!(session.exited);
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert!(ccd.rows().iter().all(|p| p.active));
+}
+
+#[test]
+fn maintenance_gate_blocks_true_and_unknown_states() {
+    assert!(crate::maintenance::require_available(Ok(true)).is_err());
+    assert!(crate::maintenance::require_available(Err("access denied".into())).is_err());
+    assert!(crate::maintenance::require_available(Ok(false)).is_ok());
+}
+
+#[test]
+fn uninstall_actions_check_results_before_removal_and_hold_marker_through_commit() {
+    let xml = include_str!("../../../installer/Veil.Setup/Package.wxs");
+    assert!(xml.contains("Id=\"RestoreDisplays\""));
+    assert!(!xml.contains("Return=\"ignore\""));
+    assert!(xml.contains("Action=\"UninstallVdd\" After=\"RestoreDisplays\""));
+    assert!(xml.contains("Action=\"RestoreDisplays\" After=\"BeginMaintenance\""));
+    assert!(xml.contains("Execute=\"commit\""));
+    assert!(xml.contains("Execute=\"rollback\""));
+}
+
+#[test]
+fn uninstall_waits_for_acknowledgement_of_new_release() {
+    let root = TempSession::new();
+    let dir = root.0.join("session-retry");
+    std::fs::create_dir(&dir).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&dir),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::heartbeat(&dir),
+        &HeartbeatFile {
+            state: RecoveryState::RestoreFailed,
+            processed_request_id: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let writer = dir.clone();
+    let worker = std::thread::spawn(move || {
+        while !SessionPaths::release(&writer).exists() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        JsonUtil::write_atomic(SessionPaths::result(&writer), &complete_result()).unwrap();
+    });
+    assert!(OpenSessionRelease::wait_after_release(&root.0, Duration::from_secs(2)).is_ok());
+    worker.join().unwrap();
+}
+
+#[test]
+fn operation_lock_serializes_independent_threads() {
+    let name = format!("Local\\Veil.Test.{}", uuid_like());
+    let guard = crate::maintenance::OperationLock::named(&name).unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let _guard = crate::maintenance::OperationLock::named(&name).unwrap();
+        sender.send(()).unwrap();
+    });
+    assert!(receiver.recv_timeout(Duration::from_millis(40)).is_err());
+    drop(guard);
+    receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    thread.join().unwrap();
+}
+
+#[test]
+fn xml_copy_failure_removes_only_new_files() {
+    let root = TempSession::new();
+    let first = root.0.join("first");
+    let second = root.0.join("second");
+    std::fs::create_dir(&second).unwrap();
+    let foreign = second.join(BundledVddSettings::FILE_NAME);
+    std::fs::write(&foreign, "foreign").unwrap();
+    assert!(
+        BundledVddSettings::write_xml(&[&first.to_string_lossy(), &second.to_string_lossy()])
+            .is_err()
+    );
+    assert!(!first.join(BundledVddSettings::FILE_NAME).exists());
+    assert_eq!(std::fs::read_to_string(foreign).unwrap(), "foreign");
+}
+
+#[test]
+fn restore_session_selection_rejects_service_and_ambiguous_users() {
+    use crate::maintenance::select_restore_session;
+    assert!(select_restore_session(&[]).is_err());
+    assert!(select_restore_session(&[0]).is_err());
+    assert!(select_restore_session(&[1, 2]).is_err());
+    assert_eq!(select_restore_session(&[3]).unwrap(), 3);
 }

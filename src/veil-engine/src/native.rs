@@ -2,9 +2,13 @@ use crate::capability::{DisplaySnapshot, PathRow, Roles};
 use std::mem::{offset_of, size_of};
 use std::ptr;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND, WPARAM};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY,
+};
 
 pub struct CcdConstants;
 
@@ -34,8 +38,9 @@ impl CcdConstants {
     pub const OUTPUT_TECHNOLOGY_DISPLAY_PORT_EMBEDDED: u32 = 11;
     pub const OUTPUT_TECHNOLOGY_UDI_EMBEDDED: u32 = 13;
     pub const SM_CMONITORS: i32 = 80;
-    pub const QUERY_FLAGS: u32 =
-        Self::QDC_ONLY_ACTIVE_PATHS | Self::QDC_VIRTUAL_MODE_AWARE | Self::QDC_VIRTUAL_REFRESH_RATE_AWARE;
+    pub const QUERY_FLAGS: u32 = Self::QDC_ONLY_ACTIVE_PATHS
+        | Self::QDC_VIRTUAL_MODE_AWARE
+        | Self::QDC_VIRTUAL_REFRESH_RATE_AWARE;
     pub const SET_BASE_FLAGS: u32 = Self::SDC_USE_SUPPLIED_DISPLAY_CONFIG
         | Self::SDC_ALLOW_CHANGES
         | Self::SDC_VIRTUAL_MODE_AWARE
@@ -238,15 +243,37 @@ impl CcdAbi {
     pub fn ensure_expected_layout() -> Result<(), String> {
         let expected = [
             ("LUID", size_of::<Luid>(), 8),
-            ("DISPLAYCONFIG_PATH_SOURCE_INFO", size_of::<DisplayConfigPathSourceInfo>(), 20),
-            ("DISPLAYCONFIG_PATH_TARGET_INFO", size_of::<DisplayConfigPathTargetInfo>(), 48),
-            ("DISPLAYCONFIG_PATH_INFO", size_of::<DisplayConfigPathInfo>(), 72),
-            ("DISPLAYCONFIG_VIDEO_SIGNAL_INFO", size_of::<DisplayConfigVideoSignalInfo>(), 48),
-            ("DISPLAYCONFIG_MODE_INFO", size_of::<DisplayConfigModeInfo>(), 64),
+            (
+                "DISPLAYCONFIG_PATH_SOURCE_INFO",
+                size_of::<DisplayConfigPathSourceInfo>(),
+                20,
+            ),
+            (
+                "DISPLAYCONFIG_PATH_TARGET_INFO",
+                size_of::<DisplayConfigPathTargetInfo>(),
+                48,
+            ),
+            (
+                "DISPLAYCONFIG_PATH_INFO",
+                size_of::<DisplayConfigPathInfo>(),
+                72,
+            ),
+            (
+                "DISPLAYCONFIG_VIDEO_SIGNAL_INFO",
+                size_of::<DisplayConfigVideoSignalInfo>(),
+                48,
+            ),
+            (
+                "DISPLAYCONFIG_MODE_INFO",
+                size_of::<DisplayConfigModeInfo>(),
+                64,
+            ),
         ];
         for (name, actual, want) in expected {
             if actual != want {
-                return Err(format!("unexpected Windows ABI layout for {name}: {actual} != {want}"));
+                return Err(format!(
+                    "unexpected Windows ABI layout for {name}: {actual} != {want}"
+                ));
             }
         }
         if size_of::<usize>() != 8 || Self::MODE_UNION_OFFSET != 16 {
@@ -268,9 +295,32 @@ pub struct CcdFrame {
 }
 
 pub trait CcdApi {
-    fn query_raw(&self, flags: u32) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String>;
+    fn connected_physical(&self) -> Result<Vec<crate::ScreenIdentity>, String> {
+        let frame = self.capture(
+            1 | CcdConstants::QDC_VIRTUAL_MODE_AWARE | CcdConstants::QDC_VIRTUAL_REFRESH_RATE_AWARE,
+        )?;
+        let mut connected = Vec::new();
+        for (path, row) in frame.paths.iter().zip(frame.snapshot.paths.iter()) {
+            if path.target_info.target_available != 0 && row.is_physical() {
+                if row.monitor_path.is_empty() {
+                    return Err("无法确认物理屏身份。".into());
+                }
+                connected.push(row.identity());
+            }
+        }
+        Ok(connected)
+    }
+    fn query_raw(
+        &self,
+        flags: u32,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String>;
     fn capture(&self, flags: u32) -> Result<CcdFrame, String>;
-    fn set(&self, paths: &[DisplayConfigPathInfo], modes: &[DisplayConfigModeInfo], flags: u32) -> Result<i32, String>;
+    fn set(
+        &self,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+        flags: u32,
+    ) -> Result<i32, String>;
     fn set_topology(&self, topology_flags: u32) -> Result<i32, String>;
     fn query_snapshot(&self, flags: u32) -> Result<DisplaySnapshot, String> {
         Ok(self.capture(flags)?.snapshot)
@@ -319,7 +369,9 @@ impl Win32CcdApi {
         let adapter_path = adapter_name(path);
         let source_name = source_name(path);
         let monitor_path = target.path;
-        let placeholder = monitor_path.to_ascii_uppercase().contains("DEFAULT_MONITOR");
+        let placeholder = monitor_path
+            .to_ascii_uppercase()
+            .contains("DEFAULT_MONITOR");
         let internal_tech = Roles::is_internal_technology(path.target_info.output_technology);
         let role = Roles::classify(
             placeholder,
@@ -351,13 +403,20 @@ impl Win32CcdApi {
 }
 
 impl CcdApi for Win32CcdApi {
-    fn query_raw(&self, flags: u32) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
+    fn query_raw(
+        &self,
+        flags: u32,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
         for _ in 0..8 {
             let mut path_count = 0u32;
             let mut mode_count = 0u32;
-            let rc = unsafe { GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count) };
+            let rc =
+                unsafe { GetDisplayConfigBufferSizes(flags, &mut path_count, &mut mode_count) };
             if rc != CcdConstants::ERROR_SUCCESS {
-                return Err(format!("GetDisplayConfigBufferSizes failed: {}", win32_message(rc)));
+                return Err(format!(
+                    "GetDisplayConfigBufferSizes failed: {}",
+                    win32_message(rc)
+                ));
             }
             let mut paths = vec![DisplayConfigPathInfo::default(); path_count as usize];
             let mut modes = vec![DisplayConfigModeInfo::default(); mode_count as usize];
@@ -384,16 +443,29 @@ impl CcdApi for Win32CcdApi {
         Err("QueryDisplayConfig buffer retry exhausted".into())
     }
 
-    fn set(&self, paths: &[DisplayConfigPathInfo], modes: &[DisplayConfigModeInfo], flags: u32) -> Result<i32, String> {
+    fn set(
+        &self,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+        flags: u32,
+    ) -> Result<i32, String> {
         if flags & CcdConstants::SDC_SAVE_TO_DATABASE != 0 {
             return Err("SDC_SAVE_TO_DATABASE is forbidden".into());
         }
         Ok(unsafe {
             SetDisplayConfig(
                 paths.len() as u32,
-                if paths.is_empty() { ptr::null() } else { paths.as_ptr() },
+                if paths.is_empty() {
+                    ptr::null()
+                } else {
+                    paths.as_ptr()
+                },
                 modes.len() as u32,
-                if modes.is_empty() { ptr::null() } else { modes.as_ptr() },
+                if modes.is_empty() {
+                    ptr::null()
+                } else {
+                    modes.as_ptr()
+                },
                 flags,
             )
         })
@@ -506,7 +578,9 @@ pub fn win32_message(code: i32) -> String {
     if n == 0 {
         return code.to_string();
     }
-    let text = String::from_utf16_lossy(&buffer[..n as usize]).trim().to_string();
+    let text = String::from_utf16_lossy(&buffer[..n as usize])
+        .trim()
+        .to_string();
     if text.is_empty() {
         code.to_string()
     } else {
@@ -572,16 +646,7 @@ impl Hotkey for Win32Hotkey {
     fn was_pressed(&mut self) -> bool {
         let mut found = false;
         let mut msg = unsafe { std::mem::zeroed::<MSG>() };
-        while unsafe {
-            PeekMessageW(
-                &mut msg,
-                0 as HWND,
-                WM_HOTKEY,
-                WM_HOTKEY,
-                PM_REMOVE,
-            )
-        } != 0
-        {
+        while unsafe { PeekMessageW(&mut msg, 0 as HWND, WM_HOTKEY, WM_HOTKEY, PM_REMOVE) } != 0 {
             found |= msg.wParam == CcdConstants::HOTKEY_ID as WPARAM;
         }
         found
@@ -595,7 +660,8 @@ impl ParentWatcher for Win32ParentWatcher {
         if pid <= 0 {
             return Ok(false);
         }
-        let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
+        let handle: HANDLE =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
         if handle.is_null() {
             return Ok(false);
         }

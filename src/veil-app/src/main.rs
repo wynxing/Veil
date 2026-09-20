@@ -13,7 +13,7 @@ use veil_engine::{
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONWARNING, MB_OK, MB_OKCANCEL, IDCANCEL,
+    MessageBoxW, IDCANCEL, MB_ICONWARNING, MB_OK, MB_OKCANCEL,
 };
 
 const MUTEX_NAME: &str = "Local\\Veil";
@@ -22,19 +22,43 @@ const DEFAULT_DETAIL: &str = "托盘常驻。关面板不会退出。黑色画�
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("Veil.App [--restore-and-exit | --validate-keep-off-internal --seconds N --log <path>]");
+        eprintln!(
+            "Veil.App [--restore-and-exit | --validate-keep-off-internal --seconds N --log <path>]"
+        );
         return;
     }
     if args.iter().any(|a| a == "--restore-and-exit") {
-        OpenSessionRelease::request_all_and_wait(Duration::from_secs(20));
-        return;
+        let result = veil_engine::maintenance::require_single_interactive_session()
+            .map_err(veil_engine::session::RestoreError::Failed)
+            .and_then(|_| OpenSessionRelease::request_all_and_wait(Duration::from_secs(20)))
+            .and_then(|outcome| {
+                let snapshot = Win32CcdApi
+                    .query_snapshot(CcdConstants::QUERY_FLAGS)
+                    .map_err(veil_engine::session::RestoreError::Failed)?;
+                if snapshot.active_physical().next().is_none() {
+                    return Err(veil_engine::session::RestoreError::Failed(
+                        "未确认活动物理输出，禁止移除辅助 VDD。".into(),
+                    ));
+                }
+                Ok(outcome)
+            });
+        match result {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                app_log(&e.to_string());
+                std::process::exit(e.exit_code());
+            }
+        }
     }
     if args.iter().any(|a| a == "--validate-keep-off-internal") {
         std::process::exit(run_validate_keep_off(&args));
     }
     let Some(mutex) = try_acquire_mutex() else {
         app_log("单实例互斥失败，已有 Veil 在跑。");
-        message_box("Veil 已在运行。请看任务栏右下角托盘，或点开隐藏图标。", false);
+        message_box(
+            "Veil 已在运行。请看任务栏右下角托盘，或点开隐藏图标。",
+            false,
+        );
         return;
     };
     app_log("互斥已拿到，准备打开面板。");
@@ -81,7 +105,9 @@ fn run_panel(mutex: HANDLE) -> Result<(), String> {
             native,
             Box::new(move |cc| {
                 install_cjk_fonts(&cc.egui_ctx);
-                Ok(Box::new(VeilApp::new(mutex, tray, open_id, restore_id, exit_id)))
+                Ok(Box::new(VeilApp::new(
+                    mutex, tray, open_id, restore_id, exit_id,
+                )))
             }),
         ) {
             Ok(()) => return Ok(()),
@@ -178,14 +204,15 @@ impl VeilApp {
     }
 
     fn refresh(&mut self) {
-        let snapshot = match veil_engine::CcdApi::query_snapshot(&Win32CcdApi, CcdConstants::QUERY_FLAGS) {
-            Ok(s) => s,
-            Err(e) => {
-                self.detail = format!("无法枚举显示器：{e}");
-                return;
-            }
-        };
         self.coordinator.poll();
+        let snapshot =
+            match veil_engine::CcdApi::query_snapshot(&Win32CcdApi, CcdConstants::QUERY_FLAGS) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.detail = format!("无法枚举显示器：{e}");
+                    return;
+                }
+            };
         let hotkey = self.coordinator.hotkey_registered;
         self.hotkey_status = if hotkey {
             format!("{}：可用", CcdConstants::HOTKEY_TEXT)
@@ -227,17 +254,18 @@ impl VeilApp {
     }
 
     fn try_exit(&mut self, ctx: &egui::Context) -> bool {
-        match self.coordinator.restore_all_and_wait(Duration::from_secs(20)) {
-            Ok(msg) => {
-                if msg.contains(RecoveryCoordinator::DISABLE_VDD_FAILED) {
-                    message_box(&msg, false);
-                }
+        match self
+            .coordinator
+            .restore_all_and_wait(Duration::from_secs(20))
+        {
+            Ok(_outcome) => {
                 self.exiting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 true
             }
             Err(msg) => {
-                message_box(&msg, false);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                message_box(&msg.to_string(), false);
                 false
             }
         }
@@ -281,7 +309,9 @@ impl eframe::App for VeilApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 self.hide_before_apply = false;
             } else if ev.id == self.restore_id {
-                let _ = self.coordinator.restore_all();
+                if let Some(e) = self.coordinator.restore_all() {
+                    self.detail = e;
+                }
                 self.refresh();
             } else if ev.id == self.exit_id && self.try_exit(ctx) {
                 return;
@@ -317,7 +347,10 @@ impl eframe::App for VeilApp {
                         });
                         ui.label(&item.status_text);
                         if !item.block_reason.is_empty() {
-                            ui.colored_label(egui::Color32::from_rgb(180, 80, 40), &item.block_reason);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(180, 80, 40),
+                                &item.block_reason,
+                            );
                         }
                         ui.horizontal(|ui| {
                             if ui
@@ -342,7 +375,9 @@ impl eframe::App for VeilApp {
             });
             ui.separator();
             if ui.button("恢复全部").clicked() {
-                let _ = self.coordinator.restore_all();
+                if let Some(e) = self.coordinator.restore_all() {
+                    self.detail = e;
+                }
                 self.refresh();
             }
             let mut startup = self.startup;
@@ -372,7 +407,10 @@ impl eframe::App for VeilApp {
 }
 
 fn confirm_enable_vdd() -> bool {
-    message_box(&format!("{}\n\n继续？取消则物理屏不改动。", Gate::ENABLE_VDD_REASON), true)
+    message_box(
+        &format!("{}\n\n继续？取消则物理屏不改动。", Gate::ENABLE_VDD_REASON),
+        true,
+    )
 }
 
 fn message_box(text: &str, cancel: bool) -> bool {
@@ -384,7 +422,9 @@ fn message_box(text: &str, cancel: bool) -> bool {
 }
 
 fn run_helper_elevated(verb: &str) -> i32 {
-    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     let exe = veil_engine::ProcessLaunch::driver_helper_exe_path();
     let exe_w = to_wide(&exe.to_string_lossy());
@@ -451,7 +491,10 @@ fn set_startup(enabled: bool) {
         return;
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("Veil.App.exe"));
-    let work = exe.parent().map(|p| p.display().to_string()).unwrap_or_default();
+    let work = exe
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let script = format!(
         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Description='Veil';$s.Save()",
         path.display(),
@@ -529,14 +572,21 @@ fn load_windows_cjk_font() -> Option<(String, egui::FontData)> {
 
 fn app_log(line: &str) {
     let path = std::env::temp_dir().join("Veil-app.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         use std::io::Write;
         let _ = writeln!(f, "{} {line}", chrono_like_stamp());
     }
 }
 
 fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
@@ -547,7 +597,11 @@ fn validate_log(path: Option<&std::path::Path>, line: &str) {
     let stamped = format!("{} {line}", chrono_like_stamp());
     eprintln!("{stamped}");
     if let Some(path) = path {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             use std::io::Write;
             let _ = writeln!(f, "{stamped}");
         }
@@ -631,7 +685,7 @@ fn run_validate_keep_off(args: &[String]) -> i32 {
     }
     match coordinator.restore_all_and_wait(Duration::from_secs(20)) {
         Ok(msg) => {
-            validate_log(log, &format!("restore {msg}"));
+            validate_log(log, &format!("restore {}", msg.message));
             0
         }
         Err(msg) => {
