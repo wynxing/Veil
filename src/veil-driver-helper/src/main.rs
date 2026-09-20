@@ -1,10 +1,12 @@
-use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use veil_engine::driver_policy::installation_result;
-use veil_engine::{BundledVddSettings, CcdApi, CcdConstants, Win32CcdApi};
+use veil_engine::driver_policy::{
+    installation_result, plan_enable_driver, plan_install_driver, EnableDriverPlan,
+    InstallDriverPlan,
+};
+use veil_engine::{BundledVddSettings, CcdApi, CcdConstants, JsonUtil, Win32CcdApi};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Disable_DevNode, CM_Enable_DevNode, CM_Locate_DevNodeW, SetupDiDestroyDeviceInfoList,
     SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
@@ -14,7 +16,6 @@ mod retire;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS, INVALID_HANDLE_VALUE};
 
 const HARDWARE_ID: &str = CcdConstants::BUNDLED_HARDWARE_ID;
-const PUBLISHER_THUMBPRINT: &str = "3CF8CF26D8BA266C3A483AB7D26D4A818E317D76";
 const DISPLAY_CLASS: windows_sys::core::GUID = windows_sys::core::GUID {
     data1: 0x4d36e968,
     data2: 0xe325,
@@ -147,42 +148,41 @@ fn install_driver() -> i32 {
 }
 fn install_driver_inner() -> Result<(), String> {
     let before = find_instance_ids()?;
-    if !before.is_empty() {
-        return Err("已有 MTT VDD 设备，无法证明由本次安装创建；保留原设备并停止安装。".into());
-    }
-    let payload = resolve_payload().unwrap_or_else(|| {
-        let program = program_files_veil();
-        (
-            program.join("vdd"),
-            program.join("nefcon").join("x64").join("nefconc.exe"),
-        )
-    });
-    validate_payload(&payload.0, &payload.1)?;
+    let payload = veil_engine::resolve_payload()
+        .ok_or_else(|| "缺少已校验的辅助虚拟输出驱动包，拒绝安装。".to_string())?;
+    veil_engine::validate_payload(&payload)?;
     let created = BundledVddSettings::write_xml(&[
-        &payload.0.to_string_lossy(),
+        &payload.vdd_dir.to_string_lossy(),
         BundledVddSettings::DRIVER_READS_DIRECTORY,
     ])?;
-    let rc = run(
-        &payload.1,
-        &format!(
-            "install \"{}\" {HARDWARE_ID} --no-duplicates",
-            payload.0.join("MttVDD.inf").display()
-        ),
-    );
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    // Store exact instance IDs even after partial installation so rollback never matches all MTT devices.
-    let ids = find_instance_ids()?;
-    veil_engine::JsonUtil::write_atomic(ownership_path(), &ids)?;
-    let disable_rc = ids.iter().fold(0, |rc, id| rc | change_state(id, false));
-    if let Err(error) = installation_result(rc, disable_rc, ids.len()) {
-        let cleanup = remove_instances(&ids);
-        if cleanup == 0 {
-            let _ = std::fs::remove_file(ownership_path());
-            BundledVddSettings::rollback_created(&created);
+    match plan_install_driver(&before) {
+        InstallDriverPlan::Adopt(ids) => {
+            JsonUtil::write_atomic(ownership_path(), &ids)?;
+            Ok(())
         }
-        return Err(error);
+        InstallDriverPlan::CreateDevice => {
+            let rc = run(
+                &payload.nefcon,
+                &format!(
+                    "install \"{}\" {HARDWARE_ID} --no-duplicates",
+                    payload.vdd_dir.join("MttVDD.inf").display()
+                ),
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let ids = find_instance_ids()?;
+            JsonUtil::write_atomic(ownership_path(), &ids)?;
+            let disable_rc = ids.iter().fold(0, |rc, id| rc | change_state(id, false));
+            if let Err(error) = installation_result(rc, disable_rc, ids.len()) {
+                let cleanup = remove_instances(&ids);
+                if cleanup == 0 {
+                    let _ = std::fs::remove_file(ownership_path());
+                    BundledVddSettings::rollback_created(&created);
+                }
+                return Err(error);
+            }
+            Ok(())
+        }
     }
-    Ok(())
 }
 fn remove_instances(ids: &[String]) -> i32 {
     let pnputil = PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
@@ -222,21 +222,34 @@ fn enable_all() -> i32 {
             return 2;
         }
     };
-    if !payload_present() {
-        helper_log("自带 VDD 文件缺失或哈希不符，拒绝启用。");
-        return 2;
-    }
-    let ids = match checked_owned_ids() {
+    let owned = match owned_ids() {
         Ok(ids) => ids,
         Err(e) => {
             helper_log(&e);
             return 2;
         }
     };
-    if ids.is_empty() {
-        helper_log("没有可证明属于 Veil 的设备，拒绝启用。");
-        return 2;
-    }
+    let current = match find_instance_ids() {
+        Ok(ids) => ids,
+        Err(e) => {
+            helper_log(&e);
+            return 2;
+        }
+    };
+    let ids = match plan_enable_driver(&owned, &current) {
+        EnableDriverPlan::Enable(ids) => ids,
+        EnableDriverPlan::AdoptThenEnable(ids) => {
+            if let Err(e) = JsonUtil::write_atomic(ownership_path(), &ids) {
+                helper_log(&e);
+                return 2;
+            }
+            ids
+        }
+        EnableDriverPlan::Nothing => {
+            helper_log("没有可启用的辅助虚拟输出设备。");
+            return 2;
+        }
+    };
     ids.iter().fold(0, |rc, id| rc | change_state(id, true))
 }
 fn disable_all() -> i32 {
@@ -381,126 +394,6 @@ fn split_multi_sz(buf: &[u16]) -> Vec<String> {
     out.into_iter().filter(|s| !s.is_empty()).collect()
 }
 
-fn payload_present() -> bool {
-    let program = program_files_veil();
-    let vdd = program.join("vdd");
-    let dll = vdd.join("MttVDD.dll");
-    let inf = vdd.join("MttVDD.inf");
-    let cat = vdd.join("mttvdd.cat");
-    if !dll.exists() || !inf.exists() || !cat.exists() {
-        return false;
-    }
-    let mut manifest = program.join("payload.manifest.json");
-    if !manifest.exists() {
-        manifest = exe_dir().join("payload.manifest.json");
-    }
-    if !manifest.exists() {
-        return false;
-    }
-    let Ok(text) = std::fs::read_to_string(&manifest) else {
-        return false;
-    };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    let Some(files) = doc.get("files") else {
-        return false;
-    };
-    let map = [
-        ("vdd/MttVDD.dll", dll),
-        ("vdd/MttVDD.inf", inf),
-        ("vdd/mttvdd.cat", cat),
-    ];
-    for (key, path) in map {
-        let Some(expected) = files.get(key).and_then(|v| v.as_str()) else {
-            return false;
-        };
-        if sha256_file(&path) != expected.to_ascii_uppercase()
-            && sha256_file(&path) != expected.to_ascii_lowercase()
-        {
-            let actual = sha256_file(&path);
-            if !actual.eq_ignore_ascii_case(expected) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn validate_payload(vdd_dir: &Path, nefcon: &Path) -> Result<(), String> {
-    let manifest =
-        find_manifest().ok_or_else(|| "缺少 payload.manifest.json，拒绝安装驱动。".to_string())?;
-    let doc: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    let thumb = doc
-        .get("publisherThumbprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if thumb.is_empty() {
-        return Err("manifest 缺少 publisherThumbprint".into());
-    }
-    if !thumb.eq_ignore_ascii_case(PUBLISHER_THUMBPRINT) {
-        return Err("publisherThumbprint 与锁定指纹不符".into());
-    }
-    let files = doc.get("files").ok_or("manifest 缺少 files")?;
-    let map = [
-        ("vdd/mttvdd.cat", vdd_dir.join("mttvdd.cat")),
-        ("vdd/MttVDD.dll", vdd_dir.join("MttVDD.dll")),
-        ("vdd/MttVDD.inf", vdd_dir.join("MttVDD.inf")),
-        ("nefcon/x64/nefconc.exe", nefcon.to_path_buf()),
-    ];
-    for (key, path) in map {
-        if !path.exists() {
-            return Err(format!("缺少 {key}"));
-        }
-        let expected = files.get(key).and_then(|v| v.as_str()).unwrap_or("");
-        let actual = sha256_file(&path);
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(format!("哈希不符：{key}"));
-        }
-    }
-    Ok(())
-}
-
-fn find_manifest() -> Option<PathBuf> {
-    let candidates = [
-        exe_dir().join("payload.manifest.json"),
-        program_files_veil().join("payload.manifest.json"),
-        exe_dir()
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("installer")
-            .join("payload.manifest.json"),
-    ];
-    candidates.into_iter().find(|p| p.exists())
-}
-
-fn resolve_payload() -> Option<(PathBuf, PathBuf)> {
-    let roots = [
-        program_files_veil(),
-        exe_dir()
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("installer"),
-        exe_dir(),
-    ];
-    for root in roots {
-        let vdd = root.join("vdd");
-        let nefcon = root.join("nefcon").join("x64").join("nefconc.exe");
-        if vdd.is_dir() && nefcon.exists() {
-            return Some((vdd, nefcon));
-        }
-    }
-    None
-}
-
 fn run(file: &Path, args: &str) -> i32 {
     let status = std::process::Command::new(file)
         .args(split_args(args))
@@ -532,15 +425,6 @@ fn split_args(args: &str) -> Vec<String> {
     out
 }
 
-fn sha256_file(path: &Path) -> String {
-    let bytes = std::fs::read(path).unwrap_or_default();
-    hex_upper(&Sha256::digest(bytes))
-}
-
-fn hex_upper(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
 fn helper_log(line: &str) {
     let paths = [
         std::env::temp_dir().join("Veil-driver-helper.log"),
@@ -563,15 +447,7 @@ fn helper_log(line: &str) {
 }
 
 fn program_files_veil() -> PathBuf {
-    let program = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
-    PathBuf::from(program).join("Veil")
-}
-
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
+    veil_engine::payload::program_files_veil()
 }
 
 fn to_wide(s: &str) -> Vec<u16> {

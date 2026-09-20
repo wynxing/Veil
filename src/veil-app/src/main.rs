@@ -11,9 +11,9 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 
 use panel_window::PanelWindow;
 use veil_engine::{
-    BundledVddAvailability, CcdApi, CcdConstants, DriverStatus, OpenSessionRelease, ParentWatcher,
-    PathRole, RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenItem, ScreenListBuilder,
-    TopologyBlob, Win32CcdApi, Win32ParentWatcher,
+    AuxiliaryInstallItem, BundledVddAvailability, CcdApi, CcdConstants, DriverStatus,
+    OpenSessionRelease, ParentWatcher, PathRole, RecoveryCoordinator, RecoveryCoordinatorHooks,
+    ScreenItem, ScreenListBuilder, TopologyBlob, Win32CcdApi, Win32ParentWatcher,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
@@ -229,6 +229,7 @@ struct VeilApp {
     commands: Arc<Mutex<Vec<TrayCommand>>>,
     coordinator: RecoveryCoordinator,
     screens: Vec<ScreenItem>,
+    auxiliary: AuxiliaryInstallItem,
     detail: String,
     hotkey_status: String,
     startup: bool,
@@ -258,6 +259,7 @@ impl VeilApp {
             commands: Arc::new(Mutex::new(Vec::new())),
             coordinator,
             screens: vec![],
+            auxiliary: AuxiliaryInstallItem::from_availability(false),
             detail: DEFAULT_DETAIL.into(),
             hotkey_status: format!("{}：未知", CcdConstants::HOTKEY_TEXT),
             startup: startup_enabled(),
@@ -350,17 +352,19 @@ impl VeilApp {
         } else {
             format!("{}：不可用", CcdConstants::HOTKEY_TEXT)
         };
+        let bundled = BundledVddAvailability::from_flags(
+            DriverStatus::installed(),
+            DriverStatus::payload_present(),
+        );
         self.screens = ScreenListBuilder::build(
             &snapshot,
             self.coordinator.heartbeat.as_ref(),
             &self.coordinator.wanted(),
-            BundledVddAvailability::from_flags(
-                DriverStatus::installed(),
-                DriverStatus::payload_present(),
-            ),
+            bundled,
             self.coordinator.is_ready || !self.coordinator.has_session(),
             hotkey || !self.coordinator.has_session(),
         );
+        self.auxiliary = AuxiliaryInstallItem::from_availability(bundled);
         if let Some(text) = &self.coordinator.status_text {
             if !text.is_empty() {
                 self.detail = text.clone();
@@ -535,6 +539,25 @@ impl eframe::App for VeilApp {
                 }
             });
             ui.separator();
+            if self.auxiliary.visible {
+                if !self.auxiliary.hint.is_empty() {
+                    ui.colored_label(egui::Color32::from_rgb(180, 80, 40), &self.auxiliary.hint);
+                }
+                if ui
+                    .add_enabled(
+                        self.auxiliary.enabled,
+                        egui::Button::new(&self.auxiliary.label),
+                    )
+                    .clicked()
+                {
+                    if let Some(e) = self.coordinator.install_auxiliary_output() {
+                        self.detail = e;
+                    } else {
+                        self.detail = "辅助虚拟输出已安装，关最后一块物理屏时将启用。".into();
+                    }
+                    self.refresh();
+                }
+            }
             if ui.button("恢复全部").clicked() {
                 if let Some(e) = self.coordinator.restore_all() {
                     self.detail = e;

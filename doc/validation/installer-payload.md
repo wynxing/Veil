@@ -1,7 +1,7 @@
 # 验证结果：安装器 payload 与本地打包
 
-状态：本机已放入与 [payload.manifest.json](../../installer/payload.manifest.json) 一致的 Virtual Display Driver 25.7.23 / NefCon v1.20.0。缺文件或哈希不符时构建必须失败。安装包无 Authenticode，可本地打、**不可公开安装**。Rust MSI / Burn 尚未在 REDMI 上机旁重装。COLORFUL P15 **不得**用该包安装 MTT VDD。  
-日期：2026-09-19
+状态：本机已放入与 [payload.manifest.json](../../installer/payload.manifest.json) 一致的 Virtual Display Driver 25.7.23 / NefCon v1.20.0。缺文件或哈希不符时构建必须失败。安装包无 Authenticode，可本地打、**不可公开安装**。Rust MSI / Burn 尚未在 REDMI 上机旁重装。COLORFUL P15 上的 Python 验收当时没装 MTT；产品不再把这写成禁止安装。关光双屏补装尚未机旁验证。  
+日期：2026-09-20
 
 未调用实验室脚本 `tools/display-probe/install-vdd.ps1`。二进制不进 Git。
 
@@ -40,7 +40,7 @@
 
 结论：此版本驱动把配置目录写死为 `C:\VirtualDisplayDriver`。产品仍把 INF/DLL 装到 `%ProgramFiles%\Veil\vdd`，但 `Veil.DriverHelper` 安装时把同一份 `vdd_settings.xml` **同时**写到安装目录与 `C:\VirtualDisplayDriver`。若该路径已有他人配置则拒绝覆盖；nefcon 安装失败则回滚本次新写的文件。这只说明读取路径已核对，**不是** Rust 安装器已在 REDMI 上验收，也不是公开安装许可。
 
-P15 上不要创建该目录，也不要跑 `install-driver`。
+当时为了保住 P15 的「双物理、不装 VDD」对照，没有在这台机器上创建该目录或跑 `install-driver`。这是那次验收选择，不是产品禁令。产品合同改为：需要关光全部物理屏时可以安装或接管辅助输出，见 [安装计划](../plans/2026-09-20-vdd-install.md)。
 
 ## 本地包
 

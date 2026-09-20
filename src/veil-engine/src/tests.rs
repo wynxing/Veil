@@ -55,7 +55,7 @@ fn last_physical_without_bundled_vdd_is_blocked() {
         false,
     );
     assert_eq!(plan.action, KeepOffAction::Blocked);
-    assert!(plan.block_reason.unwrap().contains("第二活动目标"));
+    assert!(plan.block_reason.unwrap().contains("驱动包"));
     assert!(!plan.needs_bundled_vdd);
     assert!(!plan.may_adjust_clone);
 }
@@ -151,7 +151,7 @@ fn installed_but_inactive_vdd_requests_enable() {
     let plan = Gate::plan_keep_off(&snap, &[snap.paths[0].identity()], true);
     assert_eq!(plan.action, KeepOffAction::EnableBundledVdd);
     assert!(plan.needs_bundled_vdd);
-    assert!(plan.block_reason.unwrap().contains("隐藏虚拟输出"));
+    assert!(plan.block_reason.unwrap().contains("辅助虚拟输出"));
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn vdd_wait_timeout_finishes_without_looping_apply() {
     );
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(!events.contains("reapplied"));
-    assert!(events.contains("等待自带 VDD 超时"));
+    assert!(events.contains("等待辅助虚拟输出超时"));
 }
 
 #[test]
@@ -1770,7 +1770,10 @@ fn failed_install_does_not_enable_or_change_screens() {
         .unwrap()
         .identity();
     let error = coordinator.keep_off(identity);
-    assert_eq!(error.as_deref(), Some("自带 VDD 未能安装，物理屏未改动。"));
+    assert_eq!(
+        error.as_deref(),
+        Some(RecoveryCoordinator::INSTALL_VDD_FAILED)
+    );
     assert_eq!(*helper.borrow(), vec!["install-driver".to_string()]);
     assert_eq!(
         ccd.query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -1845,6 +1848,81 @@ fn confirmed_install_runs_install_then_enable() {
     );
     assert!(coordinator.has_session());
     let _ = std::fs::remove_dir_all(coordinator.session_directory().unwrap());
+}
+
+#[test]
+fn panel_install_does_not_change_screens() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let helper2 = helper.clone();
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        false,
+        true,
+        Some(true),
+        Duration::from_secs(15),
+    );
+    hooks.bundled_vdd_payload = Box::new(|| true);
+    hooks.run_driver_helper = Box::new(move |verb| {
+        helper2.borrow_mut().push(verb.into());
+        0
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    assert!(coordinator.install_auxiliary_output().is_none());
+    assert_eq!(*helper.borrow(), vec!["install-driver".to_string()]);
+    assert!(!coordinator.has_session());
+    assert_eq!(
+        ccd.query_snapshot(CcdConstants::QUERY_FLAGS)
+            .unwrap()
+            .active_physical()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn panel_install_without_payload_explains() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        false,
+        true,
+        Some(true),
+        Duration::from_secs(15),
+    );
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd), hooks);
+    assert_eq!(
+        coordinator.install_auxiliary_output().as_deref(),
+        Some(RecoveryCoordinator::AUXILIARY_PAYLOAD_MISSING)
+    );
+    assert!(helper.borrow().is_empty());
 }
 
 #[test]
@@ -1995,7 +2073,7 @@ fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() 
     let error = coordinator.keep_off(identity);
     assert_eq!(
         error.as_deref(),
-        Some("自带 VDD 未能出现活动虚拟路径，物理屏未改动。")
+        Some("辅助虚拟输出未能出现活动虚拟路径，物理屏未改动。")
     );
     assert_eq!(*helper.borrow(), vec!["enable".to_string()]);
     let dir = coordinator.session_directory().unwrap().to_path_buf();
@@ -2056,7 +2134,7 @@ fn last_physical_with_bundled_vdd_keeps_button_and_explains() {
     );
     let items = ScreenListBuilder::build(&snap, None, &[], true, true, true);
     assert!(items[0].can_keep_off);
-    assert!(items[0].block_reason.contains("隐藏虚拟输出"));
+    assert!(items[0].block_reason.contains("辅助虚拟输出"));
 }
 
 #[test]
@@ -2083,6 +2161,19 @@ fn last_physical_with_payload_only_keeps_button_and_explains_install() {
 }
 
 #[test]
+fn auxiliary_install_item_hides_when_device_present() {
+    let installed = AuxiliaryInstallItem::from_availability(true);
+    assert!(!installed.visible);
+    let payload = AuxiliaryInstallItem::from_availability(BundledVddAvailability::PayloadOnly);
+    assert!(payload.visible);
+    assert!(payload.enabled);
+    let missing = AuxiliaryInstallItem::from_availability(BundledVddAvailability::Absent);
+    assert!(missing.visible);
+    assert!(!missing.enabled);
+    assert!(missing.hint.contains("驱动包"));
+}
+
+#[test]
 fn last_physical_is_disabled_with_reason() {
     let snap = DisplaySnapshot::new(
         vec![fakes::row_simple(
@@ -2095,7 +2186,7 @@ fn last_physical_is_disabled_with_reason() {
     );
     let items = ScreenListBuilder::build(&snap, None, &[], false, true, true);
     assert!(!items[0].can_keep_off);
-    assert!(items[0].block_reason.contains("第二活动目标"));
+    assert!(items[0].block_reason.contains("驱动包"));
 }
 
 #[test]
@@ -2996,6 +3087,10 @@ fn uninstall_actions_check_results_before_removal_and_hold_marker_through_commit
     assert!(xml.contains("Id=\"InstallVdd\""));
     assert!(xml.contains("ExeCommand=\"install-driver\""));
     assert!(xml.contains("Return=\"ignore\""));
+    assert!(xml.contains("ComponentGroupRef Id=\"VddFiles\""));
+    assert!(xml.contains("Feature Id=\"App\""));
+    assert!(!xml.contains("Feature Id=\"BundledVdd\""));
+    assert!(xml.contains("Condition=\"NOT Installed AND INSTALLVDD=1\""));
     assert!(xml.contains("Action=\"UninstallVdd\" After=\"RestoreDisplays\""));
     assert!(xml.contains("Action=\"RestoreDisplays\" After=\"BeginMaintenance\""));
     assert!(xml.contains("Id=\"SweepHistoricalSessions\""));

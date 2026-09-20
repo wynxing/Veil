@@ -348,11 +348,11 @@ pub struct Gate;
 
 impl Gate {
     pub const LAST_PATH_REASON: &'static str =
-        "没有第二活动目标（其它物理屏或自带 VDD），无法停用最后一条物理路径。";
+        "没有第二活动目标，且找不到已校验的辅助虚拟输出驱动包，无法停用最后一条物理路径。";
     pub const ENABLE_VDD_REASON: &'static str =
-        "将启用安装器自带的隐藏虚拟输出，显示拓扑可能短暂变化。";
+        "将启用辅助虚拟输出。这是显示驱动，显示拓扑可能短暂变化。";
     pub const INSTALL_VDD_REASON: &'static str =
-        "将安装并启用安装器自带的隐藏虚拟输出。这是显示驱动，显示拓扑可能短暂变化。";
+        "将安装并启用辅助虚拟输出。这是显示驱动，显示拓扑可能短暂变化。";
     pub const THIRD_PARTY_VIRTUAL_IGNORED: &'static str = "第三方虚拟屏不能作为第二目标。";
 
     pub fn plan_keep_off(

@@ -12,13 +12,18 @@ use crate::{KeepOffAction, ScreenIdentity};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-pub const ENABLE_VDD_CANCELLED: &str = "已取消启用隐藏辅助输出，物理屏未改动。";
-pub const INSTALL_VDD_CANCELLED: &str = "已取消安装隐藏辅助输出，物理屏未改动。";
-pub const DISABLE_VDD_FAILED: &str = "自带 VDD 未能禁用。";
+pub const ENABLE_VDD_CANCELLED: &str = "已取消启用辅助虚拟输出，物理屏未改动。";
+pub const INSTALL_VDD_CANCELLED: &str = "已取消安装辅助虚拟输出，物理屏未改动。";
+pub const DISABLE_VDD_FAILED: &str = "辅助虚拟输出未能禁用。";
 pub const RECOVERY_EXIT_REASON: &str = "recovery-exit";
 pub const RECOVERY_EXITED: &str = "恢复进程已退出。";
 pub const RECOVERY_EXITED_LAST_PATH: &str =
-    "恢复进程已退出，未禁用自带 VDD（避免关掉最后活动路径）。";
+    "恢复进程已退出，未禁用辅助虚拟输出（避免关掉最后活动路径）。";
+pub const INSTALL_VDD_FAILED: &str = "辅助虚拟输出未能安装，物理屏未改动。";
+pub const ENABLE_VDD_FAILED: &str = "辅助虚拟输出未能启用，物理屏未改动。";
+pub const VDD_PATH_MISSING: &str = "辅助虚拟输出未能出现活动虚拟路径，物理屏未改动。";
+pub const AUXILIARY_ALREADY_INSTALLED: &str = "辅助虚拟输出已安装。";
+pub const AUXILIARY_PAYLOAD_MISSING: &str = "缺少已校验的辅助虚拟输出驱动包。";
 
 pub struct RecoveryCoordinatorHooks {
     pub start_recovery: Box<dyn FnMut(&str, Option<&str>) -> i32>,
@@ -262,7 +267,7 @@ impl RecoveryCoordinator {
         SessionLog::append(
             dir,
             "vdd-enable",
-            Some("界面按再关请求启用自带 VDD。"),
+            Some("界面按再关请求启用辅助虚拟输出。"),
             None,
             None,
             None,
@@ -299,6 +304,25 @@ impl RecoveryCoordinator {
             selected.push(identity);
         }
         self.apply_intent(selected)
+    }
+
+    pub fn install_auxiliary_output(&mut self) -> Option<String> {
+        if (self.hooks.bundled_vdd_installed)() {
+            return Some(AUXILIARY_ALREADY_INSTALLED.into());
+        }
+        if !(self.hooks.bundled_vdd_payload)() {
+            return Some(AUXILIARY_PAYLOAD_MISSING.into());
+        }
+        if let Some(confirm) = &mut self.hooks.confirm_enable_vdd {
+            if !confirm(Gate::INSTALL_VDD_REASON) {
+                return Some(INSTALL_VDD_CANCELLED.into());
+            }
+        }
+        let helper_rc = (self.hooks.run_driver_helper)("install-driver");
+        if helper_rc != 0 {
+            return Some(INSTALL_VDD_FAILED.into());
+        }
+        None
     }
 
     pub fn restore_one(&mut self, identity: &ScreenIdentity) -> Option<String> {
@@ -458,7 +482,7 @@ impl RecoveryCoordinator {
             if plan.action == KeepOffAction::InstallBundledVdd {
                 let helper_rc = (self.hooks.run_driver_helper)("install-driver");
                 if helper_rc != 0 {
-                    return Some("自带 VDD 未能安装，物理屏未改动。".into());
+                    return Some(INSTALL_VDD_FAILED.into());
                 }
             }
             // Mark cleanup responsibility before launching: failure may be partial.
@@ -468,7 +492,7 @@ impl RecoveryCoordinator {
             }
             let helper_rc = (self.hooks.run_driver_helper)("enable");
             if helper_rc != 0 {
-                return Some("自带 VDD 未能启用，物理屏未改动。".into());
+                return Some(ENABLE_VDD_FAILED.into());
             }
             let wait_until = Instant::now() + self.hooks.virtual_path_wait;
             while Instant::now() < wait_until {
@@ -482,13 +506,13 @@ impl RecoveryCoordinator {
                 std::thread::sleep(Duration::from_millis(400));
             }
             if !snapshot.has_active_bundled_vdd() {
-                return Some("自带 VDD 未能出现活动虚拟路径，物理屏未改动。".into());
+                return Some(VDD_PATH_MISSING.into());
             }
             plan = Gate::plan_keep_off(&snapshot, &selected, true);
             if plan.action != KeepOffAction::Deactivate {
                 return Some(
                     plan.block_reason
-                        .unwrap_or_else(|| "启用自带 VDD 后仍无法保持关闭。".into()),
+                        .unwrap_or_else(|| "启用辅助虚拟输出后仍无法保持关闭。".into()),
                 );
             }
         }
@@ -639,7 +663,8 @@ impl RecoveryCoordinator {
             .map(|s| s.active_physical().next().is_some())
             .unwrap_or(false);
         if !safe {
-            self.status_text = Some("未确认活动物理输出，保留自带 VDD；请重试恢复全部。".into());
+            self.status_text =
+                Some("未确认活动物理输出，保留辅助虚拟输出；请重试恢复全部。".into());
             self.last_outcome = Some(Err(RestoreError::Failed(self.status_text.clone().unwrap())));
             return;
         }
@@ -681,10 +706,7 @@ pub struct DriverStatus;
 
 impl DriverStatus {
     pub fn payload_present() -> bool {
-        let program = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
-        let root = std::path::Path::new(&program).join("Veil");
-        root.join("vdd").join("MttVDD.inf").exists()
-            && root.join("nefcon").join("x64").join("nefconc.exe").exists()
+        crate::payload::payload_present()
     }
 
     pub fn installed() -> bool {
@@ -719,6 +741,9 @@ fn registry_key_exists(subkey: &str) -> bool {
 impl RecoveryCoordinator {
     pub const ENABLE_VDD_CANCELLED: &'static str = ENABLE_VDD_CANCELLED;
     pub const INSTALL_VDD_CANCELLED: &'static str = INSTALL_VDD_CANCELLED;
+    pub const INSTALL_VDD_FAILED: &'static str = INSTALL_VDD_FAILED;
+    pub const AUXILIARY_ALREADY_INSTALLED: &'static str = AUXILIARY_ALREADY_INSTALLED;
+    pub const AUXILIARY_PAYLOAD_MISSING: &'static str = AUXILIARY_PAYLOAD_MISSING;
     pub const DISABLE_VDD_FAILED: &'static str = DISABLE_VDD_FAILED;
     pub const RECOVERY_EXIT_REASON: &'static str = RECOVERY_EXIT_REASON;
     pub const RECOVERY_EXITED: &'static str = RECOVERY_EXITED;

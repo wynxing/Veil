@@ -1170,7 +1170,7 @@ impl RecoverySession {
         SessionLog::append(
             &self.opt.directory,
             "vdd-request",
-            Some("再关需要再次启用自带 VDD。"),
+            Some("再关需要再次启用辅助虚拟输出。"),
             None,
             None,
             None,
@@ -1183,7 +1183,7 @@ impl RecoverySession {
             SessionLog::append(
                 &self.opt.directory,
                 "apply-blocked",
-                Some("等待自带 VDD 超时。"),
+                Some("等待辅助虚拟输出超时。"),
                 None,
                 None,
                 None,

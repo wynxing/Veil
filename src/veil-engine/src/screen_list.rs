@@ -1,6 +1,43 @@
-use crate::capability::{resolved_screen_name, Gate, KeepOffAction};
+use crate::capability::{resolved_screen_name, BundledVddAvailability, Gate, KeepOffAction};
 use crate::session::HeartbeatFile;
 use crate::{DisplaySnapshot, ScreenIdentity};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuxiliaryInstallItem {
+    pub visible: bool,
+    pub enabled: bool,
+    pub label: String,
+    pub hint: String,
+}
+
+impl AuxiliaryInstallItem {
+    pub const LABEL: &'static str = "安装辅助输出";
+    pub const MISSING_PAYLOAD: &'static str =
+        "缺少已校验的辅助虚拟输出驱动包。请用安装器安装，或在仓库放入 installer/payload。";
+
+    pub fn from_availability(bundled_vdd: impl Into<BundledVddAvailability>) -> Self {
+        match bundled_vdd.into() {
+            BundledVddAvailability::Installed => Self {
+                visible: false,
+                enabled: false,
+                label: Self::LABEL.into(),
+                hint: String::new(),
+            },
+            BundledVddAvailability::PayloadOnly => Self {
+                visible: true,
+                enabled: true,
+                label: Self::LABEL.into(),
+                hint: String::new(),
+            },
+            BundledVddAvailability::Absent => Self {
+                visible: true,
+                enabled: false,
+                label: Self::LABEL.into(),
+                hint: Self::MISSING_PAYLOAD.into(),
+            },
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ScreenItem {

@@ -4,6 +4,7 @@ pub mod driver_policy;
 pub mod fakes;
 pub mod maintenance;
 pub mod native;
+pub mod payload;
 pub mod planner;
 pub mod process;
 pub mod recovery;
@@ -23,10 +24,14 @@ pub use native::{
     DisplayConfigVideoSignalInfo, Hotkey, Luid, MonotonicClock, ParentWatcher, PointL,
     SystemMonotonicClock, Win32CcdApi, Win32Hotkey, Win32ParentWatcher,
 };
+pub use payload::{
+    payload_present, payload_present_in, resolve as resolve_payload, validate as validate_payload,
+    ResolvedPayload,
+};
 pub use planner::{DisplayPlanner, ValidatePlanResult};
 pub use process::ProcessLaunch;
 pub use recovery::{RecoveryOptions, RecoverySession};
-pub use screen_list::{ScreenItem, ScreenListBuilder};
+pub use screen_list::{AuxiliaryInstallItem, ScreenItem, ScreenListBuilder};
 pub use session::{
     ArmFile, HeartbeatFile, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile, ReleaseFile,
     ResultFile, ScreenIdentityDto, SessionLog, SessionPaths, VddRequestFile,

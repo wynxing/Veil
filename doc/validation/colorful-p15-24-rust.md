@@ -7,7 +7,7 @@
 | 项 | 记录 |
 | --- | --- |
 | 硬件 | COLORFUL P15 24，内屏 + S24Q6-Q24G8 |
-| 软件 | `src/` Rust / egui；APPLY 仅 `Veil.Recovery`；本机禁止安装自带 MTT VDD |
+| 软件 | `src/` Rust / egui；APPLY 仅 `Veil.Recovery`。Python 对照未装 MTT。产品现允许在需要时安装辅助输出；本页验收尚未执行 |
 | 已做 | 无 |
 | 未做 | 短时只停内屏；`release` / 热键恢复；只停外屏；长时；循环；崩溃；睡眠 |
 

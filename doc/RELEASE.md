@@ -60,13 +60,13 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 - 私有仓库的 Release 只对协作者可见：[Releases](https://github.com/wynxing/Veil/releases)。
 - 下载后核 `SHA256SUMS.txt`。
 - SmartScreen /「未知发布者」是无签名预览的预期现象；这不是发布门禁已通过。
-- 自带 MTT 是显示驱动。不同意则安装时不要装 VDD（`INSTALLVDD=0` / 引导程序选项）。
-- COLORFUL P15 **不要**用该包安装 MTT VDD（已有实体外接）。见 [installer-payload.md](validation/installer-payload.md)。
+- MTT 是显示驱动。`INSTALLVDD=0` 只表示这次不创建设备，驱动文件仍随应用写入，以后可在面板安装。
+- COLORFUL P15 过去的 Python 验收没装 MTT（当时测实体外接）。产品不再禁止在这台机器上装辅助输出；关光双物理屏的补装尚未机旁验证。见 [installer-payload.md](validation/installer-payload.md)。
 - 装完仍按验证文档的范围使用；未测项不得当成已完成。Rust MSI 重装尚未机旁执行。
 
 ## 下一次预览
 
-当前预览版本是 `0.1.7-preview.1`（`v0.1.7-preview.1`）。0.1.5→0.1.6 会在旧产品 `RestoreDisplays` 失败（助手未启动 `Veil.App` 即退出 1，历史会话也会报「未知恢复结果协议」）。0.1.7 在装新包前先 `retire-old`：复制缓存 MSI、关掉 `RestoreDisplays` 再卸旧版；升级卸载不再跑恢复动作；自带 VDD 设备安装失败不再回滚应用。这不是 P15 关光双屏或 Rust MSI 重装已机旁通过。再改代码：升高 `Version`、合并、再打新 tag。
+当前预览版本是 `0.1.8-preview.1`（`v0.1.8-preview.1`）。关最后一块物理屏时可从面板安装或接管辅助 MTT；安装器始终带上驱动文件，`INSTALLVDD=0` 只表示这次不创建设备。0.1.7 起升级先 `retire-old`，避免旧 `RestoreDisplays` 拦死 MajorUpgrade。这不是 P15 关光双屏或 Rust MSI 重装已机旁通过。再改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 
