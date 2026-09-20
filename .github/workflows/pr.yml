@@ -8,16 +8,24 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Test release preflight
+        shell: pwsh
+        run: ./installer/Test-ReleasePreflight.ps1
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - run: cargo test --manifest-path src/Cargo.toml --workspace
-      - run: cargo check --manifest-path src/Cargo.toml --workspace --all-targets
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src -> target
+          shared-key: windows-msvc
+      - run: cargo test --manifest-path src/Cargo.toml --workspace --locked --release --target x86_64-pc-windows-msvc
+      - run: cargo check --manifest-path src/Cargo.toml --workspace --all-targets --locked --release --target x86_64-pc-windows-msvc
       - name: Build installer without running it
         shell: pwsh
         run: ./installer/pack.ps1

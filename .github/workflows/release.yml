@@ -8,38 +8,80 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: preview-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   pack:
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check published release
+        id: preflight
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./installer/release.ps1 -CheckOnly -SkipCleanCheck -Tag $env:GITHUB_REF_NAME
+
+      - name: Test release preflight
+        shell: pwsh
+        run: ./installer/Test-ReleasePreflight.ps1
+
       - name: Setup .NET
+        if: steps.preflight.outputs.published != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
       - name: Setup Rust
+        if: steps.preflight.outputs.published != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Cache Rust dependencies
+        if: steps.preflight.outputs.published != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src -> target
+          shared-key: windows-msvc
+
       - name: Fetch payload
+        if: steps.preflight.outputs.published != 'true'
+        timeout-minutes: 5
         shell: pwsh
         run: ./installer/FetchPayload.ps1 -Force
 
       - name: Test
-        run: cargo test --manifest-path src/Cargo.toml --release
-
-      - name: Build bins
-        run: cargo build --manifest-path src/Cargo.toml --release --target x86_64-pc-windows-msvc
+        if: steps.preflight.outputs.published != 'true'
+        timeout-minutes: 12
+        run: cargo test --manifest-path src/Cargo.toml --workspace --locked --release --target x86_64-pc-windows-msvc
 
       - name: Pack
+        if: steps.preflight.outputs.published != 'true'
+        timeout-minutes: 12
         shell: pwsh
         run: ./installer/pack.ps1
 
+      - name: Preserve package
+        if: steps.preflight.outputs.published != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-${{ github.ref_name }}
+          path: |
+            installer/dist/VeilSetup-*-x64.exe
+            installer/dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish GitHub Release
+        if: steps.preflight.outputs.published != 'true'
+        timeout-minutes: 3
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
