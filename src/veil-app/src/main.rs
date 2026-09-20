@@ -1,14 +1,19 @@
 #![windows_subsystem = "windows"]
 
+mod panel_window;
+
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+
+use panel_window::PanelWindow;
 use veil_engine::{
-    CcdApi, CcdConstants, DriverStatus, Gate, OpenSessionRelease, ParentWatcher, PathRole,
-    RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenItem, ScreenListBuilder, TopologyBlob,
-    Win32CcdApi, Win32ParentWatcher,
+    BundledVddAvailability, CcdApi, CcdConstants, DriverStatus, OpenSessionRelease, ParentWatcher,
+    PathRole, RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenItem, ScreenListBuilder,
+    TopologyBlob, Win32CcdApi, Win32ParentWatcher,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
 use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
@@ -18,6 +23,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const MUTEX_NAME: &str = "Local\\Veil";
 const DEFAULT_DETAIL: &str = "托盘常驻。关面板不会退出。黑色画面不是关屏成功。";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayCommand {
+    Open,
+    RestoreAll,
+    Exit,
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -87,12 +99,12 @@ fn run_panel(mutex: HANDLE) -> Result<(), String> {
     ];
     let mut last = String::from("没有可用的窗口后端");
     for (name, renderer, accel) in attempts {
-        let (tray, open_id, restore_id, exit_id) = build_tray();
         let native = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([420.0, 560.0])
                 .with_min_inner_size([360.0, 360.0])
                 .with_title("Veil")
+                .with_visible(true)
                 .with_active(true),
             renderer,
             hardware_acceleration: accel,
@@ -105,9 +117,7 @@ fn run_panel(mutex: HANDLE) -> Result<(), String> {
             native,
             Box::new(move |cc| {
                 install_cjk_fonts(&cc.egui_ctx);
-                Ok(Box::new(VeilApp::new(
-                    mutex, tray, open_id, restore_id, exit_id,
-                )))
+                Ok(Box::new(VeilApp::new(mutex, &cc.egui_ctx)))
             }),
         ) {
             Ok(()) => return Ok(()),
@@ -151,12 +161,72 @@ fn build_tray() -> (
     (tray, open_id, restore_id, exit_id)
 }
 
-struct VeilApp {
-    mutex: HANDLE,
+fn install_tray_handlers(
+    ctx: &egui::Context,
+    panel: &PanelWindow,
+    commands: &Arc<Mutex<Vec<TrayCommand>>>,
     open_id: tray_icon::menu::MenuId,
     restore_id: tray_icon::menu::MenuId,
     exit_id: tray_icon::menu::MenuId,
+) {
+    let menu_ctx = ctx.clone();
+    let menu_panel = panel.clone();
+    let menu_commands = commands.clone();
+    MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
+        let command = if ev.id == open_id {
+            menu_panel.show();
+            Some(TrayCommand::Open)
+        } else if ev.id == restore_id {
+            menu_panel.show();
+            Some(TrayCommand::RestoreAll)
+        } else if ev.id == exit_id {
+            menu_panel.show();
+            Some(TrayCommand::Exit)
+        } else {
+            None
+        };
+        if let Some(command) = command {
+            menu_commands
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(command);
+        }
+        menu_ctx.request_repaint();
+    }));
+
+    let icon_ctx = ctx.clone();
+    let icon_panel = panel.clone();
+    let icon_commands = commands.clone();
+    TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+        if matches!(
+            ev,
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            icon_panel.show();
+            icon_commands
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(TrayCommand::Open);
+            icon_ctx.request_repaint();
+        }
+    }));
+}
+
+struct VeilApp {
+    mutex: HANDLE,
+    open_id: Option<tray_icon::menu::MenuId>,
+    restore_id: Option<tray_icon::menu::MenuId>,
+    exit_id: Option<tray_icon::menu::MenuId>,
     _tray: Option<TrayIcon>,
+    panel: PanelWindow,
+    commands: Arc<Mutex<Vec<TrayCommand>>>,
     coordinator: RecoveryCoordinator,
     screens: Vec<ScreenItem>,
     detail: String,
@@ -164,30 +234,28 @@ struct VeilApp {
     startup: bool,
     last_refresh: Instant,
     hide_before_apply: bool,
+    panel_open: bool,
+    close_armed: bool,
     holding: bool,
     topology_fingerprint: String,
     exiting: bool,
 }
 
 impl VeilApp {
-    fn new(
-        mutex: HANDLE,
-        tray: Option<TrayIcon>,
-        open_id: tray_icon::menu::MenuId,
-        restore_id: tray_icon::menu::MenuId,
-        exit_id: tray_icon::menu::MenuId,
-    ) -> Self {
+    fn new(mutex: HANDLE, ctx: &egui::Context) -> Self {
         let mut hooks = RecoveryCoordinatorHooks::production();
-        hooks.confirm_enable_vdd = Some(Box::new(confirm_enable_vdd));
+        hooks.confirm_enable_vdd = Some(Box::new(confirm_bundled_vdd));
         hooks.run_driver_helper = Box::new(|verb| run_helper_elevated(verb));
         hooks.is_alive = Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false));
         let coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
-        let mut app = Self {
+        let app = Self {
             mutex,
-            open_id,
-            restore_id,
-            exit_id,
-            _tray: tray,
+            open_id: None,
+            restore_id: None,
+            exit_id: None,
+            _tray: None,
+            panel: PanelWindow::new(),
+            commands: Arc::new(Mutex::new(Vec::new())),
             coordinator,
             screens: vec![],
             detail: DEFAULT_DETAIL.into(),
@@ -195,12 +263,75 @@ impl VeilApp {
             startup: startup_enabled(),
             last_refresh: Instant::now() - Duration::from_secs(1),
             hide_before_apply: false,
+            panel_open: true,
+            close_armed: false,
             holding: false,
             topology_fingerprint: String::new(),
             exiting: false,
         };
-        app.refresh();
+        app_log("界面对象已创建。");
+        PanelWindow::wake_soon();
+        ctx.request_repaint();
         app
+    }
+
+    fn ensure_tray(&mut self, ctx: &egui::Context) {
+        if self._tray.is_some() || self.open_id.is_some() {
+            return;
+        }
+        let (tray, open_id, restore_id, exit_id) = build_tray();
+        install_tray_handlers(
+            ctx,
+            &self.panel,
+            &self.commands,
+            open_id.clone(),
+            restore_id.clone(),
+            exit_id.clone(),
+        );
+        self.open_id = Some(open_id);
+        self.restore_id = Some(restore_id);
+        self.exit_id = Some(exit_id);
+        self._tray = tray;
+    }
+
+    fn queue(&self, command: TrayCommand) {
+        self.commands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(command);
+    }
+
+    fn take_commands(&self) -> Vec<TrayCommand> {
+        let mut pending = self.commands.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        for command in pending.drain(..) {
+            if !out.contains(&command) {
+                out.push(command);
+            }
+        }
+        out
+    }
+
+    fn open_panel(&mut self) {
+        self.panel.show();
+        self.panel_open = true;
+        self.hide_before_apply = false;
+    }
+
+    fn hide_panel(&mut self) {
+        if !self.panel_open {
+            return;
+        }
+        self.panel.hide();
+        self.panel_open = false;
+    }
+
+    fn restore_all_from_tray(&mut self) {
+        self.open_panel();
+        if let Some(e) = self.coordinator.restore_all() {
+            self.detail = e;
+        }
+        self.refresh();
     }
 
     fn refresh(&mut self) {
@@ -223,7 +354,10 @@ impl VeilApp {
             &snapshot,
             self.coordinator.heartbeat.as_ref(),
             &self.coordinator.wanted(),
-            DriverStatus::installed(),
+            BundledVddAvailability::from_flags(
+                DriverStatus::installed(),
+                DriverStatus::payload_present(),
+            ),
             self.coordinator.is_ready || !self.coordinator.has_session(),
             hotkey || !self.coordinator.has_session(),
         );
@@ -242,14 +376,15 @@ impl VeilApp {
         self.last_refresh = Instant::now();
     }
 
-    fn keep_off(&mut self, ctx: &egui::Context, item: ScreenItem) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        self.hide_before_apply = true;
+    fn keep_off(&mut self, item: ScreenItem) {
         if let Some(err) = self.coordinator.keep_off(item.identity) {
+            self.open_panel();
+            self.refresh();
             self.detail = err;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            self.hide_before_apply = false;
+            return;
         }
+        self.hide_panel();
+        self.hide_before_apply = true;
         self.refresh();
     }
 
@@ -264,7 +399,7 @@ impl VeilApp {
                 true
             }
             Err(msg) => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                self.open_panel();
                 message_box(&msg.to_string(), false);
                 false
             }
@@ -295,37 +430,63 @@ impl VeilApp {
             if let Some(tray) = &self._tray {
                 let _ = tray.set_icon(Some(tray_icon_for(false)));
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.open_panel();
         }
     }
 }
 
 impl eframe::App for VeilApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.panel.ensure();
+        self.ensure_tray(ctx);
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
-            if ev.id == self.open_id {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                self.hide_before_apply = false;
-            } else if ev.id == self.restore_id {
-                if let Some(e) = self.coordinator.restore_all() {
-                    self.detail = e;
-                }
-                self.refresh();
-            } else if ev.id == self.exit_id && self.try_exit(ctx) {
-                return;
+            if self.open_id.as_ref() == Some(&ev.id) {
+                self.queue(TrayCommand::Open);
+            } else if self.restore_id.as_ref() == Some(&ev.id) {
+                self.queue(TrayCommand::RestoreAll);
+            } else if self.exit_id.as_ref() == Some(&ev.id) {
+                self.queue(TrayCommand::Exit);
             }
         }
-        if let Ok(TrayIconEvent::Click {
-            button: MouseButton::Left,
-            button_state: MouseButtonState::Up,
-            ..
-        }) = TrayIconEvent::receiver().try_recv()
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.hide_before_apply = false;
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if matches!(
+                ev,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.queue(TrayCommand::Open);
+            }
+        }
+        let commands = self.take_commands();
+        let wants_foreground = commands.iter().any(|c| {
+            matches!(
+                c,
+                TrayCommand::Open | TrayCommand::RestoreAll | TrayCommand::Exit
+            )
+        });
+        if ctx.input(|i| i.viewport().close_requested()) && !self.exiting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.close_armed && !wants_foreground {
+                self.hide_panel();
+            }
+        }
+        self.close_armed = true;
+        for command in commands {
+            match command {
+                TrayCommand::Open => self.open_panel(),
+                TrayCommand::RestoreAll => self.restore_all_from_tray(),
+                TrayCommand::Exit => {
+                    if self.try_exit(ctx) {
+                        return;
+                    }
+                }
+            }
         }
         if self.last_refresh.elapsed() >= Duration::from_millis(800) {
             self.refresh();
@@ -357,7 +518,7 @@ impl eframe::App for VeilApp {
                                 .add_enabled(item.can_keep_off, egui::Button::new("保持关闭"))
                                 .clicked()
                             {
-                                self.keep_off(ctx, item.clone());
+                                self.keep_off(item.clone());
                             }
                             if ui
                                 .add_enabled(item.can_restore, egui::Button::new("恢复"))
@@ -389,11 +550,6 @@ impl eframe::App for VeilApp {
                 self.try_exit(ctx);
             }
         });
-
-        if ctx.input(|i| i.viewport().close_requested()) && !self.exiting {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -406,11 +562,8 @@ impl eframe::App for VeilApp {
     }
 }
 
-fn confirm_enable_vdd() -> bool {
-    message_box(
-        &format!("{}\n\n继续？取消则物理屏不改动。", Gate::ENABLE_VDD_REASON),
-        true,
-    )
+fn confirm_bundled_vdd(reason: &str) -> bool {
+    message_box(&format!("{reason}\n\n继续？取消则物理屏不改动。"), true)
 }
 
 fn message_box(text: &str, cancel: bool) -> bool {
@@ -539,7 +692,8 @@ fn install_cjk_fonts(ctx: &egui::Context) {
     fonts.font_data.insert("veil_cjk".to_owned(), data.into());
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         if let Some(list) = fonts.families.get_mut(&family) {
-            list.push("veil_cjk".to_owned());
+            // egui 默认字体有 .notdef，CJK 放后面不会回退，中文会变成方框。
+            list.insert(0, "veil_cjk".to_owned());
         }
     }
     ctx.set_fonts(fonts);
@@ -550,9 +704,9 @@ fn load_windows_cjk_font() -> Option<(String, egui::FontData)> {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let dir = std::path::PathBuf::from(windir).join("Fonts");
     let candidates = [
-        ("msyh.ttc", 0u32),
-        ("msyh.ttf", 0),
+        ("msyh.ttf", 0u32),
         ("simhei.ttf", 0),
+        ("msyh.ttc", 0),
         ("simsun.ttc", 0),
     ];
     for (file, index) in candidates {
@@ -570,7 +724,7 @@ fn load_windows_cjk_font() -> Option<(String, egui::FontData)> {
     None
 }
 
-fn app_log(line: &str) {
+pub(crate) fn app_log(line: &str) {
     let path = std::env::temp_dir().join("Veil-app.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -636,7 +790,7 @@ fn run_validate_keep_off(args: &[String]) -> i32 {
         return 2;
     };
     let mut hooks = RecoveryCoordinatorHooks::production();
-    hooks.confirm_enable_vdd = Some(Box::new(|| true));
+    hooks.confirm_enable_vdd = Some(Box::new(|_| true));
     hooks.run_driver_helper = Box::new(|verb| run_helper_elevated(verb));
     hooks.is_alive = Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false));
     let mut coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);

@@ -1,4 +1,4 @@
-use crate::capability::{DisplaySnapshot, Gate, KeepOffAction};
+use crate::capability::{resolved_screen_name, DisplaySnapshot, Gate, KeepOffAction};
 use crate::native::{
     CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey,
     MonotonicClock, ParentWatcher,
@@ -527,7 +527,9 @@ impl RecoverySession {
             selected,
             self.intent.vdd_assist || frame.snapshot.has_active_bundled_vdd(),
         );
-        if plan.action == KeepOffAction::EnableBundledVdd {
+        if plan.action == KeepOffAction::EnableBundledVdd
+            || plan.action == KeepOffAction::InstallBundledVdd
+        {
             if is_reapply {
                 self.request_bundled_vdd();
                 return false;
@@ -980,6 +982,19 @@ impl RecoverySession {
             .capture(CcdConstants::QUERY_FLAGS)
             .map(|f| f.snapshot)
             .unwrap_or_else(|_| DisplaySnapshot::new(vec![], 0));
+        let previous =
+            JsonUtil::try_read::<HeartbeatFile>(SessionPaths::heartbeat(&self.opt.directory));
+        let previous_row = |id: &ScreenIdentity| {
+            previous.as_ref().and_then(|hb| {
+                hb.screens.iter().find(|s| {
+                    id.matches(&ScreenIdentity::new(
+                        &s.adapter_luid,
+                        s.target_id,
+                        &s.monitor_path,
+                    ))
+                })
+            })
+        };
         let mut screens = Vec::new();
         for row in snapshot.physical_screens() {
             let wanted = if selected.iter().any(|id| id.matches(&row.identity())) {
@@ -1004,11 +1019,19 @@ impl RecoverySession {
             } else {
                 "未知"
             };
+            let prev = previous_row(&row.identity());
             screens.push(HeartbeatScreen {
                 adapter_luid: row.adapter_luid.clone(),
                 target_id: row.target_id,
                 monitor_path: row.monitor_path.clone(),
-                name: row.display_name(),
+                name: resolved_screen_name(
+                    Some(&row.monitor_name),
+                    Some(&row.source_name),
+                    prev.map(|s| s.name.as_str()),
+                    &row.monitor_path,
+                    false,
+                ),
+                kind: row.kind_label().into(),
                 wanted: wanted.into(),
                 confirmed: confirmed.into(),
                 detail: if wanted == "保持关闭" {
@@ -1028,11 +1051,22 @@ impl RecoverySession {
             }) {
                 continue;
             }
+            let prev = previous_row(id);
             screens.push(HeartbeatScreen {
                 adapter_luid: id.adapter_luid.clone(),
                 target_id: id.target_id,
                 monitor_path: id.monitor_path.clone(),
-                name: id.monitor_path.clone(),
+                name: resolved_screen_name(
+                    None,
+                    None,
+                    prev.map(|s| s.name.as_str()),
+                    &id.monitor_path,
+                    true,
+                ),
+                kind: prev
+                    .map(|s| s.kind.clone())
+                    .filter(|k| !k.trim().is_empty())
+                    .unwrap_or_else(|| "物理".into()),
                 wanted: "保持关闭".into(),
                 confirmed: if failed {
                     "失败".into()

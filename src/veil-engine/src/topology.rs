@@ -94,11 +94,16 @@ impl PathOps {
         (changed, false)
     }
 
-    pub fn source_mode_index(path: &DisplayConfigPathInfo, modes: &[DisplayConfigModeInfo]) -> Option<usize> {
+    pub fn source_mode_index(
+        path: &DisplayConfigPathInfo,
+        modes: &[DisplayConfigModeInfo],
+    ) -> Option<usize> {
         let packed = path.source_info.mode_info_idx;
         let packed_src = (packed >> 16) & 0xFFFF;
         for idx in [packed_src, packed] {
-            if idx == CcdConstants::DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID || idx as usize >= modes.len() {
+            if idx == CcdConstants::DISPLAYCONFIG_PATH_SOURCE_MODE_IDX_INVALID
+                || idx as usize >= modes.len()
+            {
                 continue;
             }
             if modes[idx as usize].info_type == CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE {
@@ -166,7 +171,9 @@ impl TopologyBlob {
         }
     }
 
-    pub fn to_arrays(&self) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
+    pub fn to_arrays(
+        &self,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
         let path_raw = base64::engine::general_purpose::STANDARD
             .decode(&self.path_b64)
             .map_err(|e| e.to_string())?;
@@ -190,15 +197,22 @@ impl TopologyBlob {
         ))
     }
 
-    pub fn save(path: impl AsRef<Path>, paths: &[DisplayConfigPathInfo], modes: &[DisplayConfigModeInfo]) -> Result<(), String> {
+    pub fn save(
+        path: impl AsRef<Path>,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+    ) -> Result<(), String> {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let json = serde_json::to_string_pretty(&Self::from_arrays(paths, modes)).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&Self::from_arrays(paths, modes))
+            .map_err(|e| e.to_string())?;
         std::fs::write(path, json).map_err(|e| e.to_string())
     }
 
-    pub fn load(path: impl AsRef<Path>) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
+    pub fn load(
+        path: impl AsRef<Path>,
+    ) -> Result<(Vec<DisplayConfigPathInfo>, Vec<DisplayConfigModeInfo>), String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let blob: TopologyBlob = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         blob.to_arrays()
@@ -216,7 +230,11 @@ pub fn struct_bytes<T: Copy>(items: &[T]) -> Vec<u8> {
     let mut dest = vec![0u8; size * items.len()];
     if !items.is_empty() {
         unsafe {
-            std::ptr::copy_nonoverlapping(items.as_ptr() as *const u8, dest.as_mut_ptr(), dest.len());
+            std::ptr::copy_nonoverlapping(
+                items.as_ptr() as *const u8,
+                dest.as_mut_ptr(),
+                dest.len(),
+            );
         }
     }
     dest
@@ -227,7 +245,11 @@ fn from_bytes<T: Copy + Default>(raw: &[u8], count: usize) -> Vec<T> {
     let mut items = vec![T::default(); count];
     if count > 0 {
         unsafe {
-            std::ptr::copy_nonoverlapping(raw.as_ptr(), items.as_mut_ptr() as *mut u8, size * count);
+            std::ptr::copy_nonoverlapping(
+                raw.as_ptr(),
+                items.as_mut_ptr() as *mut u8,
+                size * count,
+            );
         }
     }
     items

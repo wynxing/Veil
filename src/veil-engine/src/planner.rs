@@ -26,15 +26,24 @@ impl DisplayPlanner {
         adjust_origin: bool,
     ) -> Result<ValidatePlanResult, String> {
         let frame = ccd.capture(CcdConstants::QUERY_FLAGS)?;
-        let mut identities: Vec<ScreenIdentity> = frame.snapshot.paths.iter().map(|p| p.identity()).collect();
+        let mut identities: Vec<ScreenIdentity> =
+            frame.snapshot.paths.iter().map(|p| p.identity()).collect();
         if identities.len() != frame.paths.len() {
             identities = frame
                 .paths
                 .iter()
-                .map(|p| ScreenIdentity::new(p.target_info.adapter_id.to_hex(), p.target_info.id, ""))
+                .map(|p| {
+                    ScreenIdentity::new(p.target_info.adapter_id.to_hex(), p.target_info.id, "")
+                })
                 .collect();
         }
-        let prepared = PathOps::deactivate(&frame.paths, &frame.modes, &identities, selected, adjust_origin)?;
+        let prepared = PathOps::deactivate(
+            &frame.paths,
+            &frame.modes,
+            &identities,
+            selected,
+            adjust_origin,
+        )?;
         if !prepared.can_apply() {
             return Ok(ValidatePlanResult {
                 rc: CcdConstants::ERROR_SUCCESS,

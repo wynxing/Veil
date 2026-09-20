@@ -155,6 +155,27 @@ fn installed_but_inactive_vdd_requests_enable() {
 }
 
 #[test]
+fn payload_only_vdd_requests_install() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN1540#1",
+        )],
+        0,
+    );
+    let plan = Gate::plan_keep_off(
+        &snap,
+        &[snap.paths[0].identity()],
+        BundledVddAvailability::PayloadOnly,
+    );
+    assert_eq!(plan.action, KeepOffAction::InstallBundledVdd);
+    assert!(plan.needs_bundled_vdd);
+    assert!(plan.block_reason.unwrap().contains("安装"));
+}
+
+#[test]
 fn two_physical_allows_native_deactivate_without_clone() {
     let snap = DisplaySnapshot::new(
         vec![
@@ -1361,8 +1382,10 @@ fn coord_hooks(
             }
             0
         }),
-        confirm_enable_vdd: confirm.map(|ok| Box::new(move || ok) as Box<dyn FnMut() -> bool>),
+        confirm_enable_vdd: confirm
+            .map(|ok| Box::new(move |_: &str| ok) as Box<dyn FnMut(&str) -> bool>),
         bundled_vdd_installed: Box::new(move || installed),
+        bundled_vdd_payload: Box::new(|| false),
         is_alive: Box::new(move |_| alive),
         virtual_path_wait: wait,
     }
@@ -1509,6 +1532,7 @@ fn session_result_clears_keep_off_heartbeat() {
                 wanted: "保持关闭".into(),
                 confirmed: "已关闭".into(),
                 detail: "已保持关闭。".into(),
+                ..Default::default()
             }],
         },
     )
@@ -1592,6 +1616,7 @@ fn session_result_does_not_disable_preexisting_vdd() {
                 wanted: "保持关闭".into(),
                 confirmed: "已关闭".into(),
                 detail: "已保持关闭。".into(),
+                ..Default::default()
             }],
         },
     )
@@ -1662,6 +1687,163 @@ fn cancelled_enable_prompt_does_not_touch_helper_or_screens() {
             .count(),
         1
     );
+}
+
+#[test]
+fn cancelled_install_prompt_does_not_touch_helper_or_screens() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        false,
+        true,
+        Some(false),
+        Duration::from_secs(15),
+    );
+    hooks.bundled_vdd_payload = Box::new(|| true);
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
+    assert_eq!(
+        coordinator.keep_off(identity).as_deref(),
+        Some(RecoveryCoordinator::INSTALL_VDD_CANCELLED)
+    );
+    assert!(helper.borrow().is_empty());
+    assert!(!coordinator.has_session());
+}
+
+#[test]
+fn failed_install_does_not_enable_or_change_screens() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let helper2 = helper.clone();
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        false,
+        true,
+        Some(true),
+        Duration::from_secs(15),
+    );
+    hooks.bundled_vdd_payload = Box::new(|| true);
+    hooks.run_driver_helper = Box::new(move |verb| {
+        helper2.borrow_mut().push(verb.into());
+        1
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
+    let error = coordinator.keep_off(identity);
+    assert_eq!(error.as_deref(), Some("自带 VDD 未能安装，物理屏未改动。"));
+    assert_eq!(*helper.borrow(), vec!["install-driver".to_string()]);
+    assert_eq!(
+        ccd.query_snapshot(CcdConstants::QUERY_FLAGS)
+            .unwrap()
+            .active_physical()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn confirmed_install_runs_install_then_enable() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let helper2 = helper.clone();
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let ccd2 = ccd.clone();
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        false,
+        true,
+        Some(true),
+        Duration::from_secs(15),
+    );
+    hooks.bundled_vdd_payload = Box::new(|| true);
+    hooks.run_driver_helper = Box::new(move |verb| {
+        helper2.borrow_mut().push(verb.into());
+        if verb == "enable" {
+            ccd2.set_paths_rows(
+                vec![fakes::path_default(true, 1), fakes::path_default(false, 2)],
+                vec![
+                    fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1"),
+                    fakes::row(
+                        PathRole::Virtual,
+                        true,
+                        2,
+                        "VDD by MTT",
+                        r"ROOT\MttVDD\0000",
+                        r"\\?\DISPLAY#MTT1337#1",
+                        "0000000000000001",
+                    ),
+                ],
+            );
+        }
+        0
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
+    let error = coordinator.keep_off(identity);
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        *helper.borrow(),
+        vec!["install-driver".to_string(), "enable".to_string()]
+    );
+    assert!(coordinator.has_session());
+    let _ = std::fs::remove_dir_all(coordinator.session_directory().unwrap());
 }
 
 #[test]
@@ -1861,6 +2043,45 @@ fn virtual_screens_are_not_listed() {
 }
 
 #[test]
+fn last_physical_with_bundled_vdd_keeps_button_and_explains() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+        0,
+    );
+    let items = ScreenListBuilder::build(&snap, None, &[], true, true, true);
+    assert!(items[0].can_keep_off);
+    assert!(items[0].block_reason.contains("隐藏虚拟输出"));
+}
+
+#[test]
+fn last_physical_with_payload_only_keeps_button_and_explains_install() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+        0,
+    );
+    let items = ScreenListBuilder::build(
+        &snap,
+        None,
+        &[],
+        BundledVddAvailability::PayloadOnly,
+        true,
+        true,
+    );
+    assert!(items[0].can_keep_off);
+    assert!(items[0].block_reason.contains("安装"));
+}
+
+#[test]
 fn last_physical_is_disabled_with_reason() {
     let snap = DisplaySnapshot::new(
         vec![fakes::row_simple(
@@ -1895,6 +2116,7 @@ fn failure_is_never_shown_as_closed() {
             wanted: "保持关闭".into(),
             confirmed: "失败".into(),
             detail: "校验 87".into(),
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -1947,6 +2169,132 @@ fn heartbeat_keeps_closed_screen_when_snapshot_omits_it() {
         .iter()
         .any(|i| i.name == "Panel" && i.confirmed == "已关闭" && i.can_restore));
     assert!(items.iter().any(|i| i.name == "S24"));
+}
+
+#[test]
+fn display_name_does_not_use_device_instance_path() {
+    let row = fakes::row(
+        PathRole::Internal,
+        false,
+        1,
+        r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}",
+        r"PCI\VEN_8086",
+        r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}",
+        "0000000000000001",
+    );
+    assert_eq!(row.display_name(), "CMN1540");
+    assert_eq!(
+        resolved_screen_name(
+            None,
+            None,
+            Some(r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{guid}"),
+            r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{guid}",
+            true
+        ),
+        "CMN1540"
+    );
+    assert_eq!(
+        resolved_screen_name(None, None, Some("内置屏"), r"\\?\DISPLAY#CMN1540#1", true),
+        "内置屏"
+    );
+}
+
+#[test]
+fn closed_screen_raw_heartbeat_name_is_sanitized() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::External,
+            2,
+            "S24",
+            r"\\?\DISPLAY#PDA#1",
+        )],
+        0,
+    );
+    let hb = HeartbeatFile {
+        screens: vec![HeartbeatScreen {
+            adapter_luid: "0000000000000001".into(),
+            target_id: 1,
+            monitor_path: r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}".into(),
+            name: r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}".into(),
+            wanted: "保持关闭".into(),
+            confirmed: "已关闭".into(),
+            kind: "内置".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
+    let closed = items.iter().find(|i| i.confirmed == "已关闭").unwrap();
+    assert_eq!(closed.name, "CMN1540");
+    assert_eq!(closed.kind, "内置");
+    assert!(!closed.name.contains(r"\\?\"));
+}
+
+#[test]
+fn remaining_external_is_blocked_after_internal_keep_off() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::External,
+            2,
+            "S24",
+            r"\\?\DISPLAY#PDA#1",
+        )],
+        0,
+    );
+    let hb = HeartbeatFile {
+        screens: vec![HeartbeatScreen {
+            adapter_luid: "0000000000000001".into(),
+            target_id: 1,
+            monitor_path: r"\\?\DISPLAY#CMN1540#1".into(),
+            name: "CMN1540".into(),
+            wanted: "保持关闭".into(),
+            confirmed: "已关闭".into(),
+            kind: "内置".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
+    let external = items.iter().find(|i| i.name == "S24").unwrap();
+    assert!(!external.can_keep_off);
+    assert!(external.block_reason.contains("第二活动目标"));
+}
+
+#[test]
+fn remaining_external_with_payload_offers_install() {
+    let snap = DisplaySnapshot::new(
+        vec![fakes::row_simple(
+            PathRole::External,
+            2,
+            "S24",
+            r"\\?\DISPLAY#PDA#1",
+        )],
+        0,
+    );
+    let hb = HeartbeatFile {
+        screens: vec![HeartbeatScreen {
+            adapter_luid: "0000000000000001".into(),
+            target_id: 1,
+            monitor_path: r"\\?\DISPLAY#CMN1540#1".into(),
+            name: "CMN1540".into(),
+            wanted: "保持关闭".into(),
+            confirmed: "已关闭".into(),
+            kind: "内置".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let items = ScreenListBuilder::build(
+        &snap,
+        Some(&hb),
+        &[],
+        BundledVddAvailability::PayloadOnly,
+        true,
+        true,
+    );
+    let external = items.iter().find(|i| i.name == "S24").unwrap();
+    assert!(external.can_keep_off);
+    assert!(external.block_reason.contains("安装"));
 }
 
 #[test]

@@ -13,7 +13,10 @@ pub struct ProcessLaunch;
 impl ProcessLaunch {
     pub fn start_detached(file_name: &str, arguments: &str) -> Result<i32, String> {
         let command = format!("\"{file_name}\" {arguments}");
-        let mut wide: Vec<u16> = OsStr::new(&command).encode_wide().chain(std::iter::once(0)).collect();
+        let mut wide: Vec<u16> = OsStr::new(&command)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         let mut flags = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
         if let Some(pid) = try_create(&mut wide, flags) {
             return Ok(pid);
@@ -22,23 +25,19 @@ impl ProcessLaunch {
         if let Some(pid) = try_create(&mut wide, flags) {
             return Ok(pid);
         }
-        Err(format!("CreateProcess failed: {}", unsafe { GetLastError() }))
+        Err(format!("CreateProcess failed: {}", unsafe {
+            GetLastError()
+        }))
     }
 
     pub fn recovery_exe_path() -> PathBuf {
-        first_existing(&[
-            "Veil.Recovery.exe",
-            "veil_recovery.exe",
-        ])
-        .unwrap_or_else(|| exe_dir().join("Veil.Recovery.exe"))
+        first_existing(&["Veil.Recovery.exe", "veil_recovery.exe"])
+            .unwrap_or_else(|| exe_dir().join("Veil.Recovery.exe"))
     }
 
     pub fn driver_helper_exe_path() -> PathBuf {
-        first_existing(&[
-            "Veil.DriverHelper.exe",
-            "veil_driver_helper.exe",
-        ])
-        .unwrap_or_else(|| exe_dir().join("Veil.DriverHelper.exe"))
+        first_existing(&["Veil.DriverHelper.exe", "veil_driver_helper.exe"])
+            .unwrap_or_else(|| exe_dir().join("Veil.DriverHelper.exe"))
     }
 }
 
@@ -50,11 +49,18 @@ fn exe_dir() -> PathBuf {
 }
 
 fn first_existing(names: &[&str]) -> Option<PathBuf> {
-    let dir = exe_dir();
-    for name in names {
-        let candidate = dir.join(name);
-        if candidate.exists() {
-            return Some(candidate);
+    let mut dirs = vec![exe_dir()];
+    if let Ok(cwd) = std::env::current_dir() {
+        if !dirs.iter().any(|d| d == &cwd) {
+            dirs.push(cwd);
+        }
+    }
+    for dir in dirs {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
         }
     }
     None
