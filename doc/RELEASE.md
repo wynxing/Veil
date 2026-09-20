@@ -66,7 +66,7 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 
 ## 下一次预览
 
-当前预览版本是 `0.1.6-preview.1`（`v0.1.6-preview.1`）。0.1.5 之后修了托盘重开面板、关屏名单把设备路径当显示名，以及关最后一块屏时在仅有安装包、没有设备时可确认后补装自带 VDD。这不是 P15 关光双屏或 Rust MSI 重装已机旁通过。再改代码：升高 `Version`、合并、再打新 tag。不要复用同一个 MSI 版本号。
+当前预览版本是 `0.1.7-preview.1`（`v0.1.7-preview.1`）。0.1.5→0.1.6 会在旧产品 `RestoreDisplays` 失败（助手未启动 `Veil.App` 即退出 1，历史会话也会报「未知恢复结果协议」）。0.1.7 在装新包前先 `retire-old`：复制缓存 MSI、关掉 `RestoreDisplays` 再卸旧版；升级卸载不再跑恢复动作；自带 VDD 设备安装失败不再回滚应用。这不是 P15 关光双屏或 Rust MSI 重装已机旁通过。再改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 

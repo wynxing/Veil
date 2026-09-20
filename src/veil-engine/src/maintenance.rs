@@ -1,4 +1,5 @@
 //! 卸载事务门禁：持久标记跨 MSI 子进程，互斥锁串行化标记与关屏 APPLY。
+use std::path::PathBuf;
 use std::ptr;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
@@ -161,6 +162,14 @@ pub fn select_restore_session(sessions: &[u32]) -> Result<u32, String> {
     }
 }
 
+pub fn can_act_as_restore_proxy(current: u32, interactive: u32) -> Result<(), String> {
+    if current == 0 || (interactive != 0 && current == interactive) {
+        Ok(())
+    } else {
+        Err("当前进程不属于待恢复用户会话。".into())
+    }
+}
+
 pub fn require_single_interactive_session() -> Result<(), String> {
     use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
     let mut current = 0;
@@ -182,13 +191,14 @@ pub fn restore_in_user_session(app: &std::path::Path) -> Result<i32, String> {
     use windows_sys::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSQueryUserToken};
     use windows_sys::Win32::System::Threading::*;
     let mut current = 0;
-    if unsafe { ProcessIdToSessionId(std::process::id(), &mut current) } == 0 || current != 0 {
-        return Err("安装恢复代理必须由 Windows Installer 系统动作调用。".into());
+    if unsafe { ProcessIdToSessionId(std::process::id(), &mut current) } == 0 {
+        return Err("无法确认安装恢复代理会话。".into());
     }
     if !is_active()? {
         return Err("缺少卸载维护门禁。".into());
     }
     let session = select_restore_session(&logged_on_sessions()?)?;
+    can_act_as_restore_proxy(current, session)?;
     struct Handle(HANDLE);
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -255,6 +265,71 @@ pub fn restore_in_user_session(app: &std::path::Path) -> Result<i32, String> {
         return Err("恢复期间用户会话已变化。".into());
     }
     Ok(code as i32)
+}
+
+/// LOCALAPPDATA\Veil of the single interactive user. SYSTEM actions use this when
+/// `SessionPaths::root()` would resolve the service profile.
+pub fn interactive_user_veil_dir() -> Result<PathBuf, String> {
+    use windows_sys::Win32::System::Environment::{
+        CreateEnvironmentBlock, DestroyEnvironmentBlock,
+    };
+    use windows_sys::Win32::System::RemoteDesktop::WTSQueryUserToken;
+    let session = select_restore_session(&logged_on_sessions()?)?;
+    let mut token = ptr::null_mut();
+    if unsafe { WTSQueryUserToken(session, &mut token) } == 0 {
+        return Err(format!(
+            "无法取得交互用户令牌：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    struct Handle(HANDLE);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let token = Handle(token);
+    let mut environment = ptr::null_mut();
+    if unsafe { CreateEnvironmentBlock(&mut environment, token.0, 0) } == 0 {
+        return Err(format!(
+            "无法创建用户环境：{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let local = parse_env_value(environment, "LOCALAPPDATA");
+    unsafe {
+        DestroyEnvironmentBlock(environment);
+    }
+    let local = local.ok_or_else(|| "无法读取交互用户 LOCALAPPDATA。".to_string())?;
+    Ok(PathBuf::from(local).join("Veil"))
+}
+
+fn parse_env_value(block: *mut core::ffi::c_void, key: &str) -> Option<String> {
+    if block.is_null() {
+        return None;
+    }
+    let prefix = format!("{key}=");
+    let mut p = block.cast::<u16>();
+    unsafe {
+        loop {
+            if *p == 0 {
+                break;
+            }
+            let mut end = p;
+            while *end != 0 {
+                end = end.add(1);
+            }
+            let len = end.offset_from(p) as usize;
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+            if let Some(value) = s.strip_prefix(prefix.as_str()) {
+                return Some(value.to_string());
+            }
+            p = end.add(1);
+        }
+    }
+    None
 }
 
 pub fn require_available(active: Result<bool, String>) -> Result<(), String> {

@@ -1272,6 +1272,7 @@ fn request_all_and_wait_returns_when_result_appears() {
         },
     )
     .unwrap();
+    write_live_ready(&session_dir);
     let result = SessionPaths::result(&session_dir);
     let writer = session_dir.clone();
     std::thread::spawn(move || {
@@ -2339,6 +2340,18 @@ fn complete_result() -> ResultFile {
     }
 }
 
+fn write_live_ready(dir: impl AsRef<std::path::Path>) {
+    JsonUtil::write_atomic(
+        SessionPaths::ready(dir),
+        &ReadyFile {
+            pid: std::process::id() as i32,
+            hotkey_registered: true,
+            hotkey: CcdConstants::HOTKEY_TEXT.into(),
+        },
+    )
+    .unwrap();
+}
+
 #[test]
 fn failed_restore_keeps_hotkey_and_requires_explicit_retry() {
     let dir = TempSession::new();
@@ -2696,18 +2709,78 @@ fn atomic_write_failure_is_bounded_and_preserves_destination() {
 }
 
 #[test]
-fn uninstall_rejects_failed_corrupt_and_legacy_results() {
-    for payload in [
-        "{",
-        r#"{"ok":true}"#,
-        r#"{"protocolVersion":2,"restoreState":"partial"}"#,
-    ] {
-        let root = TempSession::new();
-        let dir = root.0.join("session-failed");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::write(SessionPaths::result(&dir), payload).unwrap();
-        assert!(OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO).is_err());
+fn uninstall_skips_legacy_keep_off_results() {
+    let root = TempSession::new();
+    let dir = root.0.join("session-legacy");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        SessionPaths::result(&dir),
+        r#"{"ok":true,"reason":"release","restoreRc":0,"restoredTargets":true}"#,
+    )
+    .unwrap();
+    OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO).unwrap();
+}
+
+#[test]
+fn uninstall_skips_abandoned_pending_sessions() {
+    let root = TempSession::new();
+    let dir = root.0.join("session-abandoned");
+    std::fs::create_dir(&dir).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&dir),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::ready(&dir),
+        &ReadyFile {
+            pid: 1_999_999_999,
+            hotkey_registered: true,
+            hotkey: CcdConstants::HOTKEY_TEXT.into(),
+        },
+    )
+    .unwrap();
+    OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO).unwrap();
+}
+
+#[test]
+fn sweep_concluded_removes_history_and_keeps_live() {
+    let root = TempSession::new();
+    let legacy = root.0.join("session-legacy");
+    let abandoned = root.0.join("session-abandoned");
+    let live = root.0.join("session-live");
+    for dir in [&legacy, &abandoned, &live] {
+        std::fs::create_dir(dir).unwrap();
     }
+    std::fs::write(
+        SessionPaths::result(&legacy),
+        r#"{"ok":true,"reason":"release"}"#,
+    )
+    .unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&abandoned),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::metadata(&live),
+        &SessionMetadata {
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    write_live_ready(&live);
+    assert_eq!(OpenSessionRelease::sweep_concluded(&root.0).unwrap(), 2);
+    assert!(!legacy.exists());
+    assert!(!abandoned.exists());
+    assert!(live.exists());
 }
 
 #[test]
@@ -2723,6 +2796,7 @@ fn uninstall_timeout_returns_protocol_exit_code() {
         },
     )
     .unwrap();
+    write_live_ready(&dir);
     assert_eq!(
         OpenSessionRelease::wait_after_release(&root.0, Duration::ZERO)
             .unwrap_err()
@@ -2918,11 +2992,20 @@ fn maintenance_gate_blocks_true_and_unknown_states() {
 fn uninstall_actions_check_results_before_removal_and_hold_marker_through_commit() {
     let xml = include_str!("../../../installer/Veil.Setup/Package.wxs");
     assert!(xml.contains("Id=\"RestoreDisplays\""));
-    assert!(!xml.contains("Return=\"ignore\""));
+    assert!(xml.contains("Condition=\"REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE\""));
+    assert!(xml.contains("Id=\"InstallVdd\""));
+    assert!(xml.contains("ExeCommand=\"install-driver\""));
+    assert!(xml.contains("Return=\"ignore\""));
     assert!(xml.contains("Action=\"UninstallVdd\" After=\"RestoreDisplays\""));
     assert!(xml.contains("Action=\"RestoreDisplays\" After=\"BeginMaintenance\""));
+    assert!(xml.contains("Id=\"SweepHistoricalSessions\""));
+    assert!(xml.contains("Before=\"RemoveExistingProducts\""));
+    assert!(xml.contains("WIX_UPGRADE_DETECTED"));
     assert!(xml.contains("Execute=\"commit\""));
     assert!(xml.contains("Execute=\"rollback\""));
+    let bundle = include_str!("../../../installer/Veil.Bundle/Bundle.wxs");
+    assert!(bundle.contains("Id=\"RetireOldVeil\""));
+    assert!(bundle.contains("InstallArguments=\"retire-old\""));
 }
 
 #[test]
@@ -2938,6 +3021,7 @@ fn uninstall_waits_for_acknowledgement_of_new_release() {
         },
     )
     .unwrap();
+    write_live_ready(&dir);
     JsonUtil::write_atomic(
         SessionPaths::heartbeat(&dir),
         &HeartbeatFile {
@@ -2996,4 +3080,8 @@ fn restore_session_selection_rejects_service_and_ambiguous_users() {
     assert!(select_restore_session(&[0]).is_err());
     assert!(select_restore_session(&[1, 2]).is_err());
     assert_eq!(select_restore_session(&[3]).unwrap(), 3);
+    use crate::maintenance::can_act_as_restore_proxy;
+    assert!(can_act_as_restore_proxy(0, 1).is_ok());
+    assert!(can_act_as_restore_proxy(1, 1).is_ok());
+    assert!(can_act_as_restore_proxy(2, 1).is_err());
 }

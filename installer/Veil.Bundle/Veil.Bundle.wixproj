@@ -4,7 +4,7 @@
     <OutputName>VeilSetup</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
-    <DefineConstants>PackageMsi=$(MSBuildThisFileDirectory)..\Veil.Setup\bin\$(Configuration)\Veil.msi;ProductVersion=$(ProductVersion)</DefineConstants>
+    <DefineConstants>PackageMsi=$(MSBuildThisFileDirectory)..\Veil.Setup\bin\$(Configuration)\Veil.msi;HelperExe=$(MSBuildThisFileDirectory)..\out\app\Veil.DriverHelper.exe;ProductVersion=$(ProductVersion)</DefineConstants>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

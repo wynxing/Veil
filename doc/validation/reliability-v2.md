@@ -37,6 +37,6 @@ CI 在 Windows PR 和 main 提交上运行离线测试、全目标编译与安�
 
 ## 安装执行上下文
 
-MSI 的系统动作不直接把 Session 0 当成交互桌面。嵌入助手确认只有一个登录用户后，用该会话的主令牌和用户环境启动固定安装路径的 `Veil.App --restore-and-exit`，等待退出码，并再次检查会话集合。无用户、多用户、令牌/环境创建失败均阻止卸载；不接收任意可执行文件参数。此实现已编译，仍需机旁验证 SYSTEM 到用户会话的真实调用。
+MSI 的系统动作不直接把 Session 0 当成交互桌面。嵌入助手确认只有一个登录用户后，用该会话的主令牌和用户环境启动固定安装路径的 `Veil.App --restore-and-exit`，等待退出码，并再次检查会话集合。无用户、多用户、令牌/环境创建失败均阻止卸载；不接收任意可执行文件参数。`--restore-and-exit` 忽略已结束的历史会话（含缺 `protocolVersion` 的 v1 `result.json`）和没有存活恢复进程的目录；只等待仍在跑的恢复进程。升级时 `sweep-sessions` 在拆旧产品前清掉这类目录，避免 0.1.5 及更早的恢复入口被历史文件拦住。此实现已编译，仍需机旁验证 SYSTEM 到用户会话的真实调用。
 
 接口依据：[WTSQueryUserToken](https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsqueryusertoken)、[CreateProcessAsUserW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw)。前者要求 LocalSystem 及相应权限，后者使用指定用户令牌及会话。

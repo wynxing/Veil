@@ -18,6 +18,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_ApplicationInstallationAndServicing",
     "Win32_System_LibraryLoader",
 ] }
 

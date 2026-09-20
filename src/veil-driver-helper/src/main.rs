@@ -10,6 +10,7 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
     SetupDiGetDeviceRegistryPropertyW, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
 };
+mod retire;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS, INVALID_HANDLE_VALUE};
 
 const HARDWARE_ID: &str = CcdConstants::BUNDLED_HARDWARE_ID;
@@ -25,7 +26,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let verb = args.first().map(String::as_str).unwrap_or("status");
     if verb == "--help" || verb == "-h" {
-        eprintln!("Veil.DriverHelper status|enable|disable|install-driver|uninstall-driver");
+        eprintln!(
+            "Veil.DriverHelper status|enable|disable|install-driver|uninstall-driver|sweep-sessions|retire-old"
+        );
         std::process::exit(0);
     }
     let code = match verb {
@@ -38,6 +41,20 @@ fn main() {
                 1
             }
         },
+        "sweep-sessions" => sweep_sessions(),
+        "retire-old" => {
+            retire::stop_veil_apps();
+            if sweep_sessions() != 0 {
+                helper_log("sweep-sessions 未完成，继续卸旧版。");
+            }
+            match retire::retire_old_products() {
+                Ok(()) => 0,
+                Err(e) => {
+                    helper_log(&e);
+                    1
+                }
+            }
+        }
         "begin-maintenance" => maintenance(true),
         "end-maintenance" => maintenance(false),
         "status" => status(),
@@ -69,6 +86,25 @@ fn status() -> i32 {
             "installed": !ids.is_empty(),
         })
     );
+    0
+}
+
+fn sweep_sessions() -> i32 {
+    let mut roots = vec![veil_engine::SessionPaths::root()];
+    match veil_engine::maintenance::interactive_user_veil_dir() {
+        Ok(user) => {
+            if !roots.iter().any(|root| root == &user) {
+                roots.push(user);
+            }
+        }
+        Err(e) => helper_log(&e),
+    }
+    for root in roots {
+        if let Err(e) = veil_engine::OpenSessionRelease::sweep_concluded(&root) {
+            helper_log(&e);
+            return 1;
+        }
+    }
     0
 }
 
@@ -506,14 +542,22 @@ fn hex_upper(bytes: &[u8]) -> String {
 }
 
 fn helper_log(line: &str) {
-    let path = std::env::temp_dir().join("Veil-driver-helper.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        use std::io::Write;
-        let _ = writeln!(f, "{line}");
+    let paths = [
+        std::env::temp_dir().join("Veil-driver-helper.log"),
+        PathBuf::from(r"C:\ProgramData\Veil\driver-helper.log"),
+    ];
+    for path in paths {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
     }
     eprintln!("{line}");
 }

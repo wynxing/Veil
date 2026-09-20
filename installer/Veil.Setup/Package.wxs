@@ -34,19 +34,22 @@
                   Execute="rollback" Impersonate="no" Return="check" />
     <CustomAction Id="CommitMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="end-maintenance"
                   Execute="commit" Impersonate="no" Return="check" />
+    <CustomAction Id="SweepHistoricalSessions" BinaryRef="MaintenanceHelper" ExeCommand="sweep-sessions"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
     <CustomAction Id="RestoreDisplays" BinaryRef="MaintenanceHelper" ExeCommand="restore-displays"
                   Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction Id="RollbackVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
                   Execute="rollback" Impersonate="no" Return="check" />
     <CustomAction Id="InstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="install-driver"
-                  Execute="deferred" Impersonate="no" Return="check" />
+                  Execute="deferred" Impersonate="no" Return="ignore" />
     <CustomAction Id="UninstallVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
                   Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
+      <Custom Action="SweepHistoricalSessions" Before="RemoveExistingProducts" Condition="WIX_UPGRADE_DETECTED" />
       <Custom Action="RollbackMaintenance" After="InstallInitialize" />
       <Custom Action="BeginMaintenance" After="RollbackMaintenance" />
-      <Custom Action="RestoreDisplays" After="BeginMaintenance" Condition="REMOVE=&quot;ALL&quot;" />
+      <Custom Action="RestoreDisplays" After="BeginMaintenance" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="UninstallVdd" After="RestoreDisplays" Condition="REMOVE=&quot;ALL&quot;" />
       <Custom Action="CommitMaintenance" After="UninstallVdd" />
       <Custom Action="RollbackVdd" After="InstallFiles" Condition="NOT Installed AND INSTALLVDD=1" />

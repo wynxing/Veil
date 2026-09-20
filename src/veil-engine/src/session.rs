@@ -1,4 +1,4 @@
-use crate::native::CcdConstants;
+use crate::native::{CcdConstants, ParentWatcher, Win32ParentWatcher};
 use crate::ScreenIdentity;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -437,6 +437,24 @@ impl OpenSessionRelease {
     pub fn request_all_and_wait(timeout: Duration) -> Result<RestoreOutcome, RestoreError> {
         Self::wait_after_release(&SessionPaths::root(), timeout)
     }
+    pub fn sweep_concluded(root: impl AsRef<Path>) -> Result<usize, String> {
+        let mut removed = 0;
+        if !root.as_ref().exists() {
+            return Ok(0);
+        }
+        let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if !is_session_dir(&path) {
+                continue;
+            }
+            if SessionPaths::result(&path).exists() || live_recovery_pid(&path).is_none() {
+                std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
     pub fn wait_after_release(
         root: impl AsRef<Path>,
         timeout: Duration,
@@ -450,19 +468,13 @@ impl OpenSessionRelease {
             let path = entry
                 .map_err(|e| RestoreError::Protocol(e.to_string()))?
                 .path();
-            if !path.is_dir()
-                || !path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .starts_with("session-")
-            {
+            if !is_session_dir(&path) {
                 continue;
             }
             if SessionPaths::result(&path).exists() {
-                JsonUtil::read::<ResultFile>(SessionPaths::result(&path))
-                    .map_err(RestoreError::Protocol)?
-                    .restoration_outcome()?;
+                continue;
+            }
+            if live_recovery_pid(&path).is_none() {
                 continue;
             }
             let meta = JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(&path))
@@ -516,6 +528,25 @@ impl OpenSessionRelease {
         }
     }
 }
+
+fn is_session_dir(path: &Path) -> bool {
+    path.is_dir()
+        && path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .starts_with("session-")
+}
+
+fn live_recovery_pid(path: &Path) -> Option<i32> {
+    let ready = JsonUtil::try_read::<ReadyFile>(SessionPaths::ready(path))?;
+    if ready.pid > 0 && Win32ParentWatcher.is_alive(ready.pid).unwrap_or(false) {
+        Some(ready.pid)
+    } else {
+        None
+    }
+}
+
 impl ResultFile {
     pub fn restoration_outcome(&self) -> Result<RestoreOutcome, RestoreError> {
         if self.protocol_version != PROTOCOL_VERSION {
