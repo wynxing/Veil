@@ -53,6 +53,16 @@ cargo test --manifest-path src\Cargo.toml
 
 本机也可以在干净工作区跑 `.\installer\release.ps1`：测试、打包、用 `gh release create --prerelease` 上传。它可能在本地创建 tag，**不会**执行 `git push --tags`。CI 传入的 tag 必须与 props 算出的 tag 一致。
 
+优先使用「推送标签 → CI 发布」这一条入口。本机发布会在 GitHub 创建标签，可能同时触发标签 CI；不要再重复手动推送同名标签。
+
+发布前会查询 GitHub：同名 Release 非草稿、远端标签指向当前提交，且安装包与校验文件均已上传、大小非零时，直接成功退出并保留已有附件；草稿、缺失附件、标签冲突或查询失败均明确报错，不覆盖安装包。此检查确认发布结构完整，不代替下载后的 SHA-256 校验。只读检查可运行 `./installer/release.ps1 -CheckOnly`。
+
+CI 使用 Rust 依赖缓存，测试和打包统一使用 `--locked --release --target x86_64-pc-windows-msvc`；`pack.ps1` 负责构建，无单独的重复构建步骤。同一标签的发布串行执行，任务预算为 25 分钟，并为下载、测试、打包、上传设置步骤超时。执行机器失联时，GitHub 的故障检测仍可能晚于预算，超时配置不保证失联任务立即终止。
+
+打包完成后先保存 14 天的 Actions artifact，再创建 Release。若上传阶段失败，可先取回 artifact 排查。执行机器失联且 Release 尚不存在时，重跑失败任务；若 Release 已存在但附件不完整，应人工检查并修复，脚本不会自动覆盖。旧标签重跑仍使用该标签中的旧流程，新的缓存与预检配置只对包含此次流程修改的标签生效。
+
+发布预检回归验证：`pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1`。构建或发布成功仍不代表安装、升级及屏幕控制已在实机验收。
+
 Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、已测机器是 REDMI Book 14 2025 与 COLORFUL P15 24、不是可公开安装、不是全平台兼容。
 
 ## 下载与安装注意

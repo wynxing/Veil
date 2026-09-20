@@ -42,7 +42,7 @@ if (Test-Path -LiteralPath $outRoot) {
 New-Item -ItemType Directory -Path $out | Out-Null
 
 $manifest = Join-Path $repo "src\Cargo.toml"
-& cargo build --manifest-path $manifest --release --target x86_64-pc-windows-msvc
+& cargo build --manifest-path $manifest --locked --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $repo "src\target" }
