@@ -3135,10 +3135,11 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "veil-app"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "eframe",
  "egui",
+ "raw-window-handle",
  "tray-icon",
  "veil-engine",
  "windows-sys 0.59.0",
@@ -3147,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "veil-driver-helper"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde_json",
  "veil-engine",
@@ -3157,7 +3158,7 @@ dependencies = [
 
 [[package]]
 name = "veil-engine"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64",
  "chrono",
@@ -3169,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "veil-recovery"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "veil-engine",
  "winresource",

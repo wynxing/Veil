@@ -1,20 +1,41 @@
-use std::sync::{Arc, Mutex};
+use std::ffi::c_void;
+use std::sync::{Arc, Mutex, OnceLock};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use windows_sys::core::GUID;
 use windows_sys::Win32::Foundation::{HWND, RECT};
-use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+use windows_sys::Win32::UI::Shell::TaskbarList;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
-    IsIconic, IsWindow, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    GWL_EXSTYLE, HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SW_RESTORE, SW_SHOW, WS_EX_TOOLWINDOW,
+    BringWindowToTop, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindow, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOP, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE,
+    SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
-const PANEL_TITLE: &str = "Veil";
 const PARK_X: i32 = -32_000;
 const PARK_Y: i32 = -32_000;
 const DEFAULT_X: i32 = 200;
 const DEFAULT_Y: i32 = 200;
 const DEFAULT_W: i32 = 420;
 const DEFAULT_H: i32 = 560;
+const IID_ITASKBAR_LIST: GUID = GUID::from_u128(0x56FDF342_fd6d_11d0_958a_006097c9a090);
+
+#[repr(C)]
+struct ITaskbarList {
+    vtbl: *const ITaskbarListVtbl,
+}
+
+#[repr(C)]
+struct ITaskbarListVtbl {
+    query_interface: unsafe extern "system" fn(*mut ITaskbarList, *const GUID, *mut *mut c_void) -> i32,
+    add_ref: unsafe extern "system" fn(*mut ITaskbarList) -> u32,
+    release: unsafe extern "system" fn(*mut ITaskbarList) -> u32,
+    hr_init: unsafe extern "system" fn(*mut ITaskbarList) -> i32,
+    add_tab: unsafe extern "system" fn(*mut ITaskbarList, HWND) -> i32,
+    delete_tab: unsafe extern "system" fn(*mut ITaskbarList, HWND) -> i32,
+    activate_tab: unsafe extern "system" fn(*mut ITaskbarList, HWND) -> i32,
+    set_active_alt: unsafe extern "system" fn(*mut ITaskbarList, HWND) -> i32,
+}
 
 #[derive(Clone, Copy)]
 struct Rect {
@@ -43,31 +64,80 @@ impl PanelWindow {
         }
     }
 
-    pub fn ensure(&self) {
-        let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-        if *cached != 0 && is_window(*cached) {
-            return;
-        }
-        *cached = find_veil_hwnd();
-        if *cached == 0 {
-            crate::app_log("未找到 Veil 面板 HWND。");
-        } else {
-            crate::app_log(&format!("面板 HWND={}", *cached));
-            self.remember_rect(*cached);
+    pub fn hwnd_from_frame(frame: &eframe::Frame) -> isize {
+        let Ok(handle) = frame.window_handle() else {
+            return 0;
+        };
+        match handle.as_raw() {
+            RawWindowHandle::Win32(win) => win.hwnd.get(),
+            _ => 0,
         }
     }
 
     pub fn show(&self) {
-        self.ensure();
-        let hwnd = *self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        let hwnd = self.hwnd();
         if hwnd == 0 {
             crate::app_log("无法显示面板：没有 HWND。");
             return;
         }
+        self.restore_window(hwnd, true);
+        crate::app_log("面板已拉回前台。");
+    }
+
+    pub fn hide(&self) {
+        let hwnd = self.hwnd();
+        if hwnd == 0 {
+            crate::app_log("无法隐藏面板：没有 HWND。");
+            return;
+        }
+        self.remember_rect(hwnd);
+        self.park_window(hwnd);
+        crate::app_log("面板已退回托盘，事件循环保持运行。");
+    }
+
+    pub fn sync(&self, hwnd: isize, open: bool) {
+        if hwnd != 0 && is_window(hwnd) {
+            self.set_hwnd(hwnd);
+        }
+        let hwnd = self.hwnd();
+        if hwnd == 0 {
+            return;
+        }
+        if open {
+            if is_parked(hwnd) {
+                self.restore_window(hwnd, false);
+            } else {
+                self.remember_rect(hwnd);
+                unsafe {
+                    apply_shown_style(hwnd as HWND);
+                }
+                taskbar_add(hwnd);
+            }
+        } else {
+            if !is_parked(hwnd) {
+                self.remember_rect(hwnd);
+            }
+            self.park_window(hwnd);
+        }
+    }
+
+    fn hwnd(&self) -> isize {
+        let cached = *self.cached.lock().unwrap_or_else(|e| e.into_inner());
+        if cached != 0 && is_window(cached) {
+            cached
+        } else {
+            0
+        }
+    }
+
+    fn set_hwnd(&self, hwnd: isize) {
+        *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = hwnd;
+    }
+
+    fn restore_window(&self, hwnd: isize, activate: bool) {
         let rect = *self.last_rect.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
-            // 不使用 SW_HIDE / Visible(false)。停到屏幕外以保持 winit 事件循环。
-            clear_tool_window(hwnd as HWND);
+            apply_shown_style(hwnd as HWND);
             SetWindowPos(
                 hwnd as HWND,
                 HWND_TOP,
@@ -80,54 +150,47 @@ impl PanelWindow {
             if IsIconic(hwnd as HWND) != 0 {
                 ShowWindow(hwnd as HWND, SW_RESTORE);
             }
-            BringWindowToTop(hwnd as HWND);
-            let _ = SetForegroundWindow(hwnd as HWND);
+            if activate {
+                BringWindowToTop(hwnd as HWND);
+                let _ = SetForegroundWindow(hwnd as HWND);
+            }
         }
+        taskbar_add(hwnd);
         crate::app_log(&format!(
-            "面板已拉回 {}x{} @ {},{}",
+            "面板已恢复 {}x{} @ {},{}",
             rect.w, rect.h, rect.x, rect.y
         ));
     }
 
-    pub fn wake_soon() {
-        std::thread::spawn(|| {
-            for attempt in 0..40 {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let hwnd = find_veil_hwnd();
-                if hwnd == 0 {
-                    continue;
-                }
-                unsafe {
-                    show_hwnd(hwnd as HWND);
-                }
-                crate::app_log(&format!("后台唤醒面板 HWND={hwnd} attempt={attempt}"));
-                return;
-            }
-            crate::app_log("后台唤醒面板超时，仍未找到 HWND。");
-        });
-    }
-
-    pub fn hide(&self) {
-        self.ensure();
-        let hwnd = *self.cached.lock().unwrap_or_else(|e| e.into_inner());
-        if hwnd == 0 {
-            crate::app_log("无法隐藏面板：没有 HWND。");
-            return;
-        }
-        self.remember_rect(hwnd);
+    fn park_window(&self, hwnd: isize) {
         unsafe {
-            set_tool_window(hwnd as HWND);
-            SetWindowPos(
-                hwnd as HWND,
-                HWND_TOP,
-                PARK_X,
-                PARK_Y,
-                1,
-                1,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-            );
+            if IsIconic(hwnd as HWND) != 0 {
+                ShowWindow(hwnd as HWND, SW_SHOWNOACTIVATE);
+            }
+            apply_hidden_style(hwnd as HWND);
+            if !is_parked(hwnd) {
+                SetWindowPos(
+                    hwnd as HWND,
+                    HWND_TOP,
+                    PARK_X,
+                    PARK_Y,
+                    1,
+                    1,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+                );
+            } else {
+                SetWindowPos(
+                    hwnd as HWND,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
         }
-        crate::app_log("面板已停到屏幕外，事件循环保持运行。");
+        taskbar_delete(hwnd);
     }
 
     fn remember_rect(&self, hwnd: isize) {
@@ -143,6 +206,13 @@ impl PanelWindow {
 
 fn is_window(hwnd: isize) -> bool {
     unsafe { IsWindow(hwnd as HWND) != 0 }
+}
+
+fn is_parked(hwnd: isize) -> bool {
+    let Some(rect) = client_rect(hwnd) else {
+        return false;
+    };
+    rect.x <= PARK_X + 1_000 && rect.w < 80
 }
 
 fn client_rect(hwnd: isize) -> Option<Rect> {
@@ -164,40 +234,75 @@ fn client_rect(hwnd: isize) -> Option<Rect> {
     })
 }
 
-unsafe fn show_hwnd(hwnd: HWND) {
-    ShowWindow(hwnd, SW_SHOW);
-    if IsIconic(hwnd) != 0 {
-        ShowWindow(hwnd, SW_RESTORE);
+unsafe fn apply_hidden_style(hwnd: HWND) {
+    let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    let next = (style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+    if next != style {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
     }
-    BringWindowToTop(hwnd);
-    let _ = SetForegroundWindow(hwnd);
 }
 
-unsafe fn set_tool_window(hwnd: HWND) {
+unsafe fn apply_shown_style(hwnd: HWND) {
     let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW as isize);
+    let next = (style | WS_EX_APPWINDOW as isize) & !(WS_EX_TOOLWINDOW as isize);
+    if next != style {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+    }
 }
 
-unsafe fn clear_tool_window(hwnd: HWND) {
-    let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !(WS_EX_TOOLWINDOW as isize));
+fn taskbar() -> Option<*mut ITaskbarList> {
+    static TASKBAR: OnceLock<usize> = OnceLock::new();
+    let ptr = *TASKBAR.get_or_init(|| unsafe { create_taskbar() });
+    if ptr == 0 {
+        None
+    } else {
+        Some(ptr as *mut ITaskbarList)
+    }
 }
 
-fn find_veil_hwnd() -> isize {
-    let title: Vec<u16> = PANEL_TITLE
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
-    if hwnd.is_null() {
+unsafe fn create_taskbar() -> usize {
+    let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+    if hr < 0 && hr != -2147417850 {
+        crate::app_log(&format!("CoInitializeEx 失败 HRESULT={hr}"));
         return 0;
     }
-    let mut pid = 0u32;
+    let mut ptr: *mut c_void = std::ptr::null_mut();
+    let hr = CoCreateInstance(
+        &TaskbarList,
+        std::ptr::null_mut(),
+        CLSCTX_INPROC_SERVER,
+        &IID_ITASKBAR_LIST,
+        &mut ptr,
+    );
+    if hr < 0 || ptr.is_null() {
+        crate::app_log(&format!("ITaskbarList 创建失败 HRESULT={hr}"));
+        return 0;
+    }
+    let list = ptr as *mut ITaskbarList;
+    let init = ((*(*list).vtbl).hr_init)(list);
+    if init < 0 {
+        crate::app_log(&format!("ITaskbarList::HrInit 失败 HRESULT={init}"));
+        ((*(*list).vtbl).release)(list);
+        return 0;
+    }
+    list as usize
+}
+
+fn taskbar_add(hwnd: isize) {
+    let Some(list) = taskbar() else {
+        return;
+    };
     unsafe {
-        GetWindowThreadProcessId(hwnd, &mut pid);
+        let _ = ((*(*list).vtbl).add_tab)(list, hwnd as HWND);
+        let _ = ((*(*list).vtbl).activate_tab)(list, hwnd as HWND);
     }
-    if pid != unsafe { GetCurrentProcessId() } {
-        return 0;
+}
+
+fn taskbar_delete(hwnd: isize) {
+    let Some(list) = taskbar() else {
+        return;
+    };
+    unsafe {
+        let _ = ((*(*list).vtbl).delete_tab)(list, hwnd as HWND);
     }
-    hwnd as isize
 }

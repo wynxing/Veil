@@ -9,7 +9,7 @@
 3. 运行 `installer/pack.ps1`：用 `cargo build --release` 产出三个 exe（拷成 `Veil.*.exe`）并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
 4. 打 `v*` 标签后由 CI 挂 GitHub prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
 
-无 payload 时不得打出缺驱动的包。实验室脚本 `tools/display-probe/install-vdd.ps1` 不得被调用。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。这不是可公开安装。
+无 payload 时不得打出缺驱动的包。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。这不是可公开安装。
 
 ## 安装行为
 
@@ -21,7 +21,7 @@
 
 ## vdd_settings.xml 路径
 
-产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者；详见 [installer-payload.md](../doc/validation/installer-payload.md)。Rust 安装器路径见 [redmi-book-14-2025-rust.md](../doc/validation/redmi-book-14-2025-rust.md)，尚未机旁执行。这不是可公开安装。
+产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者。哈希与发布者指纹见 [payload.manifest.json](payload.manifest.json)。这不是可公开安装。
 
 ## 可靠性门禁（协议 v2）
 
@@ -30,7 +30,7 @@
 - 辅助 VDD 的 `install-driver` 失败不再回滚应用文件；文件留下，面板可以再装。没有第二活动目标时仍需要成功装上或接管设备才能关光最后一块物理屏。
 - 维护标记存于 64 位 HKLM `Software\Veil\Maintenance`，由提权安装动作写入；全局命名互斥串行化门禁与关屏 APPLY。提交/回滚使用嵌入 MSI 的助手，删除安装目录后仍可清理标记。异常断电可能留下标记，此时拒绝关屏；应先通过安装器修复/完成维护，不能默默清除标记。
 - 恢复检查只支持可确认的当前交互用户。SYSTEM 安装动作先确认只有一个登录用户，再通过该会话主令牌和用户环境启动固定的 App 恢复入口。其它用户仍登录（含断开的会话）、无登录用户或令牌/会话查询失败均阻止卸载；先在各用户会话恢复显示并注销其它用户。
-- 设备实例写入 `%ProgramFiles%\Veil\owned-devices.json`。启用、禁用、移除只匹配此清单。本机已有同一 `Root\MttVDD` 时应写入清单并接管，不停止安装，也不新建第二块。实现见 [安装计划](../doc/plans/2026-09-20-vdd-install.md)；代码尚未改完。向日葵 / GameViewer 仍不接管。
+- 设备实例写入 `%ProgramFiles%\Veil\owned-devices.json`。启用、禁用、移除只匹配此清单。本机已有同一 `Root\MttVDD` 时应写入清单并接管，不停止安装，也不新建第二块。向日葵 / GameViewer 仍不接管。
 - 安装后禁用失败返回安装失败；清理限于本次新建实例和 XML。缺失/损坏的历史会话证明不能用一个 `ok=true` 绕过恢复门禁。
 
-离线与机旁清单见 [可靠性修复验收](../doc/validation/reliability-v2.md)。构建成功不等于安装、升级、卸载已实测。
+构建成功不等于安装、升级、卸载已在每台机器上实测。
