@@ -1,15 +1,19 @@
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex, OnceLock};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use windows_sys::core::GUID;
-use windows_sys::Win32::Foundation::{HWND, RECT};
-use windows_sys::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+use windows_sys::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows_sys::Win32::UI::Shell::TaskbarList;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindow, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOP, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_RESTORE,
-    SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, SystemParametersInfoW,
+    GWL_EXSTYLE, HWND_TOP, SPI_GETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOWPLACEMENT,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
 const PARK_X: i32 = -32_000;
@@ -27,7 +31,8 @@ struct ITaskbarList {
 
 #[repr(C)]
 struct ITaskbarListVtbl {
-    query_interface: unsafe extern "system" fn(*mut ITaskbarList, *const GUID, *mut *mut c_void) -> i32,
+    query_interface:
+        unsafe extern "system" fn(*mut ITaskbarList, *const GUID, *mut *mut c_void) -> i32,
     add_ref: unsafe extern "system" fn(*mut ITaskbarList) -> u32,
     release: unsafe extern "system" fn(*mut ITaskbarList) -> u32,
     hr_init: unsafe extern "system" fn(*mut ITaskbarList) -> i32,
@@ -49,6 +54,7 @@ struct Rect {
 pub struct PanelWindow {
     cached: Arc<Mutex<isize>>,
     last_rect: Arc<Mutex<Rect>>,
+    parked: Arc<AtomicBool>,
 }
 
 impl PanelWindow {
@@ -61,6 +67,7 @@ impl PanelWindow {
                 w: DEFAULT_W,
                 h: DEFAULT_H,
             })),
+            parked: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -84,6 +91,20 @@ impl PanelWindow {
         crate::app_log("面板已拉回前台。");
     }
 
+    pub fn is_parked(&self) -> bool {
+        self.parked.load(Ordering::Relaxed)
+    }
+
+    pub fn is_iconic(&self) -> bool {
+        let hwnd = self.hwnd();
+        hwnd != 0 && unsafe { IsIconic(hwnd as HWND) } != 0
+    }
+
+    pub fn visible_outer_position(&self) -> (i32, i32) {
+        let rect = self.visible_rect();
+        (rect.x, rect.y)
+    }
+
     pub fn hide(&self) {
         let hwnd = self.hwnd();
         if hwnd == 0 {
@@ -104,17 +125,17 @@ impl PanelWindow {
             return;
         }
         if open {
-            if is_parked(hwnd) {
+            if self.is_parked() {
                 self.restore_window(hwnd, false);
             } else {
                 self.remember_rect(hwnd);
                 unsafe {
                     apply_shown_style(hwnd as HWND);
                 }
-                taskbar_add(hwnd);
+                taskbar_add(hwnd, false);
             }
         } else {
-            if !is_parked(hwnd) {
+            if !self.is_parked() {
                 self.remember_rect(hwnd);
             }
             self.park_window(hwnd);
@@ -135,9 +156,39 @@ impl PanelWindow {
     }
 
     fn restore_window(&self, hwnd: isize, activate: bool) {
-        let rect = *self.last_rect.lock().unwrap_or_else(|e| e.into_inner());
+        let rect = self.visible_rect();
+        let already_ok = client_rect(hwnd).is_some_and(|current| {
+            !looks_parked(&current)
+                && (current.x - rect.x).abs() < 16
+                && (current.y - rect.y).abs() < 16
+                && (current.w - rect.w).abs() < 32
+                && (current.h - rect.h).abs() < 32
+                && unsafe { IsIconic(hwnd as HWND) } == 0
+        });
         unsafe {
             apply_shown_style(hwnd as HWND);
+            let placement = WINDOWPLACEMENT {
+                length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                flags: 0,
+                showCmd: if activate {
+                    SW_SHOWNORMAL as u32
+                } else {
+                    SW_SHOWNOACTIVATE as u32
+                },
+                ptMinPosition: POINT { x: 0, y: 0 },
+                ptMaxPosition: POINT { x: 0, y: 0 },
+                rcNormalPosition: RECT {
+                    left: rect.x,
+                    top: rect.y,
+                    right: rect.x + rect.w,
+                    bottom: rect.y + rect.h,
+                },
+            };
+            SetWindowPlacement(hwnd as HWND, &placement);
+            let mut flags = SWP_SHOWWINDOW | SWP_FRAMECHANGED;
+            if !activate {
+                flags |= SWP_NOACTIVATE;
+            }
             SetWindowPos(
                 hwnd as HWND,
                 HWND_TOP,
@@ -145,21 +196,26 @@ impl PanelWindow {
                 rect.y,
                 rect.w,
                 rect.h,
-                SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+                flags,
             );
-            if IsIconic(hwnd as HWND) != 0 {
-                ShowWindow(hwnd as HWND, SW_RESTORE);
-            }
             if activate {
                 BringWindowToTop(hwnd as HWND);
                 let _ = SetForegroundWindow(hwnd as HWND);
             }
         }
-        taskbar_add(hwnd);
-        crate::app_log(&format!(
-            "面板已恢复 {}x{} @ {},{}",
-            rect.w, rect.h, rect.x, rect.y
-        ));
+        taskbar_add(hwnd, activate);
+        let restored = client_rect(hwnd).is_some_and(|current| {
+            !looks_parked(&current) && unsafe { IsIconic(hwnd as HWND) } == 0
+        });
+        if restored {
+            self.parked.store(false, Ordering::Relaxed);
+            if !already_ok {
+                crate::app_log(&format!(
+                    "面板已恢复 {}x{} @ {},{}",
+                    rect.w, rect.h, rect.x, rect.y
+                ));
+            }
+        }
     }
 
     fn park_window(&self, hwnd: isize) {
@@ -168,7 +224,7 @@ impl PanelWindow {
                 ShowWindow(hwnd as HWND, SW_SHOWNOACTIVATE);
             }
             apply_hidden_style(hwnd as HWND);
-            if !is_parked(hwnd) {
+            if !client_rect(hwnd).is_some_and(looks_parked_tiny) {
                 SetWindowPos(
                     hwnd as HWND,
                     HWND_TOP,
@@ -191,16 +247,27 @@ impl PanelWindow {
             }
         }
         taskbar_delete(hwnd);
+        self.parked.store(true, Ordering::Relaxed);
     }
 
     fn remember_rect(&self, hwnd: isize) {
+        if unsafe { IsIconic(hwnd as HWND) } != 0 {
+            return;
+        }
         let Some(rect) = client_rect(hwnd) else {
             return;
         };
-        if rect.w < 80 || rect.h < 80 {
+        if looks_parked(&rect) {
             return;
         }
         *self.last_rect.lock().unwrap_or_else(|e| e.into_inner()) = rect;
+    }
+
+    fn visible_rect(&self) -> Rect {
+        let mut stored = self.last_rect.lock().unwrap_or_else(|e| e.into_inner());
+        let clamped = clamp_visible(*stored);
+        *stored = clamped;
+        clamped
     }
 }
 
@@ -208,11 +275,44 @@ fn is_window(hwnd: isize) -> bool {
     unsafe { IsWindow(hwnd as HWND) != 0 }
 }
 
-fn is_parked(hwnd: isize) -> bool {
-    let Some(rect) = client_rect(hwnd) else {
-        return false;
-    };
+fn looks_parked(rect: &Rect) -> bool {
+    rect.x <= PARK_X + 1_000 || rect.y <= PARK_Y + 1_000 || rect.w < 80 || rect.h < 80
+}
+
+fn looks_parked_tiny(rect: Rect) -> bool {
     rect.x <= PARK_X + 1_000 && rect.w < 80
+}
+
+fn work_area() -> RECT {
+    let mut work = RECT {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    unsafe {
+        let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut RECT as *mut c_void, 0);
+    }
+    work
+}
+
+fn clamp_visible(rect: Rect) -> Rect {
+    if !looks_parked(&rect) {
+        return rect;
+    }
+    let w = rect.w.max(DEFAULT_W);
+    let h = rect.h.max(DEFAULT_H);
+    let work = work_area();
+    let min_x = work.left;
+    let min_y = work.top;
+    let max_x = (work.right - w).max(min_x);
+    let max_y = (work.bottom - h).max(min_y);
+    Rect {
+        x: DEFAULT_X.clamp(min_x, max_x),
+        y: DEFAULT_Y.clamp(min_y, max_y),
+        w,
+        h,
+    }
 }
 
 fn client_rect(hwnd: isize) -> Option<Rect> {
@@ -288,13 +388,15 @@ unsafe fn create_taskbar() -> usize {
     list as usize
 }
 
-fn taskbar_add(hwnd: isize) {
+fn taskbar_add(hwnd: isize, activate: bool) {
     let Some(list) = taskbar() else {
         return;
     };
     unsafe {
         let _ = ((*(*list).vtbl).add_tab)(list, hwnd as HWND);
-        let _ = ((*(*list).vtbl).activate_tab)(list, hwnd as HWND);
+        if activate {
+            let _ = ((*(*list).vtbl).activate_tab)(list, hwnd as HWND);
+        }
     }
 }
 

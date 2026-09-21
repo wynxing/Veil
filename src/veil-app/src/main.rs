@@ -242,6 +242,7 @@ struct VeilApp {
     hide_before_apply: bool,
     panel_open: bool,
     close_armed: bool,
+    minimize_armed: bool,
     holding: bool,
     topology_fingerprint: String,
     exiting: bool,
@@ -273,6 +274,7 @@ impl VeilApp {
             hide_before_apply: false,
             panel_open: true,
             close_armed: false,
+            minimize_armed: false,
             holding: false,
             topology_fingerprint: String::new(),
             exiting: false,
@@ -319,10 +321,18 @@ impl VeilApp {
         out
     }
 
-    fn open_panel(&mut self) {
+    fn open_panel(&mut self, ctx: &egui::Context) {
         self.panel.show();
         self.panel_open = true;
         self.hide_before_apply = false;
+        self.minimize_armed = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        let (x, y) = self.panel.visible_outer_position();
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            x as f32, y as f32,
+        )));
+        ctx.request_repaint();
     }
 
     fn hide_panel(&mut self) {
@@ -333,8 +343,8 @@ impl VeilApp {
         self.panel_open = false;
     }
 
-    fn restore_all_from_tray(&mut self) {
-        self.open_panel();
+    fn restore_all_from_tray(&mut self, ctx: &egui::Context) {
+        self.open_panel(ctx);
         if let Some(e) = self.coordinator.restore_all() {
             self.detail = e;
         }
@@ -385,9 +395,9 @@ impl VeilApp {
         self.last_refresh = Instant::now();
     }
 
-    fn keep_off(&mut self, item: ScreenItem) {
+    fn keep_off(&mut self, ctx: &egui::Context, item: ScreenItem) {
         if let Some(err) = self.coordinator.keep_off(item.identity) {
-            self.open_panel();
+            self.open_panel(ctx);
             self.refresh();
             self.detail = err;
             return;
@@ -408,7 +418,7 @@ impl VeilApp {
                 true
             }
             Err(msg) => {
-                self.open_panel();
+                self.open_panel(ctx);
                 message_box(&msg.to_string(), false);
                 false
             }
@@ -439,7 +449,7 @@ impl VeilApp {
             if let Some(tray) = &self._tray {
                 let _ = tray.set_icon(Some(tray_icon_for(false)));
             }
-            self.open_panel();
+            self.open_panel(ctx);
         }
     }
 }
@@ -488,15 +498,26 @@ impl eframe::App for VeilApp {
                 self.hide_panel();
             }
         }
-        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
-        if self.panel_open && !self.exiting && !wants_foreground && minimized {
+        let minimized =
+            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || self.panel.is_iconic();
+        if !minimized {
+            self.minimize_armed = true;
+        }
+        if self.panel_open
+            && !self.exiting
+            && !wants_foreground
+            && minimized
+            && self.minimize_armed
+            && !self.panel.is_parked()
+        {
             self.hide_panel();
+            self.minimize_armed = false;
         }
         self.close_armed = true;
         for command in commands {
             match command {
-                TrayCommand::Open => self.open_panel(),
-                TrayCommand::RestoreAll => self.restore_all_from_tray(),
+                TrayCommand::Open => self.open_panel(ctx),
+                TrayCommand::RestoreAll => self.restore_all_from_tray(ctx),
                 TrayCommand::Exit => {
                     if self.try_exit(ctx) {
                         return;
@@ -535,7 +556,7 @@ impl eframe::App for VeilApp {
                                 .add_enabled(item.can_keep_off, egui::Button::new("保持关闭"))
                                 .clicked()
                             {
-                                self.keep_off(item.clone());
+                                self.keep_off(ctx, item.clone());
                             }
                             if ui
                                 .add_enabled(item.can_restore, egui::Button::new("恢复"))
