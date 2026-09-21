@@ -297,22 +297,45 @@ fn work_area() -> RECT {
 }
 
 fn clamp_visible(rect: Rect) -> Rect {
-    if !looks_parked(&rect) {
-        return rect;
-    }
-    let w = rect.w.max(DEFAULT_W);
-    let h = rect.h.max(DEFAULT_H);
     let work = work_area();
+    let parked = looks_parked(&rect);
+    let w = if parked {
+        rect.w.max(DEFAULT_W)
+    } else {
+        rect.w.max(80)
+    };
+    let h = if parked {
+        rect.h.max(DEFAULT_H)
+    } else {
+        rect.h.max(80)
+    };
     let min_x = work.left;
     let min_y = work.top;
     let max_x = (work.right - w).max(min_x);
     let max_y = (work.bottom - h).max(min_y);
-    Rect {
-        x: DEFAULT_X.clamp(min_x, max_x),
-        y: DEFAULT_Y.clamp(min_y, max_y),
-        w,
-        h,
+    if parked {
+        return Rect {
+            x: DEFAULT_X.clamp(min_x, max_x),
+            y: DEFAULT_Y.clamp(min_y, max_y),
+            w,
+            h,
+        };
     }
+    if rect_overlaps_work(rect.x, rect.y, rect.w, rect.h, &work) {
+        return rect;
+    }
+    Rect {
+        x: rect.x.clamp(min_x, max_x),
+        y: rect.y.clamp(min_y, max_y),
+        w: rect.w.max(80),
+        h: rect.h.max(80),
+    }
+}
+
+fn rect_overlaps_work(x: i32, y: i32, w: i32, h: i32, work: &RECT) -> bool {
+    let right = x.saturating_add(w);
+    let bottom = y.saturating_add(h);
+    x < work.right && y < work.bottom && right > work.left && bottom > work.top
 }
 
 fn client_rect(hwnd: isize) -> Option<Rect> {
