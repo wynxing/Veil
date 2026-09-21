@@ -75,7 +75,7 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 
 ## 下一次预览
 
-当前预览版本是 `0.1.9-preview.1`（`v0.1.9-preview.1`）。关面板退回托盘，不占任务栏和 Alt-Tab；第二实例会唤醒已有面板。关最后一块物理屏时可从面板安装或接管辅助 MTT。0.1.7 起升级先 `retire-old`，避免旧 `RestoreDisplays` 拦死 MajorUpgrade。再改代码：升高 `Version`、合并、再打新 tag。
+当前预览版本是 `0.1.10-preview.1`（`v0.1.10-preview.1`）。关面板退回托盘，不占任务栏和 Alt-Tab；托盘再开面板时拉回工作区，不把停泊坐标当正常位置。第二实例会唤醒已有面板。关最后一块物理屏时可从面板安装或接管辅助 MTT。0.1.7 起升级先 `retire-old`，避免旧 `RestoreDisplays` 拦死 MajorUpgrade。再改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 

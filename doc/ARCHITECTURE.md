@@ -142,7 +142,7 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 - DPI：`PerMonitorV2`
 - 退出：先 `release` 并等待恢复结果；超时或失败则报告，不默默退出
 
-托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。Windows 上关面板不调用 eframe 0.31 的 `Visible(false)`，也不 `SW_HIDE`：二者都会让 winit 停泵消息，托盘再显示会卡住。关面板时把窗口停到屏幕外并保持可见，每帧维持 `WS_EX_TOOLWINDOW` 与 `ITaskbarList::DeleteTab`，事件循环继续跑。这是实现对 Windows + eframe 0.31 的约束。
+托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。Windows 上关面板不调用 eframe 0.31 的 `Visible(false)`，也不 `SW_HIDE`：二者都会让 winit 停泵消息，托盘再显示会卡住。关面板时把窗口停到屏幕外并保持可见，每帧维持 `WS_EX_TOOLWINDOW` 与 `ITaskbarList::DeleteTab`，事件循环继续跑。恢复时不得把停泊坐标（约 `-32000,-32000`）当正常位置；记忆矩形只接受屏幕上足够大的窗口，打开时用 `SetWindowPlacement` 拉回工作区。这是实现对 Windows + eframe 0.31 的约束。
 
 ## 7. 安装、驱动与提权
 
