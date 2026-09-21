@@ -6,10 +6,10 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 产品要求 | 只发布已验证配置上的行为；能力检测失败则禁用并说明 |
+| 产品要求 | 能力检测失败则禁用并说明；不宣称全平台兼容 |
 | 本次流程 | 私有仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX），供协作者下载自用 |
 | 已验证 | payload 哈希门禁成立；本机可用 `pack.ps1` 打出无签名 Burn EXE |
-| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容、Rust MSI 已在 REDMI 机旁重装 |
+| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容 |
 
 预览包能装、能跑，不等于公开产品已发布，也不等于硬件兼容已过。
 
@@ -35,7 +35,7 @@ cargo test --manifest-path src\Cargo.toml
 
 `pack.ps1` 在 payload 缺文件时会自己调用 `FetchPayload.ps1`。已有文件但哈希/签名不符时必须失败，不得改哈希凑合。
 
-`FetchPayload.ps1` 从 [payload.manifest.json](../installer/payload.manifest.json) 的 `sources` 下载已核验上游包，抽出 4 个文件后再跑 [ValidatePayload.ps1](../installer/ValidatePayload.ps1)。二进制不进 Git。不要调用实验室脚本 `tools/display-probe/install-vdd.ps1`。
+`FetchPayload.ps1` 从 [payload.manifest.json](../installer/payload.manifest.json) 的 `sources` 下载已核验上游包，抽出 4 个文件后再跑 [ValidatePayload.ps1](../installer/ValidatePayload.ps1)。二进制不进 Git。
 
 产物在 `installer/dist/`（不进 Git）：
 
@@ -61,9 +61,9 @@ CI 使用 Rust 依赖缓存，测试和打包统一使用 `--locked --release --
 
 打包完成后先保存 14 天的 Actions artifact，再创建 Release。若上传阶段失败，可先取回 artifact 排查。执行机器失联且 Release 尚不存在时，重跑失败任务；若 Release 已存在但附件不完整，应人工检查并修复，脚本不会自动覆盖。旧标签重跑仍使用该标签中的旧流程，新的缓存与预检配置只对包含此次流程修改的标签生效。
 
-发布预检回归验证：`pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1`。构建或发布成功仍不代表安装、升级及屏幕控制已在实机验收。
+发布预检回归验证：`pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1`。构建或发布成功仍不代表安装、升级及屏幕控制已在每台机器上实测。
 
-Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、已测机器是 REDMI Book 14 2025 与 COLORFUL P15 24、不是可公开安装、不是全平台兼容。
+Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、不是可公开安装、不是全平台兼容。
 
 ## 下载与安装注意
 
@@ -71,12 +71,11 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 - 下载后核 `SHA256SUMS.txt`。
 - SmartScreen /「未知发布者」是无签名预览的预期现象；这不是发布门禁已通过。
 - MTT 是显示驱动。`INSTALLVDD=0` 只表示这次不创建设备，驱动文件仍随应用写入，以后可在面板安装。
-- COLORFUL P15 过去的 Python 验收没装 MTT（当时测实体外接）。产品不再禁止在这台机器上装辅助输出；关光双物理屏的补装尚未机旁验证。见 [installer-payload.md](validation/installer-payload.md)。
-- 装完仍按验证文档的范围使用；未测项不得当成已完成。Rust MSI 重装尚未机旁执行。
+- 未测 GPU / 系统不得当成已完成。这不是可公开安装。
 
 ## 下一次预览
 
-当前预览版本是 `0.1.8-preview.1`（`v0.1.8-preview.1`）。关最后一块物理屏时可从面板安装或接管辅助 MTT；安装器始终带上驱动文件，`INSTALLVDD=0` 只表示这次不创建设备。0.1.7 起升级先 `retire-old`，避免旧 `RestoreDisplays` 拦死 MajorUpgrade。这不是 P15 关光双屏或 Rust MSI 重装已机旁通过。再改代码：升高 `Version`、合并、再打新 tag。
+当前预览版本是 `0.1.9-preview.1`（`v0.1.9-preview.1`）。关面板退回托盘，不占任务栏和 Alt-Tab；第二实例会唤醒已有面板。关最后一块物理屏时可从面板安装或接管辅助 MTT。0.1.7 起升级先 `retire-old`，避免旧 `RestoreDisplays` 拦死 MajorUpgrade。再改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 

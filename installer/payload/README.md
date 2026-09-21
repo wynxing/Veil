@@ -12,6 +12,6 @@ installer/payload/
   nefcon/x64/nefconc.exe
 ```
 
-哈希与发布者指纹见 [`../payload.manifest.json`](../payload.manifest.json)。不得调用实验室脚本 `tools/display-probe/install-vdd.ps1`。
+哈希与发布者指纹见 [`../payload.manifest.json`](../payload.manifest.json)。
 
 本目录二进制不进 Git。

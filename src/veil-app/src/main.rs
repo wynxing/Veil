@@ -12,17 +12,21 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 use panel_window::PanelWindow;
 use veil_engine::{
     AuxiliaryInstallItem, BundledVddAvailability, CcdApi, CcdConstants, DriverStatus,
-    OpenSessionRelease, ParentWatcher, PathRole, RecoveryCoordinator, RecoveryCoordinatorHooks,
-    ScreenItem, ScreenListBuilder, TopologyBlob, Win32CcdApi, Win32ParentWatcher,
+    OpenSessionRelease, ParentWatcher, RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenItem,
+    ScreenListBuilder, TopologyBlob, Win32CcdApi, Win32ParentWatcher,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
-use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, OpenEventW, ReleaseMutex, SetEvent, WaitForSingleObject,
+    EVENT_MODIFY_STATE,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, IDCANCEL, MB_ICONWARNING, MB_OK, MB_OKCANCEL,
 };
 
 const MUTEX_NAME: &str = "Local\\Veil";
-const DEFAULT_DETAIL: &str = "托盘常驻。关面板不会退出。黑色画面不是关屏成功。";
+const SHOW_EVENT_NAME: &str = "Local\\Veil.ShowPanel";
+const DEFAULT_DETAIL: &str = "托盘常驻。关面板退回托盘，不退出。黑色画面不是关屏成功。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayCommand {
@@ -34,9 +38,7 @@ enum TrayCommand {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!(
-            "Veil.App [--restore-and-exit | --validate-keep-off-internal --seconds N --log <path>]"
-        );
+        eprintln!("Veil.App [--restore-and-exit]");
         return;
     }
     if args.iter().any(|a| a == "--restore-and-exit") {
@@ -62,20 +64,22 @@ fn main() {
             }
         }
     }
-    if args.iter().any(|a| a == "--validate-keep-off-internal") {
-        std::process::exit(run_validate_keep_off(&args));
-    }
     let Some(mutex) = try_acquire_mutex() else {
         app_log("单实例互斥失败，已有 Veil 在跑。");
-        message_box(
-            "Veil 已在运行。请看任务栏右下角托盘，或点开隐藏图标。",
-            false,
-        );
+        if try_signal_show() {
+            app_log("已请前一实例打开面板。");
+        } else {
+            message_box(
+                "Veil 已在运行。请看任务栏右下角托盘，或点开隐藏图标。",
+                false,
+            );
+        }
         return;
     };
+    let show_event = create_show_event();
     app_log("互斥已拿到，准备打开面板。");
 
-    if let Err(err) = run_panel(mutex) {
+    if let Err(err) = run_panel(mutex, show_event) {
         app_log(&format!("面板未能打开：{err}"));
         message_box(
             &format!("Veil 面板未能打开：{err}\n\n细节已写入 %TEMP%\\Veil-app.log"),
@@ -84,7 +88,7 @@ fn main() {
     }
 }
 
-fn run_panel(mutex: HANDLE) -> Result<(), String> {
+fn run_panel(mutex: HANDLE, show_event: HANDLE) -> Result<(), String> {
     let attempts = [
         (
             "wgpu",
@@ -117,7 +121,7 @@ fn run_panel(mutex: HANDLE) -> Result<(), String> {
             native,
             Box::new(move |cc| {
                 install_cjk_fonts(&cc.egui_ctx);
-                Ok(Box::new(VeilApp::new(mutex, &cc.egui_ctx)))
+                Ok(Box::new(VeilApp::new(mutex, show_event, &cc.egui_ctx)))
             }),
         ) {
             Ok(()) => return Ok(()),
@@ -221,6 +225,7 @@ fn install_tray_handlers(
 
 struct VeilApp {
     mutex: HANDLE,
+    show_event: HANDLE,
     open_id: Option<tray_icon::menu::MenuId>,
     restore_id: Option<tray_icon::menu::MenuId>,
     exit_id: Option<tray_icon::menu::MenuId>,
@@ -243,7 +248,7 @@ struct VeilApp {
 }
 
 impl VeilApp {
-    fn new(mutex: HANDLE, ctx: &egui::Context) -> Self {
+    fn new(mutex: HANDLE, show_event: HANDLE, ctx: &egui::Context) -> Self {
         let mut hooks = RecoveryCoordinatorHooks::production();
         hooks.confirm_enable_vdd = Some(Box::new(confirm_bundled_vdd));
         hooks.run_driver_helper = Box::new(|verb| run_helper_elevated(verb));
@@ -251,6 +256,7 @@ impl VeilApp {
         let coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
         let app = Self {
             mutex,
+            show_event,
             open_id: None,
             restore_id: None,
             exit_id: None,
@@ -272,7 +278,6 @@ impl VeilApp {
             exiting: false,
         };
         app_log("界面对象已创建。");
-        PanelWindow::wake_soon();
         ctx.request_repaint();
         app
     }
@@ -440,8 +445,8 @@ impl VeilApp {
 }
 
 impl eframe::App for VeilApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.panel.ensure();
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let hwnd = PanelWindow::hwnd_from_frame(frame);
         self.ensure_tray(ctx);
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if self.open_id.as_ref() == Some(&ev.id) {
@@ -467,6 +472,9 @@ impl eframe::App for VeilApp {
                 self.queue(TrayCommand::Open);
             }
         }
+        if self.poll_show() {
+            self.queue(TrayCommand::Open);
+        }
         let commands = self.take_commands();
         let wants_foreground = commands.iter().any(|c| {
             matches!(
@@ -480,6 +488,10 @@ impl eframe::App for VeilApp {
                 self.hide_panel();
             }
         }
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if self.panel_open && !self.exiting && !wants_foreground && minimized {
+            self.hide_panel();
+        }
         self.close_armed = true;
         for command in commands {
             match command {
@@ -492,6 +504,7 @@ impl eframe::App for VeilApp {
                 }
             }
         }
+        self.panel.sync(hwnd, self.panel_open && !self.exiting);
         if self.last_refresh.elapsed() >= Duration::from_millis(800) {
             self.refresh();
         }
@@ -576,12 +589,28 @@ impl eframe::App for VeilApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if !self.show_event.is_null() {
+            unsafe {
+                CloseHandle(self.show_event);
+            }
+            self.show_event = std::ptr::null_mut();
+        }
         if !self.mutex.is_null() {
             unsafe {
                 ReleaseMutex(self.mutex);
                 CloseHandle(self.mutex);
             }
+            self.mutex = std::ptr::null_mut();
         }
+    }
+}
+
+impl VeilApp {
+    fn poll_show(&self) -> bool {
+        if self.show_event.is_null() {
+            return false;
+        }
+        unsafe { WaitForSingleObject(self.show_event, 0) == 0 }
     }
 }
 
@@ -642,6 +671,24 @@ fn try_acquire_mutex() -> Option<HANDLE> {
             return None;
         }
         Some(handle)
+    }
+}
+
+fn create_show_event() -> HANDLE {
+    let name = to_wide(SHOW_EVENT_NAME);
+    unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) }
+}
+
+fn try_signal_show() -> bool {
+    let name = to_wide(SHOW_EVENT_NAME);
+    unsafe {
+        let handle = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+        if handle.is_null() {
+            return false;
+        }
+        let ok = SetEvent(handle) != 0;
+        CloseHandle(handle);
+        ok
     }
 }
 
@@ -766,108 +813,9 @@ fn to_wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-fn arg_value(args: &[String], name: &str) -> Option<String> {
-    args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
-}
-
-fn validate_log(path: Option<&std::path::Path>, line: &str) {
-    let stamped = format!("{} {line}", chrono_like_stamp());
-    eprintln!("{stamped}");
-    if let Some(path) = path {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{stamped}");
-        }
-    }
-}
-
 fn chrono_like_stamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", now.as_secs())
-}
-
-fn run_validate_keep_off(args: &[String]) -> i32 {
-    let seconds: u64 = arg_value(args, "--seconds")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(15);
-    let wait_hotkey = args.iter().any(|a| a == "--wait-hotkey");
-    let log_path = arg_value(args, "--log").map(std::path::PathBuf::from);
-    let log = log_path.as_deref();
-    if let Some(path) = log {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-    }
-    validate_log(
-        log,
-        &format!("validate-keep-off-internal seconds={seconds} wait_hotkey={wait_hotkey}"),
-    );
-    let Some(_mutex) = try_acquire_mutex() else {
-        validate_log(log, "单实例互斥失败，已有 Veil 在跑。");
-        return 2;
-    };
-    let mut hooks = RecoveryCoordinatorHooks::production();
-    hooks.confirm_enable_vdd = Some(Box::new(|_| true));
-    hooks.run_driver_helper = Box::new(|verb| run_helper_elevated(verb));
-    hooks.is_alive = Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false));
-    let mut coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
-    let snapshot = match CcdApi::query_snapshot(&Win32CcdApi, CcdConstants::QUERY_FLAGS) {
-        Ok(s) => s,
-        Err(e) => {
-            validate_log(log, &format!("枚举失败：{e}"));
-            return 2;
-        }
-    };
-    let Some(internal) = snapshot
-        .paths
-        .iter()
-        .find(|p| p.active && p.role == PathRole::Internal)
-    else {
-        validate_log(log, "没有活动内屏，拒绝关屏。");
-        return 2;
-    };
-    let identity = internal.identity();
-    validate_log(
-        log,
-        &format!(
-            "target internal {} {} {}",
-            identity.adapter_luid, identity.target_id, identity.monitor_path
-        ),
-    );
-    if let Some(err) = coordinator.keep_off(identity) {
-        validate_log(log, &format!("keep-off 未 APPLY：{err}"));
-        return 2;
-    }
-    if let Some(dir) = coordinator.session_directory() {
-        validate_log(log, &format!("session {}", dir.display()));
-    }
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    while Instant::now() < deadline {
-        coordinator.poll();
-        if !coordinator.has_session() {
-            let msg = coordinator.status_text.clone().unwrap_or_default();
-            validate_log(log, &format!("会话结束：{msg}"));
-            return if wait_hotkey { 0 } else { 1 };
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    if wait_hotkey {
-        validate_log(log, "热键窗口结束，改写 release 兜底。");
-    }
-    match coordinator.restore_all_and_wait(Duration::from_secs(20)) {
-        Ok(msg) => {
-            validate_log(log, &format!("restore {}", msg.message));
-            0
-        }
-        Err(msg) => {
-            validate_log(log, &format!("restore-failed {msg}"));
-            1
-        }
-    }
 }
