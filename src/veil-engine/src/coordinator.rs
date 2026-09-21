@@ -67,6 +67,7 @@ pub struct RecoveryCoordinator {
     pub hotkey_registered: bool,
     pub heartbeat: Option<HeartbeatFile>,
     pub status_text: Option<String>,
+    should_show_panel: bool,
 }
 
 impl RecoveryCoordinator {
@@ -87,6 +88,7 @@ impl RecoveryCoordinator {
             hotkey_registered: false,
             heartbeat: None,
             status_text: None,
+            should_show_panel: false,
         }
     }
 
@@ -104,6 +106,19 @@ impl RecoveryCoordinator {
             .iter()
             .map(|x| x.to_identity())
             .collect()
+    }
+
+    pub fn take_should_show_panel(&mut self) -> bool {
+        let show = self.should_show_panel;
+        self.should_show_panel = false;
+        show
+    }
+
+    pub fn is_interrupt_reason(reason: &str) -> bool {
+        matches!(
+            reason,
+            "suspend-resume" | "execution-gap" | "unexpected-topology"
+        )
     }
 
     pub fn poll(&mut self) {
@@ -168,17 +183,29 @@ impl RecoveryCoordinator {
                 .as_ref()
                 .map_err(|e| RestoreError::Protocol(e.clone()))
                 .and_then(|r| r.restoration_outcome());
-            self.status_text = Some(match &outcome {
-                Ok(o) => o.message.clone(),
-                Err(e) => e.to_string(),
-            });
             if let Ok(r) = &result {
-                if let Some(error) = &r.error {
-                    self.status_text = Some(format!(
-                        "{error} {}",
-                        self.status_text.as_deref().unwrap_or_default()
-                    ));
+                if Self::is_interrupt_reason(&r.reason) {
+                    self.should_show_panel = true;
+                    self.status_text = Some(Self::format_result(Some(r)));
+                } else {
+                    self.status_text = Some(match &outcome {
+                        Ok(o) => o.message.clone(),
+                        Err(e) => e.to_string(),
+                    });
+                    if let Some(error) = &r.error {
+                        if !error.is_empty() {
+                            self.status_text = Some(format!(
+                                "{error} {}",
+                                self.status_text.as_deref().unwrap_or_default()
+                            ));
+                        }
+                    }
                 }
+            } else {
+                self.status_text = Some(match &outcome {
+                    Ok(o) => o.message.clone(),
+                    Err(e) => e.to_string(),
+                });
             }
             if let Some(text) = &mut self.status_text {
                 text.push_str(&format!(
@@ -226,6 +253,7 @@ impl RecoveryCoordinator {
             "hotkey" => "已由 Ctrl+Alt+Shift+F10 恢复。".into(),
             "parent-exit" => "界面退出后已恢复。".into(),
             "execution-gap" => "会话中断，保持关闭已结束。".into(),
+            "suspend-resume" => "系统休眠或待机后已恢复显示，保持关闭已结束。".into(),
             "unexpected-topology" => "显示拓扑已变化，保持关闭已结束。".into(),
             RECOVERY_EXIT_REASON => RECOVERY_EXITED.into(),
             _ => {
@@ -243,6 +271,7 @@ impl RecoveryCoordinator {
             if !err.is_empty()
                 && result.reason != "execution-gap"
                 && result.reason != "unexpected-topology"
+                && result.reason != "suspend-resume"
             {
                 return err.clone();
             }

@@ -1,13 +1,21 @@
 use crate::capability::{DisplaySnapshot, PathRow, Roles};
+use std::ffi::c_void;
 use std::mem::{offset_of, size_of};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND, WPARAM};
+use windows_sys::Win32::System::Power::{
+    PowerRegisterSuspendResumeNotification, PowerSettingRegisterNotification,
+    PowerSettingUnregisterNotification, PowerUnregisterSuspendResumeNotification,
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY, POWERBROADCAST_SETTING,
+};
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY,
+    GetSystemMetrics, PeekMessageW, DEVICE_NOTIFY_CALLBACK, MSG, PBT_APMRESUMEAUTOMATIC,
+    PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PM_REMOVE, WM_HOTKEY,
 };
 
 pub struct CcdConstants;
@@ -342,6 +350,179 @@ pub trait MonotonicClock {
 
 pub trait ParentWatcher {
     fn is_alive(&self, pid: i32) -> Result<bool, String>;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PowerEvent {
+    #[default]
+    None,
+    Suspending,
+    Resumed,
+}
+
+pub trait PowerObserver {
+    fn poll(&mut self) -> PowerEvent;
+}
+
+const GUID_CONSOLE_DISPLAY_STATE: windows_sys::core::GUID =
+    windows_sys::core::GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+const DISPLAY_OFF_RESUME_MS: u64 = 2_000;
+
+struct PowerNotifyState {
+    suspending: AtomicBool,
+    resumed: AtomicBool,
+    display_off_at_ms: AtomicU64,
+}
+
+impl Default for PowerNotifyState {
+    fn default() -> Self {
+        Self {
+            suspending: AtomicBool::new(false),
+            resumed: AtomicBool::new(false),
+            display_off_at_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+pub struct Win32PowerObserver {
+    state: Box<PowerNotifyState>,
+    _suspend_params: DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+    _display_params: DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+    suspend_handle: HPOWERNOTIFY,
+    display_handle: HPOWERNOTIFY,
+}
+
+impl Win32PowerObserver {
+    pub fn new() -> Self {
+        let state = Box::new(PowerNotifyState::default());
+        let context = (&*state) as *const PowerNotifyState as *mut c_void;
+        let mut suspend_params = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(power_notify_callback),
+            Context: context,
+        };
+        let mut display_params = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(power_notify_callback),
+            Context: context,
+        };
+        let mut suspend_raw: *mut c_void = ptr::null_mut();
+        let suspend_rc = unsafe {
+            PowerRegisterSuspendResumeNotification(
+                DEVICE_NOTIFY_CALLBACK,
+                &mut suspend_params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as HANDLE,
+                &mut suspend_raw,
+            )
+        };
+        let mut display_raw: *mut c_void = ptr::null_mut();
+        let display_rc = unsafe {
+            PowerSettingRegisterNotification(
+                &GUID_CONSOLE_DISPLAY_STATE,
+                DEVICE_NOTIFY_CALLBACK,
+                &mut display_params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as HANDLE,
+                &mut display_raw,
+            )
+        };
+        Self {
+            state,
+            _suspend_params: suspend_params,
+            _display_params: display_params,
+            suspend_handle: if suspend_rc == 0 {
+                suspend_raw as HPOWERNOTIFY
+            } else {
+                0
+            },
+            display_handle: if display_rc == 0 {
+                display_raw as HPOWERNOTIFY
+            } else {
+                0
+            },
+        }
+    }
+}
+
+impl Default for Win32PowerObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Win32PowerObserver {
+    fn drop(&mut self) {
+        if self.suspend_handle != 0 {
+            unsafe {
+                PowerUnregisterSuspendResumeNotification(self.suspend_handle);
+            }
+            self.suspend_handle = 0;
+        }
+        if self.display_handle != 0 {
+            unsafe {
+                PowerSettingUnregisterNotification(self.display_handle);
+            }
+            self.display_handle = 0;
+        }
+    }
+}
+
+impl PowerObserver for Win32PowerObserver {
+    fn poll(&mut self) -> PowerEvent {
+        if self.state.suspending.swap(false, Ordering::SeqCst) {
+            return PowerEvent::Suspending;
+        }
+        if self.state.resumed.swap(false, Ordering::SeqCst) {
+            return PowerEvent::Resumed;
+        }
+        PowerEvent::None
+    }
+}
+
+unsafe extern "system" fn power_notify_callback(
+    context: *const c_void,
+    notify_type: u32,
+    setting: *const c_void,
+) -> u32 {
+    if context.is_null() {
+        return 0;
+    }
+    let state = unsafe { &*(context as *const PowerNotifyState) };
+    match notify_type {
+        PBT_APMSUSPEND => state.suspending.store(true, Ordering::SeqCst),
+        PBT_APMRESUMESUSPEND | PBT_APMRESUMEAUTOMATIC => {
+            state.resumed.store(true, Ordering::SeqCst);
+        }
+        PBT_POWERSETTINGCHANGE if !setting.is_null() => {
+            let broadcast = unsafe { &*(setting as *const POWERBROADCAST_SETTING) };
+            if guid_eq(&broadcast.PowerSetting, &GUID_CONSOLE_DISPLAY_STATE)
+                && broadcast.DataLength >= 4
+            {
+                let value = unsafe { ptr::read_unaligned(broadcast.Data.as_ptr() as *const u32) };
+                match value {
+                    0 => {
+                        let now = unsafe {
+                            windows_sys::Win32::System::SystemInformation::GetTickCount64()
+                        };
+                        state.display_off_at_ms.store(now, Ordering::SeqCst);
+                    }
+                    1 => {
+                        let off_at = state.display_off_at_ms.swap(0, Ordering::SeqCst);
+                        if off_at > 0 {
+                            let now = unsafe {
+                                windows_sys::Win32::System::SystemInformation::GetTickCount64()
+                            };
+                            if now.saturating_sub(off_at) >= DISPLAY_OFF_RESUME_MS {
+                                state.resumed.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    0
+}
+
+fn guid_eq(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
 }
 
 #[derive(Default)]

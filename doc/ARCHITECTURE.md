@@ -1,6 +1,6 @@
 # Veil 技术架构
 
-版本：1.9  
+版本：1.10  
 状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。辅助输出随应用带文件，安装时或面板装设备，已有同一 MTT 则接管。日常预览可用。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
 日期：2026-09-21
 
@@ -52,9 +52,10 @@ Veil.App.exe (用户会话, 不提权)
         ▼
 Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
   ├─ 注册 Ctrl+Alt+Shift+F10
+  ├─ 登记挂起/恢复与会话显示电源通知（失败不阻止关屏）
   ├─ ready 之后才允许 arm
   ├─ VALIDATE 通过才 APPLY 停路径
-  ├─ 监视热键、release.json、父进程、拓扑、执行间隙
+  ├─ 监视热键、release.json、父进程、拓扑、执行间隙、电源事件
   └─ 回放保存拓扑；失败则 SDC_TOPOLOGY_INTERNAL 兜底
 ```
 
@@ -108,7 +109,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 失败不得显示为已关闭。睡眠、拔插、辅助输出消失后重新枚举。重启后要求清空。
 
-睡醒后再关是产品要求。实现必须：尝试一次；VALIDATE/APPLY 失败则结束要求并说明；禁止循环 APPLY。
+睡眠或待机中断后回放关屏前拓扑并打开面板，是产品要求。自动再关不是本轮要求。实现必须：电源/待机通知优先；调度间隙与漏掉的待机同样只回放不 reapply；VALIDATE/APPLY 失败则结束要求并说明；禁止循环 APPLY。热插拔仍允许单次再关。Rust 睡醒未机旁验证。
 
 ## 5. 恢复进程协议
 
@@ -124,7 +125,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 | `events.jsonl` | Recovery（App 在补写 result 时也可追加） | 追加时间线：ready / apply / settle / interrupt / reapply / finish。给操作者复盘，不是心跳替代 |
 | `vdd-request.json` | Recovery 再关需要辅助输出时 | 界面 Poll 后提权 enable 一次；出现后再 APPLY。未完成不得循环 APPLY |
 
-结束原因需能区分：`hotkey`、`release`、`parent-exit`、`execution-gap`（调度间隙，常见于睡眠）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。卸载检查协议 v2 的编号化 `result.json` 与维护门禁。
+结束原因需能区分：`hotkey`、`release`、`parent-exit`、`suspend-resume`（睡眠/待机）、`execution-gap`（调度间隙兜底）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。卸载检查协议 v2 的编号化 `result.json` 与维护门禁。
 
 创建恢复进程时使用 `CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`。父进程崩溃不得带走恢复进程。恢复进程自身崩溃仍不保证回放拓扑；界面保留失败上下文，用户再次恢复时启动 `--restore-only` 进程。只有重新枚举确认活动物理屏，且本次操作承担启用责任时才尝试 disable；状态未知则保留辅助输出。人工兜底仍是 `Win+Ctrl+Shift+B`，再不行重启。
 
@@ -194,7 +195,7 @@ tools/show-session.ps1    打印最近一次产品会话记录
 
 `src/` 为 Cargo workspace。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。
 
-行为契约：查询标志、停 ACTIVE、原点调整、VALIDATE 后 APPLY、拓扑原始字节回放、ready/arm 握手、热键、父进程退出恢复、`execution-gap` / 拓扑变化则结束保持关闭、内屏兜底。不要做：仅内屏按钮、`SC_MONITORPOWER` 产品入口、扩展桌面失败就改克隆（那只属于 VDD 退路）。
+行为契约：查询标志、停 ACTIVE、原点调整、VALIDATE 后 APPLY、拓扑原始字节回放、ready/arm 握手、热键、父进程退出恢复、睡眠/待机中断后回放并打开面板、`execution-gap` 与漏掉的待机同样结束保持关闭且不自动再关、热插拔允许单次再关、内屏兜底。不要做：仅内屏按钮、`SC_MONITORPOWER` 产品入口、扩展桌面失败就改克隆（那只属于 VDD 退路）。
 
 ## 9. 测试与发布
 

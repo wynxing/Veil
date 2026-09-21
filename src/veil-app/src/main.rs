@@ -526,8 +526,12 @@ impl eframe::App for VeilApp {
             }
         }
         self.panel.sync(hwnd, self.panel_open && !self.exiting);
-        if self.last_refresh.elapsed() >= Duration::from_millis(800) {
+        if self.coordinator.has_session() || self.last_refresh.elapsed() >= Duration::from_millis(800)
+        {
             self.refresh();
+        }
+        if self.coordinator.take_should_show_panel() {
+            self.open_panel(ctx);
         }
         self.sync_topology_viewport(ctx);
         ctx.request_repaint_after(Duration::from_millis(400));

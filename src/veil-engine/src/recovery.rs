@@ -1,7 +1,7 @@
 use crate::capability::{resolved_screen_name, DisplaySnapshot, Gate, KeepOffAction};
 use crate::native::{
     CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey,
-    MonotonicClock, ParentWatcher,
+    MonotonicClock, ParentWatcher, PowerEvent, PowerObserver,
 };
 use crate::session::{
     ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, ReadyFile, RecoveryState,
@@ -22,6 +22,7 @@ pub struct RecoveryOptions {
     pub hotkey: Box<dyn Hotkey>,
     pub clock: Box<dyn MonotonicClock>,
     pub parent: Box<dyn ParentWatcher>,
+    pub power: Box<dyn PowerObserver>,
     pub arm_timeout_seconds: f64,
     pub gap_seconds: f64,
     pub reapply_settle_attempts: i32,
@@ -41,6 +42,7 @@ impl RecoveryOptions {
             hotkey,
             clock: Box::new(crate::native::TickClock),
             parent: Box::new(crate::native::Win32ParentWatcher),
+            power: Box::new(crate::native::Win32PowerObserver::new()),
             arm_timeout_seconds: 10.0,
             gap_seconds: 3.0,
             reapply_settle_attempts: 12,
@@ -71,6 +73,7 @@ pub struct RecoverySession {
     hotkey_registered: bool,
     started: f64,
     previous: f64,
+    suspended: bool,
     last_intent_text: Option<String>,
     expected_targets: Option<Vec<(String, u32)>>,
     intent: IntentFile,
@@ -100,6 +103,7 @@ impl RecoverySession {
             hotkey_registered: false,
             started: 0.0,
             previous: 0.0,
+            suspended: false,
             last_intent_text: None,
             expected_targets: None,
             intent: IntentFile::default(),
@@ -280,6 +284,32 @@ impl RecoverySession {
             return Ok(());
         }
         if self.state == RecoveryState::RestoreFailed {
+            return Ok(());
+        }
+        match self.opt.power.poll() {
+            PowerEvent::Suspending => {
+                self.suspended = true;
+                self.previous = now;
+                SessionLog::append(
+                    &self.opt.directory,
+                    "power-suspend",
+                    Some("系统正在进入睡眠或待机，暂停保持关闭监视。"),
+                    None,
+                    None,
+                    None,
+                );
+                self.write_heartbeat("系统正在休眠或待机。", None, false);
+                return Ok(());
+            }
+            PowerEvent::Resumed => {
+                self.suspended = false;
+                self.handle_power_resume(now);
+                return Ok(());
+            }
+            PowerEvent::None => {}
+        }
+        if self.suspended {
+            self.previous = now;
             return Ok(());
         }
         if self.waiting_vdd {
@@ -810,7 +840,8 @@ impl RecoverySession {
             .iter()
             .map(|x| x.to_identity())
             .collect();
-        if !self.reapply_attempted && !selected.is_empty() {
+        let allow_reapply = reason == "unexpected-topology";
+        if allow_reapply && !self.reapply_attempted && !selected.is_empty() {
             self.reapply_attempted = true;
             self.result.reapply_attempted = true;
             SessionLog::append(
@@ -1113,6 +1144,59 @@ impl RecoverySession {
         self.exited = true;
     }
 
+    fn handle_power_resume(&mut self, now: f64) {
+        SessionLog::append(
+            &self.opt.directory,
+            "power-resume",
+            Some("系统已唤醒，回放关屏前显示。"),
+            None,
+            None,
+            None,
+        );
+        if !self.holding && !self.waiting_vdd && self.intent.keep_off.is_empty() {
+            self.previous = now;
+            self.write_heartbeat("系统已唤醒。", None, false);
+            return;
+        }
+        self.wait_for_physical_enumerate();
+        self.finish("suspend-resume", true);
+    }
+
+    fn wait_for_physical_enumerate(&mut self) {
+        let attempts = self.opt.reapply_settle_attempts.max(1);
+        for i in 0..attempts {
+            if let Ok(snap) = self
+                .opt
+                .ccd
+                .capture(CcdConstants::QUERY_FLAGS)
+                .map(|f| f.snapshot)
+            {
+                if snap.active_physical().next().is_some() {
+                    SessionLog::append(
+                        &self.opt.directory,
+                        "resume-settle",
+                        Some(&format!("physical-active attempt {}", i + 1)),
+                        None,
+                        None,
+                        None,
+                    );
+                    return;
+                }
+            }
+            if i + 1 < attempts {
+                (self.opt.pause)(self.opt.reapply_settle_pause);
+            }
+        }
+        SessionLog::append(
+            &self.opt.directory,
+            "resume-settle",
+            Some("timeout, no physical"),
+            None,
+            None,
+            None,
+        );
+    }
+
     fn wait_for_selected_physical(&mut self, selected: &[ScreenIdentity]) {
         let attempts = self.opt.reapply_settle_attempts.max(1);
         for i in 0..attempts {
@@ -1249,6 +1333,7 @@ fn finish_heartbeat(reason: &str) -> String {
         "release" => "已恢复全部。".into(),
         "parent-exit" => "界面退出后已恢复。".into(),
         "execution-gap" => "会话中断，保持关闭已结束。".into(),
+        "suspend-resume" => "系统休眠或待机后已恢复显示，保持关闭已结束。".into(),
         "unexpected-topology" => "显示拓扑已变化，保持关闭已结束。".into(),
         _ => "保持关闭已结束。".into(),
     }

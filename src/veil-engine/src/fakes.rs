@@ -1,10 +1,11 @@
 use crate::capability::{DisplaySnapshot, PathRole, PathRow};
 use crate::native::{
     CcdApi, CcdConstants, CcdFrame, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey, Luid,
-    MonotonicClock, ParentWatcher,
+    MonotonicClock, ParentWatcher, PowerEvent, PowerObserver,
 };
 use crate::ScreenIdentity;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 pub fn path(
@@ -449,6 +450,39 @@ impl ParentWatcher for SharedParent {
             return Err(err);
         }
         Ok(*self.alive.borrow())
+    }
+}
+
+#[derive(Default)]
+pub struct FakePower {
+    pub events: RefCell<VecDeque<PowerEvent>>,
+}
+
+impl FakePower {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&self, event: PowerEvent) {
+        self.events.borrow_mut().push_back(event);
+    }
+}
+
+impl PowerObserver for FakePower {
+    fn poll(&mut self) -> PowerEvent {
+        self.events
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(PowerEvent::None)
+    }
+}
+
+impl PowerObserver for Rc<FakePower> {
+    fn poll(&mut self) -> PowerEvent {
+        self.events
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(PowerEvent::None)
     }
 }
 

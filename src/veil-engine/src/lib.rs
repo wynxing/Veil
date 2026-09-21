@@ -21,8 +21,9 @@ pub use coordinator::{DriverStatus, RecoveryCoordinator, RecoveryCoordinatorHook
 pub use native::{
     CcdAbi, CcdApi, CcdConstants, CcdFrame, DisplayConfigModeInfo, DisplayConfigPathInfo,
     DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, MonotonicClock, ParentWatcher, PointL,
-    SystemMonotonicClock, Win32CcdApi, Win32Hotkey, Win32ParentWatcher,
+    DisplayConfigVideoSignalInfo, Hotkey, Luid, MonotonicClock, ParentWatcher, PointL, PowerEvent,
+    PowerObserver, SystemMonotonicClock, Win32CcdApi, Win32Hotkey, Win32ParentWatcher,
+    Win32PowerObserver,
 };
 pub use payload::{
     payload_present, payload_present_in, resolve as resolve_payload, validate as validate_payload,

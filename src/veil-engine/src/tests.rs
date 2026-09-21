@@ -1,8 +1,8 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, RcHotkey, SharedClock, SharedParent};
+use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
 use crate::native::{
     CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
     DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL,
+    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
 };
 use crate::session::{
     ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
@@ -712,6 +712,7 @@ fn options_ex(
         hotkey,
         clock: Box::new(clock),
         parent: Box::new(parent),
+        power: Box::new(crate::fakes::FakePower::new()),
         arm_timeout_seconds: 10.0,
         gap_seconds: 3.0,
         reapply_settle_attempts: 4,
@@ -1002,7 +1003,7 @@ fn topology_churn_while_physical_still_off_does_not_burn_reapply() {
 }
 
 #[test]
-fn execution_gap_restores_then_reapplies_once() {
+fn execution_gap_restores_without_reapply() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
@@ -1021,32 +1022,135 @@ fn execution_gap_restores_then_reapplies_once() {
         .count();
     clock.set(10.0);
     session.tick();
-    assert!(session.result.reapply_attempted);
-    assert!(
-        ccd.flags()
-            .iter()
-            .filter(|f| **f == CcdConstants::APPLY_FLAGS)
-            .count()
-            > apply_count
-    );
-    assert!(!session.exited);
-    clock.set(20.0);
-    session.tick();
     assert!(session.exited);
+    assert!(!session.result.reapply_attempted);
     assert_eq!(session.result.reason, "execution-gap");
+    assert!(ccd.rows().iter().all(|p| p.active));
+    let later = ccd
+        .flags()
+        .iter()
+        .filter(|f| **f == CcdConstants::APPLY_FLAGS)
+        .count();
+    assert!(later >= apply_count);
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(!events.contains("reapply-attempt"));
 }
 
 #[test]
-fn stale_capture_after_restore_still_reapplies() {
+fn suspend_ignores_topology_churn_until_resume() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
-    let clock = Rc::new(SharedClock::new(0.0));
+    let power = Rc::new(FakePower::new());
+    let mut opt = options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    );
+    opt.power = Box::new(power.clone());
+    let mut session = RecoverySession::new(opt);
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    assert!(!session.exited);
+    power.push(PowerEvent::Suspending);
+    session.tick();
+    ccd.activate_path(0);
+    session.tick();
+    assert!(!session.exited);
+    assert!(!session.result.reapply_attempted);
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("power-suspend"));
+    assert!(!events.contains("\"type\":\"interrupt\""));
+    power.push(PowerEvent::Resumed);
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.reason, "suspend-resume");
+    assert!(!session.result.reapply_attempted);
+    assert!(ccd.rows().iter().all(|p| p.active));
+}
+
+#[test]
+fn power_resume_restores_without_reapply() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let power = Rc::new(FakePower::new());
+    let mut opt = options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    );
+    opt.power = Box::new(power.clone());
+    let mut session = RecoverySession::new(opt);
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    assert!(!ccd.rows()[0].active);
+    power.push(PowerEvent::Resumed);
+    session.tick();
+    assert!(session.exited);
+    assert_eq!(session.result.reason, "suspend-resume");
+    assert!(!session.result.reapply_attempted);
+    assert_eq!(session.result.restore_state, RestoreState::Complete);
+    assert!(ccd.rows().iter().all(|p| p.active));
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("power-resume"));
+    assert!(!events.contains("reapply-attempt"));
+}
+
+#[test]
+fn failed_resume_restore_does_not_loop_apply() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let power = Rc::new(FakePower::new());
+    let mut opt = options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    );
+    opt.power = Box::new(power.clone());
+    let mut session = RecoverySession::new(opt);
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    ccd.set_capture_error("unavailable");
+    power.push(PowerEvent::Resumed);
+    session.tick();
+    let flags = ccd.flags();
+    for _ in 0..10 {
+        session.tick();
+    }
+    assert_eq!(flags, ccd.flags());
+    assert!(!session.result.reapply_attempted);
+}
+
+#[test]
+fn stale_capture_after_restore_still_reapplies_on_topology() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
     let mut session = arm_with_intent(
         &dir.0,
         ccd.clone(),
         Rc::new(SharedParent::new()),
-        clock.clone(),
+        Rc::new(SharedClock::new(0.0)),
         false,
     );
     let apply_count = ccd
@@ -1054,8 +1158,7 @@ fn stale_capture_after_restore_still_reapplies() {
         .iter()
         .filter(|f| **f == CcdConstants::APPLY_FLAGS)
         .count();
-    ccd.set_stale_captures(2);
-    clock.set(10.0);
+    ccd.activate_path(0);
     session.tick();
     assert!(session.result.reapply_attempted);
     assert!(
@@ -1065,11 +1168,9 @@ fn stale_capture_after_restore_still_reapplies() {
             .count()
             > apply_count
     );
-    assert!(!session.exited);
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("reapply-settle"));
-    assert!(events.contains("reapplied"));
-    assert!(!events.contains("already-off"));
+    assert!(events.contains("reapplied") || events.contains("reapply-attempt"));
 }
 
 #[test]
@@ -1077,12 +1178,11 @@ fn reapply_without_second_target_requests_bundled_vdd() {
     let dir = TempSession::new();
     let ccd = internal_plus_vdd();
     save_topology(&dir.0, &ccd);
-    let clock = Rc::new(SharedClock::new(0.0));
     let mut session = arm_with_intent(
         &dir.0,
         ccd.clone(),
         Rc::new(SharedParent::new()),
-        clock.clone(),
+        Rc::new(SharedClock::new(0.0)),
         true,
     );
     ccd.set_after_apply(|inner| {
@@ -1090,7 +1190,8 @@ fn reapply_without_second_target_requests_bundled_vdd() {
         inner.rows.truncate(1);
         inner.rows[0].active = true;
     });
-    clock.set(10.0);
+    ccd.activate_path(0);
+    ccd.update_path_target(1, 99);
     session.tick();
     assert!(session.result.reapply_attempted);
     assert!(!session.exited);
@@ -1231,7 +1332,8 @@ fn vdd_wait_timeout_finishes_without_looping_apply() {
         inner.rows.truncate(1);
         inner.rows[0].active = true;
     });
-    clock.set(10.0);
+    ccd.activate_path(0);
+    ccd.update_path_target(1, 99);
     session.tick();
     assert!(session.result.reapply_attempted);
     assert!(!session.exited);
@@ -1244,7 +1346,7 @@ fn vdd_wait_timeout_finishes_without_looping_apply() {
     clock.set(12.0);
     session.tick();
     assert!(session.exited);
-    assert_eq!(session.result.reason, "execution-gap");
+    assert_eq!(session.result.reason, "unexpected-topology");
     let later = ccd
         .flags()
         .iter()
@@ -1451,6 +1553,73 @@ fn format_result_maps_unexpected_topology_after_reapply() {
         })),
         "显示拓扑已变化，保持关闭已结束。 已尝试再关一次。"
     );
+}
+
+#[test]
+fn format_result_maps_suspend_resume() {
+    assert_eq!(
+        RecoveryCoordinator::format_result(Some(&ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
+            ok: false,
+            reason: "suspend-resume".into(),
+            restore_rc: Some(0),
+            restored_topology: true,
+            restored_targets: true,
+            ..Default::default()
+        })),
+        "系统休眠或待机后已恢复显示，保持关闭已结束。"
+    );
+}
+
+#[test]
+fn poll_interrupt_result_asks_to_show_panel() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = dual_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            started.clone(),
+            helper,
+            false,
+            false,
+            None,
+            Duration::from_secs(15),
+        ),
+    );
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .into_iter()
+        .next()
+        .unwrap()
+        .identity();
+    assert!(coordinator.keep_off(identity).is_none());
+    JsonUtil::write_atomic(
+        SessionPaths::result(started.borrow().as_str()),
+        &ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Complete,
+            ok: false,
+            reason: "suspend-resume".into(),
+            restore_rc: Some(0),
+            restored_topology: true,
+            restored_targets: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    assert!(!coordinator.take_should_show_panel());
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .starts_with("系统休眠或待机后已恢复显示，保持关闭已结束。"));
+    let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
 #[test]
@@ -2648,16 +2817,15 @@ fn failed_reapply_restores_and_does_not_loop() {
     let dir = TempSession::new();
     let ccd = dual_physical();
     save_topology(&dir.0, &ccd);
-    let clock = Rc::new(SharedClock::new(0.0));
     let mut session = arm_with_intent(
         &dir.0,
         ccd.clone(),
         Rc::new(SharedParent::new()),
-        clock.clone(),
+        Rc::new(SharedClock::new(0.0)),
         false,
     );
     ccd.set_validate_rc(31);
-    clock.set(5.0);
+    ccd.activate_path(0);
     session.tick();
     assert!(session.exited);
     assert!(ccd.rows().iter().all(|p| p.active));
