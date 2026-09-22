@@ -1,15 +1,15 @@
 # Veil 预览发布
 
-这是私有预览的打包与分发说明，不是公开产品合同。产品要求仍见 [PRD.md](PRD.md) 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。安装包签名未做，**不得标为可公开安装**。
+这是公开仓库的无签名预览打包与分发说明，不是产品合同，也不是已签名的公开发布。产品要求仍见 [PRD.md](PRD.md) 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。安装包没有 Authenticode。
 
 ## 定位
 
 | 项 | 状态 |
 | --- | --- |
 | 产品要求 | 能力检测失败则禁用并说明；不宣称全平台兼容 |
-| 本次流程 | 私有仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX），供协作者下载自用 |
+| 本次流程 | 公开仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX） |
 | 已验证 | payload 哈希门禁成立；本机可用 `pack.ps1` 打出无签名 Burn EXE |
-| 不是 | 代码签名、SmartScreen 信誉、公开仓库、全平台兼容 |
+| 不是 | 代码签名、SmartScreen 信誉、已签名的公开发布、全平台兼容 |
 
 预览包能装、能跑，不等于公开产品已发布，也不等于硬件兼容已过。
 
@@ -21,7 +21,7 @@
 - 标签：`v` + 数字版本 + 可选 suffix，例如 `v0.1.1-preview.1`。
 - 文件名：`VeilSetup-0.1.1-preview.1-x64.exe`。
 
-改版本只改 props，不要在 WiX 里手写另一套数字。
+改版本只改 props，不要在 WiX 里手写另一套数字。`src/Cargo.toml` 的 `version` 与 `workspace.metadata.veil.suffix` 必须和这份 props 一致，发布预检会核对，不一致则失败。应用内更新比较的是 props 编出来的信息版本（例如 `0.1.13-preview.1`），不是丢掉后缀的文件版本 `0.1.13.0`。
 
 ## 本机打包
 
@@ -63,24 +63,25 @@ CI 使用 Rust 依赖缓存，测试和打包统一使用 `--locked --release --
 
 发布预检回归验证：`pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1`。构建或发布成功仍不代表安装、升级及屏幕控制已在每台机器上实测。
 
-Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、不是可公开安装、不是全平台兼容。
+Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、不是已签名的公开发布、不是全平台兼容。应用内更新只提示并打开发布页，不下载安装包。
 
 ## 下载与安装注意
 
-- 私有仓库的 Release 只对协作者可见：[Releases](https://github.com/wynxing/Veil/releases)。
+- 公开仓库的 Release：[Releases](https://github.com/wynxing/Veil/releases)。
 - 下载后核 `SHA256SUMS.txt`。
 - SmartScreen /「未知发布者」是无签名预览的预期现象；这不是发布门禁已通过。
+- 已安装的预览在面板打开时最多每 24 小时检查一次更新。有新版本只提示并打开发布页，不下载、不启动安装包。
 - MTT 是显示驱动。`INSTALLVDD=0` 只表示这次不创建设备，驱动文件仍随应用写入，以后可在面板安装。
-- 未测 GPU / 系统不得当成已完成。这不是可公开安装。
+- 未测 GPU / 系统不得当成已完成。这不是已签名的公开发布。
 
 ## 下一次预览
 
-当前预览版本是 `0.1.12-preview.1`（`v0.1.12-preview.1`）。睡眠或待机结束后仍回放关屏前拓扑、结束会话且不再自动关屏，并只打开面板一次；同一中断结果不会在轮询中被反复消费。辅助输出清理失败、取消、超时或枚举失败时自动清理最多一次。执行间隙只回放一次基线。面板已在当前工作区且尺寸正确时不再反复移动或抢前台。睡眠回路与唤醒闪屏的机旁矩阵仍未通过。关面板退回托盘；托盘再开面板时拉回当前工作区。第二实例会唤醒已有面板。关最后一块物理屏时可从面板安装或接管辅助 MTT。0.1.7 起升级先 `retire-old`。再改代码：升高 `Version`、合并、再打新 tag。
+当前预览版本是 `0.1.13-preview.1`（`v0.1.13-preview.1`）。数字版本从 `0.1.12` 升高，已安装的预览可以升级。这一版把说明改成源码公开、安装包仍是无签名预览，并在面板打开时最多每 24 小时提示新版本、打开发布页，不下载安装包。睡眠回路与唤醒闪屏的机旁矩阵仍未通过。0.1.7 起升级先 `retire-old`。再改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 
-- 安装包 Authenticode、时间戳、SmartScreen 信誉。
-- 公开仓库，或对外宣传「可公开安装」。
-- Burn 许可页、正式 LICENSE。
+- 安装包 Authenticode、时间戳、SmartScreen 信誉。有签名之前，不做下载并启动安装包的自更新。
+- 对外把无签名预览说成已签名的公开发布。
+- Burn 许可页。根目录 `LICENSE` 与 `NOTICE` 已经写明 MIT 和再分发组件。
 - 把 Windows 10、ARM 或未测机器写入支持列表。
-- 把 PRD / 产品设计里的「未发布」改成已完成。
+- 把 PRD / 产品设计改成功能已完成或全平台兼容。
