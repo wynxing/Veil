@@ -2783,6 +2783,169 @@ fn failed_additional_close_restores_pre_session_baseline() {
     assert!(ccd.rows().iter().all(|p| p.active));
 }
 
+fn both_physical_targets_active(paths: &[DisplayConfigPathInfo]) -> bool {
+    let active: Vec<u32> = paths
+        .iter()
+        .filter(|p| p.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0)
+        .map(|p| p.target_info.id)
+        .collect();
+    active.contains(&1) && active.contains(&2)
+}
+
+fn bundled_vdd_row(target_id: u32) -> crate::PathRow {
+    fakes::row(
+        PathRole::Virtual,
+        true,
+        target_id,
+        "VDD by MTT",
+        r"ROOT\MttVDD\0000",
+        r"\\?\DISPLAY#MTT1337#1",
+        "0000000000000001",
+    )
+}
+
+#[test]
+fn second_screen_relight_does_not_restore_dual_baseline() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    assert!(!session.exited);
+    assert!(!ccd.rows()[0].active);
+    assert!(ccd.rows()[1].active);
+
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        true,
+    );
+    session.tick();
+    assert!(!session.exited, "等待辅助输出时不能结束本轮并回放双屏");
+    assert!(
+        !ccd.applied_paths()
+            .iter()
+            .any(|p| both_physical_targets_active(p)),
+        "写出双屏意图后不能 APPLY 两块都亮的基线"
+    );
+
+    let mut paths = ccd.paths();
+    let mut rows = ccd.rows();
+    paths[0].flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
+    rows[0].active = true;
+    paths[1].flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
+    rows[1].active = true;
+    paths.push(fakes::path_default(false, 3));
+    rows.push(bundled_vdd_row(3));
+    ccd.set_paths_rows(paths, rows);
+    session.tick();
+
+    assert!(!session.exited);
+    assert!(!ccd.rows()[0].active, "内置屏应保持关闭");
+    assert!(!ccd.rows()[1].active, "外接屏应保持关闭");
+    assert!(ccd.rows().iter().any(|r| r.is_bundled_vdd() && r.active));
+    assert!(
+        !ccd.applied_paths()
+            .iter()
+            .any(|p| both_physical_targets_active(p)),
+        "虚拟输出把已关屏点亮后，不能回放原始双屏基线"
+    );
+    assert!(!ccd
+        .flags()
+        .iter()
+        .any(|f| f & CcdConstants::SDC_TOPOLOGY_CLONE != 0));
+}
+
+#[test]
+fn validate_87_applies_deactivated_paths_without_clone_topology() {
+    let dir = TempSession::new();
+    let ccd = internal_plus_vdd();
+    save_topology(&dir.0, &ccd);
+    ccd.push_validate_rc(87);
+    ccd.push_validate_rc(0);
+    let session = arm_with_intent(
+        &dir.0,
+        ccd.clone(),
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+        true,
+    );
+    assert!(!session.exited);
+    assert!(!ccd.rows()[0].active);
+    assert!(ccd.rows()[1].active);
+    assert!(!ccd
+        .flags()
+        .iter()
+        .any(|f| f & CcdConstants::SDC_TOPOLOGY_CLONE != 0));
+    assert!(ccd.applied_paths().iter().any(|paths| {
+        paths.iter().any(|p| {
+            p.target_info.id == 2 && p.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+        }) && paths.iter().any(|p| {
+            p.target_info.id == 1 && p.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE == 0
+        })
+    }));
+}
+
+#[test]
+fn second_physical_intent_is_published_before_vdd_enable() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = dual_physical();
+    let mut hooks = coord_hooks(
+        started.clone(),
+        helper.clone(),
+        true,
+        true,
+        Some(true),
+        Duration::from_secs(2),
+    );
+    let dir_for_enable = started.clone();
+    let ccd_for_enable = ccd.clone();
+    let calls = helper.clone();
+    hooks.run_driver_helper = Box::new(move |verb| {
+        calls.borrow_mut().push(verb.into());
+        if verb == "enable" {
+            let intent: IntentFile =
+                JsonUtil::read(SessionPaths::intent(dir_for_enable.borrow().as_str())).unwrap();
+            assert_eq!(
+                intent.keep_off.len(),
+                2,
+                "启用辅助输出前必须已写出两块屏的意图"
+            );
+            assert!(intent.vdd_assist);
+            let mut paths = ccd_for_enable.paths();
+            let mut rows = ccd_for_enable.rows();
+            paths.push(fakes::path_default(false, 3));
+            rows.push(bundled_vdd_row(3));
+            ccd_for_enable.set_paths_rows(paths, rows);
+        }
+        0
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let ids: Vec<_> = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .map(|r| r.identity())
+        .collect();
+    assert!(coordinator.keep_off(ids[0].clone()).is_none());
+    helper.borrow_mut().clear();
+    assert!(coordinator.keep_off(ids[1].clone()).is_none());
+    assert!(helper.borrow().iter().any(|v| v == "enable"));
+    let _ = std::fs::remove_dir_all(started.borrow().as_str());
+}
+
 #[test]
 fn clone_failure_cannot_repeat_on_later_ticks() {
     let dir = TempSession::new();
@@ -2808,7 +2971,7 @@ fn clone_failure_cannot_repeat_on_later_ticks() {
             .iter()
             .filter(|f| **f == (CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_CLONE))
             .count(),
-        1
+        0
     );
 }
 

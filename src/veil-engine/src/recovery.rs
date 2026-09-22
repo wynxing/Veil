@@ -326,10 +326,13 @@ impl RecoverySession {
             return Ok(());
         }
         self.apply_intent_if_needed();
-        if self.exited {
+        if self.exited || self.waiting_vdd {
             return Ok(());
         }
         if self.holding {
+            if self.newer_intent_pending() {
+                return Ok(());
+            }
             if let Some(expected) = self.expected_targets.clone() {
                 let frame = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS)?;
                 let current = PathOps::active_targets(&frame.paths);
@@ -424,9 +427,26 @@ impl RecoverySession {
         } else {
             self.try_apply(&selected, false)
         };
+        if self.waiting_vdd {
+            return;
+        }
         if !ok && !self.exited && self.state != RecoveryState::RestoreFailed {
             self.fail("error", Some("操作失败，已结束本轮关闭要求。"), true);
         }
+    }
+
+    fn newer_intent_pending(&self) -> bool {
+        let path = SessionPaths::intent(&self.opt.directory);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        if self.last_intent_text.as_deref() == Some(text.as_str()) {
+            return false;
+        }
+        let Ok(intent) = serde_json::from_str::<IntentFile>(&text) else {
+            return false;
+        };
+        intent.request_id > self.processed_request && !intent.keep_off.is_empty()
     }
 
     fn try_apply_from_saved(&mut self, selected: &[ScreenIdentity]) -> bool {
@@ -560,23 +580,7 @@ impl RecoverySession {
         if plan.action == KeepOffAction::EnableBundledVdd
             || plan.action == KeepOffAction::InstallBundledVdd
         {
-            if is_reapply {
-                self.request_bundled_vdd();
-                return false;
-            }
-            let enable = plan
-                .block_reason
-                .clone()
-                .unwrap_or_else(|| Gate::ENABLE_VDD_REASON.into());
-            SessionLog::append(
-                &self.opt.directory,
-                "apply-blocked",
-                Some(&enable),
-                Some(&format!("{:?}", plan.action)),
-                Some(false),
-                None,
-            );
-            self.write_heartbeat(&enable, Some(selected), true);
+            self.request_bundled_vdd();
             return false;
         }
         if plan.action == KeepOffAction::Blocked {
@@ -668,8 +672,8 @@ impl RecoverySession {
             return false;
         }
         let mut paths = prepared.paths.clone();
-        let mut modes = prepared.modes.clone();
-        let mut adjusted_clone = false;
+        let modes = prepared.modes.clone();
+        let adjusted_clone = false;
         let mut rc = match self
             .opt
             .ccd
@@ -682,64 +686,15 @@ impl RecoverySession {
             }
         };
         if rc == 87 && plan.may_adjust_clone {
-            let clone_rc = match self
-                .opt
-                .ccd
-                .set_topology(CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_CLONE)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    self.write_heartbeat(&e, Some(selected), true);
-                    return false;
-                }
-            };
-            if clone_rc != 0 {
+            if !keeps_active_bundled_vdd(&frame.snapshot, &paths) {
                 self.write_heartbeat(
-                    &format!("无法改为共用源拓扑：{clone_rc}。"),
+                    "停用物理路径后没有活动辅助输出，未改拓扑。",
                     Some(selected),
                     true,
                 );
                 return false;
             }
-            adjusted_clone = true;
-            let frame = match self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) {
-                Ok(f) => f,
-                Err(e) => {
-                    self.write_heartbeat(&e, Some(selected), true);
-                    return false;
-                }
-            };
-            let identities: Vec<_> = frame.snapshot.paths.iter().map(|p| p.identity()).collect();
-            let still_active: Vec<_> = selected
-                .iter()
-                .filter(|id| {
-                    frame
-                        .snapshot
-                        .paths
-                        .iter()
-                        .any(|p| p.active && p.is_physical() && id.matches(&p.identity()))
-                })
-                .cloned()
-                .collect();
-            let prepared = match PathOps::deactivate(
-                &frame.paths,
-                &frame.modes,
-                &identities,
-                &still_active,
-                plan.adjust_origin,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    self.write_heartbeat(&e, Some(selected), true);
-                    return false;
-                }
-            };
-            if !prepared.can_apply() {
-                self.write_heartbeat("改为共用源后仍无法留下活动路径。", Some(selected), true);
-                return false;
-            }
-            paths = prepared.paths;
-            modes = prepared.modes;
+            invalidate_inactive_source_indices(&mut paths);
             rc = match self
                 .opt
                 .ccd
@@ -753,6 +708,7 @@ impl RecoverySession {
             };
             if rc != 0 {
                 self.write_heartbeat(&format!("无法保持关闭：校验 {rc}。"), Some(selected), true);
+                self.result.apply_rc = Some(rc);
                 return false;
             }
         }
@@ -1306,6 +1262,31 @@ impl RecoverySession {
         }
         let reason = self.result.reason.clone();
         self.finish(&reason, true);
+    }
+}
+
+fn keeps_active_bundled_vdd(
+    snapshot: &crate::DisplaySnapshot,
+    paths: &[crate::native::DisplayConfigPathInfo],
+) -> bool {
+    paths.iter().any(|path| {
+        path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+            && snapshot.paths.iter().any(|row| {
+                row.is_bundled_vdd()
+                    && row
+                        .adapter_luid
+                        .eq_ignore_ascii_case(&path.target_info.adapter_id.to_hex())
+                    && row.target_id == path.target_info.id
+            })
+    })
+}
+
+fn invalidate_inactive_source_indices(paths: &mut [crate::native::DisplayConfigPathInfo]) {
+    for path in paths.iter_mut() {
+        if path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0 {
+            continue;
+        }
+        path.source_info.mode_info_idx = 0xFFFF_FFFF;
     }
 }
 

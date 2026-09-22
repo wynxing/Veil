@@ -110,6 +110,8 @@ struct FakeCcdInner {
     clone_rc: i32,
     internal_rc: i32,
     flags: Vec<u32>,
+    applied_paths: Vec<Vec<DisplayConfigPathInfo>>,
+    next_validate_rcs: VecDeque<i32>,
     capture_error: Option<String>,
     stale_captures_remaining: i32,
     after_apply: Option<Box<dyn FnMut(&mut FakeCcdInner)>>,
@@ -136,6 +138,8 @@ impl FakeCcd {
                 clone_rc: 0,
                 internal_rc: 0,
                 flags: vec![],
+                applied_paths: vec![],
+                next_validate_rcs: VecDeque::new(),
                 capture_error: None,
                 stale_captures_remaining: 0,
                 after_apply: None,
@@ -163,6 +167,9 @@ impl FakeCcd {
 
     pub fn set_validate_rc(&self, rc: i32) {
         self.inner.borrow_mut().validate_rc = rc;
+    }
+    pub fn push_validate_rc(&self, rc: i32) {
+        self.inner.borrow_mut().next_validate_rcs.push_back(rc);
     }
     pub fn set_apply_rc(&self, rc: i32) {
         self.inner.borrow_mut().apply_rc = rc;
@@ -246,6 +253,9 @@ impl FakeCcd {
     pub fn rows(&self) -> Vec<PathRow> {
         self.inner.borrow().rows.clone()
     }
+    pub fn applied_paths(&self) -> Vec<Vec<DisplayConfigPathInfo>> {
+        self.inner.borrow().applied_paths.clone()
+    }
 }
 
 pub struct FakeCcdInnerView<'a> {
@@ -303,6 +313,7 @@ impl CcdApi for FakeCcd {
             return Err("SAVE_TO_DATABASE".into());
         }
         if flags & CcdConstants::SDC_APPLY != 0 {
+            inner.applied_paths.push(paths.to_vec());
             let rc = inner.next_apply_rc.take().unwrap_or(inner.apply_rc);
             if rc != 0 && !inner.mutate_on_failure {
                 return Ok(rc);
@@ -326,7 +337,10 @@ impl CcdApi for FakeCcd {
             }
             return Ok(rc);
         }
-        Ok(inner.validate_rc)
+        Ok(inner
+            .next_validate_rcs
+            .pop_front()
+            .unwrap_or(inner.validate_rc))
     }
 
     fn set_topology(&self, topology_flags: u32) -> Result<i32, String> {

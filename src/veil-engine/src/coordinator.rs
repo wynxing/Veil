@@ -516,8 +516,24 @@ impl RecoveryCoordinator {
             }
             // Mark cleanup responsibility before launching: failure may be partial.
             self.vdd_owned = true;
-            if let Err(e) = self.prepare_directory() {
-                return Some(e);
+            if previous.is_empty() {
+                if let Err(e) = self.prepare_directory() {
+                    return Some(e);
+                }
+            } else {
+                if let Some(error) = self.publish_intent(&selected, true) {
+                    return Some(error);
+                }
+                if let Some(dir) = self.directory.clone() {
+                    if let Err(e) = JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(&dir))
+                        .and_then(|mut meta| {
+                            meta.vdd_owned = true;
+                            JsonUtil::write_atomic(SessionPaths::metadata(&dir), &meta)
+                        })
+                    {
+                        return Some(e);
+                    }
+                }
             }
             let helper_rc = (self.hooks.run_driver_helper)("enable");
             if helper_rc != 0 {
@@ -560,6 +576,13 @@ impl RecoveryCoordinator {
             }
             return Some(format!("无法保持关闭：校验 {}。", planned.rc));
         }
+        self.publish_intent(
+            &selected,
+            plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
+        )
+    }
+
+    fn publish_intent(&mut self, selected: &[ScreenIdentity], vdd_assist: bool) -> Option<String> {
         if let Some(error) = self.ensure_recovery() {
             return Some(error);
         }
@@ -569,7 +592,7 @@ impl RecoveryCoordinator {
                 .iter()
                 .map(ScreenIdentityDto::from_identity)
                 .collect(),
-            vdd_assist: plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
+            vdd_assist,
         };
         let dir = self.directory.as_ref().unwrap();
         if let Err(e) = JsonUtil::write_atomic(SessionPaths::intent(dir), &intent) {
