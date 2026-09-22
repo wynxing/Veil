@@ -2,7 +2,7 @@ use crate::capability::{DisplaySnapshot, PathRow, Roles};
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND, WPARAM};
 use windows_sys::Win32::System::Power::{
     PowerRegisterSuspendResumeNotification, PowerSettingRegisterNotification,
@@ -358,6 +358,7 @@ pub enum PowerEvent {
     None,
     Suspending,
     Resumed,
+    DisplayState(u32),
 }
 
 pub trait PowerObserver {
@@ -366,12 +367,11 @@ pub trait PowerObserver {
 
 const GUID_CONSOLE_DISPLAY_STATE: windows_sys::core::GUID =
     windows_sys::core::GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
-const DISPLAY_OFF_RESUME_MS: u64 = 2_000;
 
 struct PowerNotifyState {
     suspending: AtomicBool,
     resumed: AtomicBool,
-    display_off_at_ms: AtomicU64,
+    display_state: AtomicU32,
 }
 
 impl Default for PowerNotifyState {
@@ -379,7 +379,7 @@ impl Default for PowerNotifyState {
         Self {
             suspending: AtomicBool::new(false),
             resumed: AtomicBool::new(false),
-            display_off_at_ms: AtomicU64::new(0),
+            display_state: AtomicU32::new(u32::MAX),
         }
     }
 }
@@ -470,7 +470,10 @@ impl PowerObserver for Win32PowerObserver {
         if self.state.resumed.swap(false, Ordering::SeqCst) {
             return PowerEvent::Resumed;
         }
-        PowerEvent::None
+        match self.state.display_state.swap(u32::MAX, Ordering::SeqCst) {
+            value @ 0..=2 => PowerEvent::DisplayState(value),
+            _ => PowerEvent::None,
+        }
     }
 }
 
@@ -494,25 +497,8 @@ unsafe extern "system" fn power_notify_callback(
                 && broadcast.DataLength >= 4
             {
                 let value = unsafe { ptr::read_unaligned(broadcast.Data.as_ptr() as *const u32) };
-                match value {
-                    0 => {
-                        let now = unsafe {
-                            windows_sys::Win32::System::SystemInformation::GetTickCount64()
-                        };
-                        state.display_off_at_ms.store(now, Ordering::SeqCst);
-                    }
-                    1 => {
-                        let off_at = state.display_off_at_ms.swap(0, Ordering::SeqCst);
-                        if off_at > 0 {
-                            let now = unsafe {
-                                windows_sys::Win32::System::SystemInformation::GetTickCount64()
-                            };
-                            if now.saturating_sub(off_at) >= DISPLAY_OFF_RESUME_MS {
-                                state.resumed.store(true, Ordering::SeqCst);
-                            }
-                        }
-                    }
-                    _ => {}
+                if value <= 2 {
+                    state.display_state.store(value, Ordering::SeqCst);
                 }
             }
         }
@@ -523,6 +509,49 @@ unsafe extern "system" fn power_notify_callback(
 
 fn guid_eq(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
     a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
+#[cfg(test)]
+mod power_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_display_off_on_is_not_a_system_resume() {
+        #[repr(C)]
+        struct Setting {
+            guid: windows_sys::core::GUID,
+            len: u32,
+            value: u32,
+        }
+        let state = PowerNotifyState::default();
+        let context = &state as *const _ as *const c_void;
+        let mut setting = Setting {
+            guid: GUID_CONSOLE_DISPLAY_STATE,
+            len: 4,
+            value: 0,
+        };
+        unsafe {
+            power_notify_callback(
+                context,
+                PBT_POWERSETTINGCHANGE,
+                &setting as *const _ as *const c_void,
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        setting.value = 1;
+        unsafe {
+            power_notify_callback(
+                context,
+                PBT_POWERSETTINGCHANGE,
+                &setting as *const _ as *const c_void,
+            );
+        }
+        assert!(!state.resumed.load(Ordering::SeqCst));
+        unsafe {
+            power_notify_callback(context, PBT_APMRESUMEAUTOMATIC, ptr::null());
+        }
+        assert!(state.resumed.load(Ordering::SeqCst));
+    }
 }
 
 #[derive(Default)]

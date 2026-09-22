@@ -9,11 +9,15 @@ use windows_sys::Win32::System::Com::{
 };
 use windows_sys::Win32::UI::Shell::TaskbarList;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindow, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, SystemParametersInfoW,
-    GWL_EXSTYLE, HWND_TOP, SPI_GETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WINDOWPLACEMENT,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    BringWindowToTop, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindow, IsWindowVisible,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow,
+    SystemParametersInfoW, GWL_EXSTYLE, HWND_TOP, SPI_GETWORKAREA, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    WINDOWPLACEMENT, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+};
+
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 
 const PARK_X: i32 = -32_000;
@@ -55,6 +59,7 @@ pub struct PanelWindow {
     cached: Arc<Mutex<isize>>,
     last_rect: Arc<Mutex<Rect>>,
     parked: Arc<AtomicBool>,
+    synced: Arc<Mutex<Option<(isize, bool)>>>,
 }
 
 impl PanelWindow {
@@ -68,6 +73,7 @@ impl PanelWindow {
                 h: DEFAULT_H,
             })),
             parked: Arc::new(AtomicBool::new(false)),
+            synced: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -87,8 +93,9 @@ impl PanelWindow {
             crate::app_log("无法显示面板：没有 HWND。");
             return;
         }
-        self.restore_window(hwnd, true);
-        crate::app_log("面板已拉回前台。");
+        if self.restore_window(hwnd, true) {
+            *self.synced.lock().unwrap_or_else(|e| e.into_inner()) = Some((hwnd, true));
+        }
     }
 
     pub fn is_parked(&self) -> bool {
@@ -100,11 +107,6 @@ impl PanelWindow {
         hwnd != 0 && unsafe { IsIconic(hwnd as HWND) } != 0
     }
 
-    pub fn visible_outer_position(&self) -> (i32, i32) {
-        let rect = self.visible_rect();
-        (rect.x, rect.y)
-    }
-
     pub fn hide(&self) {
         let hwnd = self.hwnd();
         if hwnd == 0 {
@@ -113,6 +115,7 @@ impl PanelWindow {
         }
         self.remember_rect(hwnd);
         self.park_window(hwnd);
+        *self.synced.lock().unwrap_or_else(|e| e.into_inner()) = Some((hwnd, false));
         crate::app_log("面板已退回托盘，事件循环保持运行。");
     }
 
@@ -124,16 +127,25 @@ impl PanelWindow {
         if hwnd == 0 {
             return;
         }
-        if open {
-            if self.is_parked() {
-                self.restore_window(hwnd, false);
-            } else {
+        let mut synced = self.synced.lock().unwrap_or_else(|e| e.into_inner());
+        if *synced == Some((hwnd, open)) {
+            if open {
                 self.remember_rect(hwnd);
-                unsafe {
-                    apply_shown_style(hwnd as HWND);
-                }
-                taskbar_add(hwnd, false);
             }
+            return;
+        }
+        // Only transitions write native state. A failed show is retried by a new
+        // user request, not by every paint of an unresponsive window.
+        *synced = Some((hwnd, open));
+        if open {
+            if !self.is_parked() {
+                self.remember_rect(hwnd);
+            }
+            unsafe {
+                apply_shown_style(hwnd as HWND);
+            }
+            taskbar_add(hwnd, false);
+            self.restore_window(hwnd, false);
         } else {
             if !self.is_parked() {
                 self.remember_rect(hwnd);
@@ -155,16 +167,22 @@ impl PanelWindow {
         *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = hwnd;
     }
 
-    fn restore_window(&self, hwnd: isize, activate: bool) {
+    fn restore_window(&self, hwnd: isize, activate: bool) -> bool {
         let rect = self.visible_rect();
         let already_ok = client_rect(hwnd).is_some_and(|current| {
-            !looks_parked(&current)
-                && (current.x - rect.x).abs() < 16
-                && (current.y - rect.y).abs() < 16
-                && (current.w - rect.w).abs() < 32
-                && (current.h - rect.h).abs() < 32
-                && unsafe { IsIconic(hwnd as HWND) } == 0
+            !needs_restore(
+                current,
+                rect,
+                self.is_parked(),
+                unsafe { IsIconic(hwnd as HWND) } != 0,
+                unsafe { IsWindowVisible(hwnd as HWND) } != 0,
+            )
         });
+        if already_ok {
+            return true;
+        }
+        let (monitor, work) = monitor_area(rect);
+        let placement_rect = to_workspace(rect, monitor, work);
         unsafe {
             apply_shown_style(hwnd as HWND);
             let placement = WINDOWPLACEMENT {
@@ -178,13 +196,16 @@ impl PanelWindow {
                 ptMinPosition: POINT { x: 0, y: 0 },
                 ptMaxPosition: POINT { x: 0, y: 0 },
                 rcNormalPosition: RECT {
-                    left: rect.x,
-                    top: rect.y,
-                    right: rect.x + rect.w,
-                    bottom: rect.y + rect.h,
+                    left: placement_rect.x,
+                    top: placement_rect.y,
+                    right: placement_rect.x + placement_rect.w,
+                    bottom: placement_rect.y + placement_rect.h,
                 },
             };
-            SetWindowPlacement(hwnd as HWND, &placement);
+            let placement_ok = SetWindowPlacement(hwnd as HWND, &placement);
+            if placement_ok == 0 {
+                crate::app_log("SetWindowPlacement 失败。");
+            }
             let mut flags = SWP_SHOWWINDOW | SWP_FRAMECHANGED;
             if !activate {
                 flags |= SWP_NOACTIVATE;
@@ -216,6 +237,7 @@ impl PanelWindow {
                 ));
             }
         }
+        restored
     }
 
     fn park_window(&self, hwnd: isize) {
@@ -233,16 +255,6 @@ impl PanelWindow {
                     1,
                     1,
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-                );
-            } else {
-                SetWindowPos(
-                    hwnd as HWND,
-                    HWND_TOP,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
                 );
             }
         }
@@ -265,7 +277,8 @@ impl PanelWindow {
 
     fn visible_rect(&self) -> Rect {
         let mut stored = self.last_rect.lock().unwrap_or_else(|e| e.into_inner());
-        let clamped = clamp_visible(*stored);
+        let (_, work) = monitor_area(*stored);
+        let clamped = clamp_to_work(*stored, work);
         *stored = clamped;
         clamped
     }
@@ -296,46 +309,65 @@ fn work_area() -> RECT {
     work
 }
 
-fn clamp_visible(rect: Rect) -> Rect {
-    let work = work_area();
-    let parked = looks_parked(&rect);
-    let w = if parked {
-        rect.w.max(DEFAULT_W)
+fn monitor_area(rect: Rect) -> (RECT, RECT) {
+    let r = if looks_parked(&rect) {
+        Rect {
+            x: DEFAULT_X,
+            y: DEFAULT_Y,
+            w: DEFAULT_W,
+            h: DEFAULT_H,
+        }
     } else {
-        rect.w.max(80)
+        rect
     };
-    let h = if parked {
-        rect.h.max(DEFAULT_H)
-    } else {
-        rect.h.max(80)
+    let raw = RECT {
+        left: r.x,
+        top: r.y,
+        right: r.x.saturating_add(r.w),
+        bottom: r.y.saturating_add(r.h),
     };
-    let min_x = work.left;
-    let min_y = work.top;
-    let max_x = (work.right - w).max(min_x);
-    let max_y = (work.bottom - h).max(min_y);
-    if parked {
-        return Rect {
-            x: DEFAULT_X.clamp(min_x, max_x),
-            y: DEFAULT_Y.clamp(min_y, max_y),
-            w,
-            h,
-        };
+    unsafe {
+        let monitor = MonitorFromRect(&raw, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) != 0 {
+            return (info.rcMonitor, info.rcWork);
+        }
     }
-    if rect_overlaps_work(rect.x, rect.y, rect.w, rect.h, &work) {
-        return rect;
-    }
+    let fallback = work_area();
+    (fallback, fallback)
+}
+
+// WINDOWPLACEMENT uses workspace coordinates for the shown (non-tool) window.
+// SetWindowPos and the remembered outer rectangle use physical screen pixels.
+fn to_workspace(rect: Rect, monitor: RECT, work: RECT) -> Rect {
     Rect {
-        x: rect.x.clamp(min_x, max_x),
-        y: rect.y.clamp(min_y, max_y),
-        w: rect.w.max(80),
-        h: rect.h.max(80),
+        x: rect.x - (work.left - monitor.left),
+        y: rect.y - (work.top - monitor.top),
+        ..rect
     }
 }
 
-fn rect_overlaps_work(x: i32, y: i32, w: i32, h: i32, work: &RECT) -> bool {
-    let right = x.saturating_add(w);
-    let bottom = y.saturating_add(h);
-    x < work.right && y < work.bottom && right > work.left && bottom > work.top
+fn same_rect(a: Rect, b: Rect) -> bool {
+    a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h
+}
+
+fn needs_restore(current: Rect, desired: Rect, parked: bool, iconic: bool, visible: bool) -> bool {
+    parked || iconic || !visible || !same_rect(current, desired)
+}
+
+fn clamp_to_work(rect: Rect, work: RECT) -> Rect {
+    let parked = looks_parked(&rect);
+    let w = (if parked { DEFAULT_W } else { rect.w.max(80) }).min((work.right - work.left).max(1));
+    let h = (if parked { DEFAULT_H } else { rect.h.max(80) }).min((work.bottom - work.top).max(1));
+    Rect {
+        x: (if parked { DEFAULT_X } else { rect.x })
+            .clamp(work.left, (work.right - w).max(work.left)),
+        y: (if parked { DEFAULT_Y } else { rect.y })
+            .clamp(work.top, (work.bottom - h).max(work.top)),
+        w,
+        h,
+    }
 }
 
 fn client_rect(hwnd: isize) -> Option<Rect> {
@@ -429,5 +461,131 @@ fn taskbar_delete(hwnd: isize) {
     };
     unsafe {
         let _ = ((*(*list).vtbl).delete_tab)(list, hwnd as HWND);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partially_offscreen_and_oversized_windows_are_fully_reachable() {
+        let work = RECT {
+            left: 40,
+            top: 50,
+            right: 1920,
+            bottom: 1080,
+        };
+        let rect = clamp_to_work(
+            Rect {
+                x: 1800,
+                y: 900,
+                w: 2200,
+                h: 1400,
+            },
+            work,
+        );
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (40, 50, 1880, 1030));
+    }
+
+    #[test]
+    fn physical_geometry_is_idempotent_at_common_dpi_scales() {
+        for scale in [1.0, 1.5, 2.0] {
+            let work = RECT {
+                left: -2560,
+                top: 40,
+                right: 0,
+                bottom: 1440,
+            };
+            let original = Rect {
+                x: -2000,
+                y: 120,
+                w: (420.0 * scale) as i32,
+                h: (560.0 * scale) as i32,
+            };
+            let mut rect = original;
+            for _ in 0..100 {
+                rect = clamp_to_work(rect, work);
+            }
+            assert_eq!(
+                (rect.x, rect.y, rect.w, rect.h),
+                (original.x, original.y, original.w, original.h)
+            );
+        }
+    }
+
+    #[test]
+    fn placement_accounts_for_top_and_left_taskbars_on_secondary_monitor() {
+        let monitor = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1080,
+        };
+        let work = RECT {
+            left: -1880,
+            top: 50,
+            right: 0,
+            bottom: 1080,
+        };
+        let rect = to_workspace(
+            Rect {
+                x: -1800,
+                y: 100,
+                w: 600,
+                h: 800,
+            },
+            monitor,
+            work,
+        );
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (-1840, 50, 600, 800));
+    }
+
+    #[test]
+    fn removed_monitor_and_parked_rect_return_inside_current_work_area() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        for (original, expected) in [
+            (
+                Rect {
+                    x: 2500,
+                    y: 100,
+                    w: 600,
+                    h: 800,
+                },
+                (1320, 100, 600, 800),
+            ),
+            (
+                Rect {
+                    x: PARK_X,
+                    y: PARK_Y,
+                    w: 1,
+                    h: 1,
+                },
+                (200, 200, 420, 560),
+            ),
+        ] {
+            let rect = clamp_to_work(original, work);
+            assert_eq!((rect.x, rect.y, rect.w, rect.h), expected);
+        }
+    }
+    #[test]
+    fn repeated_show_of_valid_visible_window_requires_no_native_restore() {
+        let rect = Rect {
+            x: 120,
+            y: 100,
+            w: 630,
+            h: 840,
+        };
+        for _ in 0..100 {
+            assert!(!needs_restore(rect, rect, false, false, true));
+        }
+        assert!(needs_restore(rect, rect, false, true, true));
+        assert!(needs_restore(rect, rect, true, false, true));
+        assert!(needs_restore(rect, rect, false, false, false));
     }
 }

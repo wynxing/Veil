@@ -68,6 +68,11 @@ pub struct RecoveryCoordinator {
     pub heartbeat: Option<HeartbeatFile>,
     pub status_text: Option<String>,
     should_show_panel: bool,
+    operation_id: u64,
+    result_consumed: bool,
+    panel_notified: bool,
+    restored_outcome: Option<RestoreOutcome>,
+    panel_context: Option<(PathBuf, u64, String)>,
 }
 
 impl RecoveryCoordinator {
@@ -89,6 +94,11 @@ impl RecoveryCoordinator {
             heartbeat: None,
             status_text: None,
             should_show_panel: false,
+            operation_id: 0,
+            result_consumed: false,
+            panel_notified: false,
+            restored_outcome: None,
+            panel_context: None,
         }
     }
 
@@ -111,7 +121,74 @@ impl RecoveryCoordinator {
     pub fn take_should_show_panel(&mut self) -> bool {
         let show = self.should_show_panel;
         self.should_show_panel = false;
+        if show {
+            self.log_panel_dispatch("panel-open-start");
+        }
         show
+    }
+
+    pub fn panel_show_attempt_finished(&self) {
+        self.log_panel_dispatch("panel-open-end");
+    }
+
+    fn log_panel_dispatch(&self, event: &str) {
+        if let Some((dir, operation, reason)) = &self.panel_context {
+            SessionLog::append(
+                dir,
+                event,
+                Some(&format!(
+                    "operation={operation}; 窗口请求，非机旁可见性证明"
+                )),
+                Some(reason),
+                None,
+                None,
+            );
+        }
+    }
+
+    pub fn recovery_block_reason(&self) -> Option<&str> {
+        if self.has_session() && matches!(self.last_outcome, Some(Err(_))) {
+            self.status_text.as_deref()
+        } else {
+            None
+        }
+    }
+
+    fn begin_operation(&mut self, id: u64) {
+        self.operation_id = id;
+        self.result_consumed = false;
+        self.panel_notified = false;
+        self.should_show_panel = false;
+        self.cleanup_attempted = false;
+        self.restored_outcome = None;
+        self.last_outcome = None;
+        self.panel_context = None;
+    }
+
+    fn notify_panel(&mut self, reason: &str) {
+        if self.panel_notified {
+            return;
+        }
+        self.panel_notified = true;
+        self.should_show_panel = true;
+        self.panel_context = self
+            .directory
+            .clone()
+            .map(|dir| (dir, self.operation_id, reason.into()));
+        self.log_operation("panel-request", reason, None);
+    }
+
+    fn log_operation(&self, event: &str, reason: &str, rc: Option<i32>) {
+        if let Some(dir) = &self.directory {
+            SessionLog::append(
+                dir,
+                event,
+                Some(&format!("operation={}", self.operation_id)),
+                Some(reason),
+                None,
+                rc,
+            );
+        }
     }
 
     pub fn is_interrupt_reason(reason: &str) -> bool {
@@ -125,6 +202,11 @@ impl RecoveryCoordinator {
         let Some(dir) = self.directory.clone() else {
             return;
         };
+        // A retained directory is recovery context, not an unconsumed event.
+        // In particular, do not let an old heartbeat overwrite a cleanup error.
+        if self.result_consumed {
+            return;
+        }
         if !SessionPaths::result(&dir).exists()
             && self.recovery_pid > 0
             && !(self.hooks.is_alive)(self.recovery_pid)
@@ -160,6 +242,7 @@ impl RecoveryCoordinator {
         }
         self.serve_vdd_request();
         self.heartbeat = JsonUtil::try_read(SessionPaths::heartbeat(&dir));
+        let mut restore_failed = false;
         if let Some(hb) = &self.heartbeat {
             self.hotkey_registered = hb.hotkey_registered;
             if hb.state == RecoveryState::RestoreFailed
@@ -169,6 +252,7 @@ impl RecoveryCoordinator {
                 self.last_outcome = Some(Err(RestoreError::Failed(
                     hb.detail.clone().unwrap_or_default(),
                 )));
+                restore_failed = true;
             }
             self.is_ready = hb.armed || SessionPaths::ready(&dir).exists();
             if let Some(detail) = &hb.detail {
@@ -177,7 +261,11 @@ impl RecoveryCoordinator {
                 }
             }
         }
+        if restore_failed {
+            self.notify_panel("restore-failed");
+        }
         if SessionPaths::result(&dir).exists() {
+            self.result_consumed = true;
             let result = JsonUtil::read::<ResultFile>(SessionPaths::result(&dir));
             let outcome = result
                 .as_ref()
@@ -185,7 +273,7 @@ impl RecoveryCoordinator {
                 .and_then(|r| r.restoration_outcome());
             if let Ok(r) = &result {
                 if Self::is_interrupt_reason(&r.reason) {
-                    self.should_show_panel = true;
+                    self.notify_panel(&r.reason);
                     self.status_text = Some(Self::format_result(Some(r)));
                 } else {
                     self.status_text = Some(match &outcome {
@@ -220,6 +308,7 @@ impl RecoveryCoordinator {
             self.intent = IntentFile::default();
             self.heartbeat = None;
             if outcome.is_ok() {
+                self.restored_outcome = outcome.ok();
                 if self.vdd_owned && !self.cleanup_attempted {
                     self.cleanup_attempted = true;
                     self.disable_bundled_vdd_after_session(result.as_ref().ok());
@@ -232,11 +321,7 @@ impl RecoveryCoordinator {
                     )));
                 }
                 // A failed cleanup remains retryable even though physical output is restored.
-                if !self.vdd_owned {
-                    self.directory = None;
-                    self.baseline = None;
-                    self.vdd_request_served = None;
-                }
+                self.complete_cleanup();
             }
         }
     }
@@ -367,9 +452,25 @@ impl RecoveryCoordinator {
         let Some(dir) = self.directory.clone() else {
             return None;
         };
-        self.last_outcome = None;
-        self.cleanup_attempted = false;
         let request_id = crate::session::request_id();
+        // Retry only the failed device cleanup when all still-connected baseline
+        // physical targets are active. Never replay a saved topology just for UAC.
+        if self.result_consumed
+            && self.restored_outcome.is_some()
+            && self.vdd_owned
+            && self.physical_restoration_confirmed()
+        {
+            self.operation_id = request_id;
+            self.cleanup_attempted = true;
+            self.disable_bundled_vdd_after_session(None);
+            if self.vdd_owned {
+                return self.status_text.clone();
+            }
+            self.last_outcome = self.restored_outcome.clone().map(Ok);
+            self.status_text = Some("显示已恢复，辅助虚拟输出已清理。".into());
+            self.complete_cleanup();
+            return None;
+        }
         if let Err(e) = JsonUtil::write_atomic(
             SessionPaths::release(&dir),
             &ReleaseFile {
@@ -395,6 +496,7 @@ impl RecoveryCoordinator {
                 return Some(format!("无法启动恢复专用进程（{}）。", exe.display()));
             }
         }
+        self.begin_operation(request_id);
         self.intent.keep_off.clear();
         None
     }
@@ -411,6 +513,12 @@ impl RecoveryCoordinator {
         }
         if let Some(e) = self.restore_all() {
             return Err(RestoreError::Protocol(e));
+        }
+        if self.directory.is_none() {
+            return self
+                .last_outcome
+                .clone()
+                .unwrap_or_else(|| Ok(RestoreOutcome::complete("已恢复全部。")));
         }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -576,6 +684,8 @@ impl RecoveryCoordinator {
             return Some(e);
         }
         self.intent = intent;
+        self.begin_operation(self.intent.request_id);
+        self.pending_release = 0;
         None
     }
 
@@ -600,6 +710,8 @@ impl RecoveryCoordinator {
             return Some(e);
         }
         self.intent = intent;
+        self.begin_operation(self.intent.request_id);
+        self.pending_release = 0;
         None
     }
 
@@ -686,6 +798,7 @@ impl RecoveryCoordinator {
     }
 
     fn disable_bundled_vdd_after_session(&mut self, _result: Option<&ResultFile>) {
+        self.log_operation("cleanup-start", "disable-owned-vdd", None);
         let safe = self
             .ccd
             .query_snapshot(CcdConstants::QUERY_FLAGS)
@@ -695,15 +808,48 @@ impl RecoveryCoordinator {
             self.status_text =
                 Some("未确认活动物理输出，保留辅助虚拟输出；请重试恢复全部。".into());
             self.last_outcome = Some(Err(RestoreError::Failed(self.status_text.clone().unwrap())));
+            self.log_operation("cleanup-end", "physical-output-unconfirmed", None);
             return;
         }
         let rc = (self.hooks.run_driver_helper)("disable");
+        self.log_operation("cleanup-end", "disable-owned-vdd", Some(rc));
         if rc != 0 {
-            self.status_text = Some(DISABLE_VDD_FAILED.into());
-            self.last_outcome = Some(Err(RestoreError::Failed(DISABLE_VDD_FAILED.into())));
+            let detail = match rc {
+                1223 => "辅助虚拟输出清理已取消，请点恢复全部重试。".to_string(),
+                1460 => "辅助虚拟输出清理超时，状态未知；请确认后重试恢复全部。".to_string(),
+                _ => format!("{DISABLE_VDD_FAILED} 返回码 {rc}；请点恢复全部重试。"),
+            };
+            self.status_text = Some(detail.clone());
+            self.last_outcome = Some(Err(RestoreError::Failed(detail)));
         } else {
             self.vdd_owned = false;
         }
+    }
+
+    fn complete_cleanup(&mut self) {
+        if !self.vdd_owned {
+            self.directory = None;
+            self.baseline = None;
+            self.vdd_request_served = None;
+        }
+    }
+
+    fn physical_restoration_confirmed(&self) -> bool {
+        let Some(baseline) = &self.baseline else {
+            return false;
+        };
+        let (Ok(active), Ok(connected)) = (
+            self.ccd.query_snapshot(CcdConstants::QUERY_FLAGS),
+            self.ccd.connected_physical(),
+        ) else {
+            return false;
+        };
+        let physical: Vec<_> = active.active_physical().map(|p| p.identity()).collect();
+        !physical.is_empty()
+            && baseline.snapshot.active_physical().all(|p| {
+                let id = p.identity();
+                !connected.iter().any(|c| c.matches(&id)) || physical.iter().any(|a| a.matches(&id))
+            })
     }
 }
 

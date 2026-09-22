@@ -328,10 +328,6 @@ impl VeilApp {
         self.minimize_armed = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        let (x, y) = self.panel.visible_outer_position();
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            x as f32, y as f32,
-        )));
         ctx.request_repaint();
     }
 
@@ -364,6 +360,8 @@ impl VeilApp {
         let hotkey = self.coordinator.hotkey_registered;
         self.hotkey_status = if hotkey {
             format!("{}：可用", CcdConstants::HOTKEY_TEXT)
+        } else if !self.coordinator.has_session() {
+            format!("{}：空闲，下次关屏前启用", CcdConstants::HOTKEY_TEXT)
         } else {
             format!("{}：不可用", CcdConstants::HOTKEY_TEXT)
         };
@@ -379,6 +377,12 @@ impl VeilApp {
             self.coordinator.is_ready || !self.coordinator.has_session(),
             hotkey || !self.coordinator.has_session(),
         );
+        if let Some(reason) = self.coordinator.recovery_block_reason() {
+            for screen in &mut self.screens {
+                screen.can_keep_off = false;
+                screen.block_reason = reason.to_owned();
+            }
+        }
         self.auxiliary = AuxiliaryInstallItem::from_availability(bundled);
         if let Some(text) = &self.coordinator.status_text {
             if !text.is_empty() {
@@ -438,7 +442,6 @@ impl VeilApp {
             return;
         }
         self.topology_fingerprint = fingerprint;
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize([420.0, 560.0].into()));
         ctx.request_repaint();
         if self.hide_before_apply || self.coordinator.has_session() {
             return;
@@ -526,14 +529,14 @@ impl eframe::App for VeilApp {
             }
         }
         self.panel.sync(hwnd, self.panel_open && !self.exiting);
-        if self.coordinator.has_session() || self.last_refresh.elapsed() >= Duration::from_millis(800)
-        {
+        if self.last_refresh.elapsed() >= Duration::from_millis(400) {
             self.refresh();
+            self.sync_topology_viewport(ctx);
         }
         if self.coordinator.take_should_show_panel() {
             self.open_panel(ctx);
+            self.coordinator.panel_show_attempt_finished();
         }
-        self.sync_topology_viewport(ctx);
         ctx.request_repaint_after(Duration::from_millis(400));
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -652,10 +655,37 @@ fn message_box(text: &str, cancel: bool) -> bool {
 }
 
 fn run_helper_elevated(verb: &str) -> i32 {
+    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
     use windows_sys::Win32::UI::Shell::{
         ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    // A timed-out helper can still be running. Retain its handle and never launch
+    // a second device operation until the first one has actually ended.
+    static PENDING: std::sync::Mutex<Option<(usize, String)>> = std::sync::Mutex::new(None);
+    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((raw, previous_verb)) = pending.as_ref() {
+        let handle = *raw as HANDLE;
+        let wait = unsafe { WaitForSingleObject(handle, 0) };
+        if wait != WAIT_OBJECT_0 {
+            app_log(&format!("helper pending verb={previous_verb} wait={wait}"));
+            return 1460;
+        }
+        let mut code = 1;
+        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+        let same = previous_verb == verb;
+        unsafe {
+            CloseHandle(handle);
+        }
+        *pending = None;
+        app_log(&format!(
+            "helper late-end verb={verb} exit={code} query={ok}"
+        ));
+        if same {
+            return if ok != 0 { code as i32 } else { 1 };
+        }
+    }
     let exe = veil_engine::ProcessLaunch::driver_helper_exe_path();
     let exe_w = to_wide(&exe.to_string_lossy());
     let verb_w = to_wide("runas");
@@ -667,20 +697,41 @@ fn run_helper_elevated(verb: &str) -> i32 {
     info.lpFile = exe_w.as_ptr();
     info.lpParameters = params.as_ptr();
     info.nShow = SW_HIDE;
-    let ok = unsafe { ShellExecuteExW(&mut info) };
-    if ok == 0 {
+    app_log(&format!("helper start verb={verb}"));
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let error = unsafe { GetLastError() };
+        app_log(&format!("helper launch-failed verb={verb} win32={error}"));
+        return if error == 0 { 1 } else { error as i32 };
+    }
+    if info.hProcess.is_null() {
+        app_log(&format!("helper missing-process verb={verb}"));
         return 1;
     }
-    if !info.hProcess.is_null() {
-        unsafe {
-            windows_sys::Win32::System::Threading::WaitForSingleObject(info.hProcess, 60_000);
-            let mut code = 1u32;
-            windows_sys::Win32::System::Threading::GetExitCodeProcess(info.hProcess, &mut code);
-            CloseHandle(info.hProcess);
-            return code as i32;
-        }
+    let wait = unsafe { WaitForSingleObject(info.hProcess, 60_000) };
+    if wait != WAIT_OBJECT_0 {
+        let error = unsafe { GetLastError() };
+        *pending = Some((info.hProcess as usize, verb.to_string()));
+        app_log(&format!(
+            "helper wait-incomplete verb={verb} wait={wait} win32={error}"
+        ));
+        return if wait == WAIT_TIMEOUT { 1460 } else { 1 };
     }
-    1
+    let mut code = 1;
+    let ok = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
+    let error = if ok == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
+    unsafe {
+        CloseHandle(info.hProcess);
+    }
+    app_log(&format!("helper end verb={verb} exit={code} win32={error}"));
+    if ok != 0 {
+        code as i32
+    } else {
+        error.max(1) as i32
+    }
 }
 
 fn try_acquire_mutex() -> Option<HANDLE> {
