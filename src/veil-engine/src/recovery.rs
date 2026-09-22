@@ -315,6 +315,19 @@ impl RecoverySession {
                 return Ok(());
             }
             PowerEvent::None => {}
+            PowerEvent::DisplayState(value) => {
+                SessionLog::append(
+                    &self.opt.directory,
+                    "display-power",
+                    Some(&format!(
+                        "operation={} state={value}",
+                        self.intent.request_id
+                    )),
+                    Some("display-power"),
+                    None,
+                    None,
+                );
+            }
         }
         if self.suspended {
             self.previous = now;
@@ -524,18 +537,14 @@ impl RecoverySession {
             );
             return false;
         }
-        let apply_rc =
-            match self
-                .opt
-                .ccd
-                .set(&prepared.paths, &prepared.modes, CcdConstants::APPLY_FLAGS)
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    self.write_heartbeat(&e, Some(selected), true);
-                    return false;
-                }
-            };
+        let apply_rc = match self.apply_logged(&prepared.paths, &prepared.modes, "partial-restore")
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.write_heartbeat(&e, Some(selected), true);
+                return false;
+            }
+        };
         self.result.apply_rc = Some(apply_rc);
         self.result.adjusted_origin = Some(prepared.adjusted_origin);
         if apply_rc != 0 {
@@ -733,7 +742,11 @@ impl RecoverySession {
             self.result.apply_rc = Some(rc);
             return false;
         }
-        let apply_rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::APPLY_FLAGS) {
+        let apply_rc = match self.apply_logged(
+            &paths,
+            &modes,
+            if is_reapply { "reapply" } else { "keep-off" },
+        ) {
             Ok(v) => v,
             Err(e) => {
                 self.write_heartbeat(&e, Some(selected), true);
@@ -793,6 +806,11 @@ impl RecoverySession {
             Some(self.reapply_attempted),
             None,
         );
+        if reason == "execution-gap" {
+            // No reapply follows an execution gap; finish owns the only replay.
+            self.finish(reason, true);
+            return;
+        }
         self.restore_saved();
         if self.result.restore_state != RestoreState::Complete {
             self.fail(reason, Some("中断后恢复未完成。"), false);
@@ -827,6 +845,7 @@ impl RecoverySession {
             }
         }
         if !self.exited && self.state != RecoveryState::RestoreFailed {
+            // A failed topology reapply may already have changed the display.
             self.finish(reason, true);
         }
     }
@@ -894,6 +913,40 @@ impl RecoverySession {
         self.finish(reason, restore);
     }
 
+    fn log_write(&self, phase: &str, action: &str, result: Option<&Result<i32, String>>) {
+        let detail = format!(
+            "operation={} action={action} result={result:?}",
+            self.processed_release.max(self.intent.request_id)
+        );
+        SessionLog::append(
+            &self.opt.directory,
+            phase,
+            Some(&detail),
+            Some(&self.result.reason),
+            None,
+            result.and_then(|r| r.as_ref().ok().copied()),
+        );
+    }
+
+    fn apply_logged(
+        &self,
+        paths: &[DisplayConfigPathInfo],
+        modes: &[DisplayConfigModeInfo],
+        action: &str,
+    ) -> Result<i32, String> {
+        self.log_write("topology-write-start", action, None);
+        let result = self.opt.ccd.set(paths, modes, CcdConstants::APPLY_FLAGS);
+        self.log_write("topology-write-end", action, Some(&result));
+        result
+    }
+
+    fn topology_logged(&self, flags: u32, action: &str) -> Result<i32, String> {
+        self.log_write("topology-write-start", action, None);
+        let result = self.opt.ccd.set_topology(flags);
+        self.log_write("topology-write-end", action, Some(&result));
+        result
+    }
+
     fn restore_saved(&mut self) {
         self.state = RecoveryState::Restoring;
         self.write_heartbeat("正在恢复物理输出。", None, false);
@@ -905,20 +958,15 @@ impl RecoverySession {
             return;
         }
         self.result.restore_rc = self
-            .opt
-            .ccd
-            .set(
-                &self.saved_paths,
-                &self.saved_modes,
-                CcdConstants::APPLY_FLAGS,
-            )
+            .apply_logged(&self.saved_paths, &self.saved_modes, "baseline-restore")
             .ok();
         self.observe_restoration(10);
         if self.result.restore_state != RestoreState::Complete {
             self.result.fallback_rc = self
-                .opt
-                .ccd
-                .set_topology(CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_INTERNAL)
+                .topology_logged(
+                    CcdConstants::SDC_APPLY | CcdConstants::SDC_TOPOLOGY_INTERNAL,
+                    "internal-fallback",
+                )
                 .ok();
             self.observe_restoration(11);
         }

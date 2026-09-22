@@ -1031,7 +1031,7 @@ fn execution_gap_restores_without_reapply() {
         .iter()
         .filter(|f| **f == CcdConstants::APPLY_FLAGS)
         .count();
-    assert!(later >= apply_count);
+    assert_eq!(later, apply_count + 1, "中断只应回放一次基线");
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(!events.contains("reapply-attempt"));
 }
@@ -1097,6 +1097,13 @@ fn power_resume_restores_without_reapply() {
     write_keep_internal_off(&dir.0, false);
     session.tick();
     assert!(!ccd.rows()[0].active);
+    let before = ccd.flags();
+    for state in [0, 2, 1] {
+        power.push(PowerEvent::DisplayState(state));
+        session.tick();
+        assert!(!session.exited);
+        assert_eq!(ccd.flags(), before);
+    }
     power.push(PowerEvent::Resumed);
     session.tick();
     assert!(session.exited);
@@ -1104,6 +1111,12 @@ fn power_resume_restores_without_reapply() {
     assert!(!session.result.reapply_attempted);
     assert_eq!(session.result.restore_state, RestoreState::Complete);
     assert!(ccd.rows().iter().all(|p| p.active));
+    let restored_flags = ccd.flags();
+    for _ in 0..10 {
+        power.push(PowerEvent::Resumed);
+        session.tick();
+    }
+    assert_eq!(ccd.flags(), restored_flags);
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("power-resume"));
     assert!(!events.contains("reapply-attempt"));
@@ -3528,6 +3541,17 @@ fn owned_coordinator(
     Rc<RefCell<String>>,
     Rc<RefCell<Vec<String>>>,
 ) {
+    owned_coordinator_sequence(vec![disable_rc])
+}
+
+fn owned_coordinator_sequence(
+    mut disable_codes: Vec<i32>,
+) -> (
+    RecoveryCoordinator,
+    Rc<FakeCcd>,
+    Rc<RefCell<String>>,
+    Rc<RefCell<Vec<String>>>,
+) {
     let started = Rc::new(RefCell::new(String::new()));
     let helper = Rc::new(RefCell::new(Vec::new()));
     let ccd = internal_plus_vdd();
@@ -3548,7 +3572,11 @@ fn owned_coordinator(
             hardware.activate_path(1);
             0
         } else {
-            disable_rc
+            if disable_codes.len() > 1 {
+                disable_codes.remove(0)
+            } else {
+                disable_codes[0]
+            }
         }
     });
     let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
@@ -3602,6 +3630,152 @@ fn failed_cleanup_does_not_loop_uac_and_blocks_repeated_exit() {
     assert!(coordinator.has_session());
     assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
     assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn interrupt_cleanup_failure_notifies_once_and_preserves_error_across_polls() {
+    for rc in [1, 1223, 1460] {
+        let (mut coordinator, _, dir, calls) = owned_coordinator(rc);
+        let mut result = complete_result();
+        result.reason = "suspend-resume".into();
+        JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+        coordinator.poll();
+        assert!(coordinator.take_should_show_panel());
+        let error = coordinator.status_text.clone();
+        assert!(error.as_ref().unwrap().contains("辅助虚拟输出"));
+        for _ in 0..100 {
+            coordinator.poll();
+            assert!(!coordinator.take_should_show_panel());
+            assert_eq!(coordinator.status_text, error);
+        }
+        assert_eq!(calls.borrow().iter().filter(|v| *v == "disable").count(), 1);
+        assert!(coordinator.has_session());
+        std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+    }
+}
+
+#[test]
+fn interrupt_cleanup_enumeration_failure_notifies_once() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(0);
+    let mut result = complete_result();
+    result.reason = "suspend-resume".into();
+    JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+    ccd.set_capture_error("unavailable");
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    let error = coordinator.status_text.clone();
+    for _ in 0..100 {
+        coordinator.poll();
+        assert!(!coordinator.take_should_show_panel());
+        assert_eq!(coordinator.status_text, error);
+    }
+    assert!(!calls.borrow().iter().any(|v| v == "disable"));
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn restore_failed_heartbeat_notifies_once_without_final_result() {
+    let (mut coordinator, _, dir, _) = owned_coordinator(0);
+    JsonUtil::write_atomic(
+        SessionPaths::heartbeat(dir.borrow().as_str()),
+        &HeartbeatFile {
+            state: RecoveryState::RestoreFailed,
+            armed: true,
+            hotkey_registered: true,
+            detail: Some("恢复失败，请恢复全部".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    for _ in 0..100 {
+        coordinator.poll();
+        assert!(!coordinator.take_should_show_panel());
+        assert!(coordinator.hotkey_registered);
+    }
+    assert!(!SessionPaths::result(dir.borrow().as_str()).exists());
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn cleanup_only_retry_does_not_publish_release_or_replay_old_result() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(1223);
+    let mut result = complete_result();
+    result.reason = "suspend-resume".into();
+    JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_some());
+    assert!(coordinator.restore_all().is_some());
+    assert!(!SessionPaths::release(dir.borrow().as_str()).exists());
+    assert!(SessionPaths::result(dir.borrow().as_str()).exists());
+    assert_eq!(calls.borrow().iter().filter(|v| *v == "disable").count(), 2);
+    for _ in 0..100 {
+        coordinator.poll();
+        assert!(!coordinator.take_should_show_panel());
+    }
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn successful_cleanup_retry_allows_a_fresh_session_and_notification() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator_sequence(vec![1223, 0]);
+    let old = dir.borrow().clone();
+    let mut result = complete_result();
+    result.reason = "suspend-resume".into();
+    JsonUtil::write_atomic(SessionPaths::result(&old), &result).unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    assert!(coordinator.recovery_block_reason().is_some());
+    assert!(coordinator.restore_all().is_none());
+    assert!(!coordinator.has_session());
+    assert!(coordinator.recovery_block_reason().is_none());
+    assert!(!SessionPaths::release(&old).exists());
+    assert_eq!(calls.borrow().iter().filter(|v| *v == "disable").count(), 2);
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_none());
+    assert_ne!(&old, &*dir.borrow());
+    JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    coordinator.poll();
+    assert!(!coordinator.take_should_show_panel());
+    std::fs::remove_dir_all(old).unwrap();
+    std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
+}
+
+#[test]
+fn lost_physical_output_requires_recovery_before_cleanup_retry() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(1223);
+    let mut result = complete_result();
+    result.reason = "suspend-resume".into();
+    JsonUtil::write_atomic(SessionPaths::result(dir.borrow().as_str()), &result).unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    ccd.deactivate_path(0);
+    assert!(coordinator.restore_all().is_none());
+    assert!(SessionPaths::release(dir.borrow().as_str()).exists());
+    assert!(!SessionPaths::result(dir.borrow().as_str()).exists());
+    assert_eq!(calls.borrow().iter().filter(|v| *v == "disable").count(), 1);
+    JsonUtil::write_atomic(
+        SessionPaths::heartbeat(dir.borrow().as_str()),
+        &HeartbeatFile {
+            state: RecoveryState::RestoreFailed,
+            processed_request_id: u64::MAX,
+            armed: true,
+            hotkey_registered: true,
+            detail: Some("恢复仍未完成".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    coordinator.poll();
+    assert!(coordinator.take_should_show_panel());
+    for _ in 0..100 {
+        coordinator.poll();
+        assert!(!coordinator.take_should_show_panel());
+    }
     std::fs::remove_dir_all(dir.borrow().as_str()).unwrap();
 }
 

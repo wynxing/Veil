@@ -262,10 +262,16 @@ fn disable_all() -> i32 {
 }
 
 fn change_state(instance_id: &str, enable: bool) -> i32 {
+    helper_log(&format!(
+        "device-change-start instance={instance_id} enable={enable}"
+    ));
     let wide = to_wide(instance_id);
     let mut dev_inst = 0u32;
     let locate = unsafe { CM_Locate_DevNodeW(&mut dev_inst, wide.as_ptr(), 0) };
     if locate != 0 {
+        helper_log(&format!(
+            "device-change-end instance={instance_id} locateRc={locate}"
+        ));
         eprintln!("CM_Locate_DevNode {instance_id} -> {locate}");
         return 1;
     }
@@ -274,6 +280,9 @@ fn change_state(instance_id: &str, enable: bool) -> i32 {
     } else {
         unsafe { CM_Disable_DevNode(dev_inst, 0) }
     };
+    helper_log(&format!(
+        "device-change-end instance={instance_id} enable={enable} configRet={rc}"
+    ));
     if rc != 0 {
         eprintln!(
             "{} {instance_id} -> {rc}",
