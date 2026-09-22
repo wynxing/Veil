@@ -1,6 +1,6 @@
 use crate::capability::{resolved_screen_name, DisplaySnapshot, Gate, KeepOffAction};
 use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey,
+    CcdAbi, CcdApi, CcdConstants, CcdFrame, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey,
     MonotonicClock, ParentWatcher, PowerEvent, PowerObserver,
 };
 use crate::session::{
@@ -70,6 +70,9 @@ pub struct RecoverySession {
     reapply_attempted: bool,
     waiting_vdd: bool,
     vdd_wait_start: f64,
+    vdd_activate_attempted: bool,
+    vdd_instance_seen: bool,
+    last_virtual_adapters: Option<String>,
     hotkey_registered: bool,
     started: f64,
     previous: f64,
@@ -100,6 +103,9 @@ impl RecoverySession {
             reapply_attempted: false,
             waiting_vdd: false,
             vdd_wait_start: 0.0,
+            vdd_activate_attempted: false,
+            vdd_instance_seen: false,
+            last_virtual_adapters: None,
             hotkey_registered: false,
             started: 0.0,
             previous: 0.0,
@@ -1194,6 +1200,9 @@ impl RecoverySession {
 
     fn request_bundled_vdd(&mut self) {
         self.waiting_vdd = true;
+        self.vdd_activate_attempted = false;
+        self.vdd_instance_seen = false;
+        self.last_virtual_adapters = None;
         self.vdd_wait_start = self.opt.clock.seconds();
         let write = JsonUtil::write_atomic(
             SessionPaths::vdd_request(&self.opt.directory),
@@ -1228,6 +1237,16 @@ impl RecoverySession {
                 None,
                 None,
             );
+            if !self.vdd_instance_seen {
+                SessionLog::append(
+                    &self.opt.directory,
+                    "apply-blocked",
+                    Some("全部路径里没有辅助虚拟输出设备。"),
+                    None,
+                    None,
+                    None,
+                );
+            }
             let reason = if self.result.reason.is_empty() || self.result.reason == "not-armed" {
                 "execution-gap".into()
             } else {
@@ -1236,17 +1255,40 @@ impl RecoverySession {
             self.finish(&reason, true);
             return;
         }
-        let Ok(snap) = self
-            .opt
-            .ccd
-            .capture(CcdConstants::QUERY_FLAGS)
-            .map(|f| f.snapshot)
-        else {
+        let Ok(active) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) else {
             return;
         };
-        if !snap.has_active_bundled_vdd() {
+        if active.snapshot.has_active_bundled_vdd() {
+            self.vdd_instance_seen = true;
+            self.proceed_after_vdd(now);
             return;
         }
+        let Ok(all) = self.opt.ccd.capture(CcdConstants::ALL_PATH_FLAGS) else {
+            return;
+        };
+        self.note_virtual_adapters(&all.snapshot);
+        if all.snapshot.paths.iter().any(|row| row.is_bundled_vdd()) {
+            self.vdd_instance_seen = true;
+        }
+        let inactive = all
+            .snapshot
+            .paths
+            .iter()
+            .any(|row| row.is_bundled_vdd() && !row.active);
+        if inactive && !self.vdd_activate_attempted {
+            self.vdd_activate_attempted = true;
+            if self.activate_inactive_bundled(&all) {
+                let Ok(after) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) else {
+                    return;
+                };
+                if after.snapshot.has_active_bundled_vdd() {
+                    self.proceed_after_vdd(now);
+                }
+            }
+        }
+    }
+
+    fn proceed_after_vdd(&mut self, now: f64) {
         let _ = std::fs::remove_file(SessionPaths::vdd_request(&self.opt.directory));
         SessionLog::append(&self.opt.directory, "vdd-ready", None, None, None, None);
         let selected: Vec<_> = self
@@ -1262,6 +1304,113 @@ impl RecoverySession {
         }
         let reason = self.result.reason.clone();
         self.finish(&reason, true);
+    }
+
+    fn note_virtual_adapters(&mut self, snapshot: &DisplaySnapshot) {
+        let mut paths: Vec<_> = snapshot
+            .paths
+            .iter()
+            .filter(|row| row.role == crate::PathRole::Virtual)
+            .map(|row| row.adapter_path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        let text = if paths.is_empty() {
+            "没有虚拟适配器路径".to_string()
+        } else {
+            paths.join(" | ")
+        };
+        if self.last_virtual_adapters.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        self.last_virtual_adapters = Some(text.clone());
+        SessionLog::append(
+            &self.opt.directory,
+            "vdd-paths",
+            Some(&text),
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn activate_inactive_bundled(&mut self, frame: &CcdFrame) -> bool {
+        if frame.paths.len() != frame.snapshot.paths.len() {
+            self.write_heartbeat("全部路径与描述数量不一致，未改拓扑。", None, true);
+            return false;
+        }
+        let selected: Vec<_> = self
+            .intent
+            .keep_off
+            .iter()
+            .map(|item| item.to_identity())
+            .collect();
+        let mut paths = frame.paths.clone();
+        let mut activated = false;
+        for (path, row) in paths.iter_mut().zip(frame.snapshot.paths.iter()) {
+            if row.is_bundled_vdd() && !row.active {
+                path.flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
+                activated = true;
+            } else if row.is_physical()
+                && !row.active
+                && selected.iter().any(|id| id.matches(&row.identity()))
+            {
+                path.flags &= !CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
+            }
+        }
+        if !activated {
+            return false;
+        }
+        let modes = frame.modes.clone();
+        let validate_rc = match self
+            .opt
+            .ccd
+            .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
+        {
+            Ok(rc) => rc,
+            Err(error) => {
+                self.write_heartbeat(&error, Some(&selected), true);
+                return false;
+            }
+        };
+        if validate_rc != 0 {
+            SessionLog::append(
+                &self.opt.directory,
+                "apply-blocked",
+                Some(&format!("激活辅助路径校验 {validate_rc}，未改拓扑。")),
+                None,
+                None,
+                Some(validate_rc),
+            );
+            return false;
+        }
+        let apply_rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::APPLY_FLAGS) {
+            Ok(rc) => rc,
+            Err(error) => {
+                self.write_heartbeat(&error, Some(&selected), true);
+                return false;
+            }
+        };
+        if apply_rc != 0 {
+            SessionLog::append(
+                &self.opt.directory,
+                "apply-failed",
+                Some(&format!("激活辅助路径 APPLY {apply_rc}")),
+                None,
+                None,
+                Some(apply_rc),
+            );
+            return false;
+        }
+        SessionLog::append(
+            &self.opt.directory,
+            "vdd-activate",
+            Some("已把未活动的辅助路径标为活动，已关物理屏保持关闭。"),
+            None,
+            None,
+            Some(apply_rc),
+        );
+        true
     }
 }
 

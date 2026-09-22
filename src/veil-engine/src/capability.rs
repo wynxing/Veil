@@ -82,7 +82,15 @@ impl PathRow {
 
     pub fn is_bundled_vdd(&self) -> bool {
         self.role == PathRole::Virtual
-            && Roles::is_bundled_vdd(&self.adapter_path, &self.monitor_path, &self.monitor_name)
+            && (Roles::is_bundled_vdd(&self.adapter_path, &self.monitor_path, &self.monitor_name)
+                || crate::devices::known_bundled_instance_ids()
+                    .iter()
+                    .any(|instance| {
+                        crate::driver_policy::adapter_matches_bundled_instance(
+                            &self.adapter_path,
+                            instance,
+                        )
+                    }))
     }
 
     pub fn display_name(&self) -> String {

@@ -1,27 +1,17 @@
-use std::ffi::{OsStr, OsString};
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::ffi::OsStr;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::ptr;
 use veil_engine::driver_policy::{
     installation_result, plan_enable_driver, plan_install_driver, EnableDriverPlan,
     InstallDriverPlan,
 };
 use veil_engine::{BundledVddSettings, CcdApi, CcdConstants, JsonUtil, Win32CcdApi};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Disable_DevNode, CM_Enable_DevNode, CM_Locate_DevNodeW, SetupDiDestroyDeviceInfoList,
-    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW,
-    SetupDiGetDeviceRegistryPropertyW, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
+    CM_Disable_DevNode, CM_Enable_DevNode, CM_Locate_DevNodeW,
 };
 mod retire;
-use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_ITEMS, INVALID_HANDLE_VALUE};
 
 const HARDWARE_ID: &str = CcdConstants::BUNDLED_HARDWARE_ID;
-const DISPLAY_CLASS: windows_sys::core::GUID = windows_sys::core::GUID {
-    data1: 0x4d36e968,
-    data2: 0xe325,
-    data3: 0x11ce,
-    data4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18],
-};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -295,103 +285,7 @@ fn change_state(instance_id: &str, enable: bool) -> i32 {
 }
 
 fn find_instance_ids() -> Result<Vec<String>, String> {
-    let mut found = Vec::new();
-    let mut guid = DISPLAY_CLASS;
-    let set = unsafe { SetupDiGetClassDevsW(&mut guid, ptr::null(), ptr::null_mut(), 0) };
-    if set == INVALID_HANDLE_VALUE as isize {
-        return Err("无法枚举显示设备。".into());
-    }
-    let mut data: SP_DEVINFO_DATA = unsafe { std::mem::zeroed() };
-    data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
-    let mut i = 0u32;
-    while unsafe { SetupDiEnumDeviceInfo(set, i, &mut data) } != 0 {
-        i += 1;
-        let ids = hardware_ids(set, &mut data);
-        if !ids.iter().any(|id| id.eq_ignore_ascii_case(HARDWARE_ID)) {
-            continue;
-        }
-        if let Some(instance) = instance_id(set, &mut data) {
-            found.push(instance);
-        }
-    }
-    let enumeration_error = unsafe { GetLastError() };
-    unsafe { SetupDiDestroyDeviceInfoList(set) };
-    if enumeration_error != ERROR_NO_MORE_ITEMS {
-        return Err(format!("设备枚举未完成：{enumeration_error}"));
-    }
-    Ok(found)
-}
-
-fn hardware_ids(set: isize, data: &mut SP_DEVINFO_DATA) -> Vec<String> {
-    let mut size = 0u32;
-    unsafe {
-        SetupDiGetDeviceRegistryPropertyW(
-            set,
-            data,
-            SPDRP_HARDWAREID,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            0,
-            &mut size,
-        );
-    }
-    if size == 0 {
-        return vec![];
-    }
-    let mut buf = vec![0u8; size as usize];
-    let ok = unsafe {
-        SetupDiGetDeviceRegistryPropertyW(
-            set,
-            data,
-            SPDRP_HARDWAREID,
-            ptr::null_mut(),
-            buf.as_mut_ptr(),
-            size,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return vec![];
-    }
-    let u16s: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    split_multi_sz(&u16s)
-}
-
-fn instance_id(set: isize, data: &mut SP_DEVINFO_DATA) -> Option<String> {
-    let mut buf = vec![0u16; 1024];
-    let ok = unsafe {
-        SetupDiGetDeviceInstanceIdW(
-            set,
-            data,
-            buf.as_mut_ptr(),
-            buf.len() as u32,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-    Some(from_wide_z(&buf))
-}
-
-fn split_multi_sz(buf: &[u16]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    for (i, &c) in buf.iter().enumerate() {
-        if c == 0 {
-            if i > start {
-                out.push(String::from_utf16_lossy(&buf[start..i]));
-            }
-            start = i + 1;
-            if i + 1 < buf.len() && buf[i + 1] == 0 {
-                break;
-            }
-        }
-    }
-    out.into_iter().filter(|s| !s.is_empty()).collect()
+    veil_engine::enumerate_bundled_instances()
 }
 
 fn run(file: &Path, args: &str) -> i32 {
@@ -455,11 +349,4 @@ fn to_wide(s: &str) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
-}
-
-fn from_wide_z(buf: &[u16]) -> String {
-    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    OsString::from_wide(&buf[..end])
-        .to_string_lossy()
-        .into_owned()
 }

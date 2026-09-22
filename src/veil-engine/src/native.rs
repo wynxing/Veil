@@ -23,6 +23,7 @@ pub struct CcdConstants;
 impl CcdConstants {
     pub const ERROR_SUCCESS: i32 = 0;
     pub const ERROR_INSUFFICIENT_BUFFER: i32 = 122;
+    pub const QDC_ALL_PATHS: u32 = 0x00000001;
     pub const QDC_ONLY_ACTIVE_PATHS: u32 = 0x00000002;
     pub const QDC_VIRTUAL_MODE_AWARE: u32 = 0x00000010;
     pub const QDC_VIRTUAL_REFRESH_RATE_AWARE: u32 = 0x00000040;
@@ -49,6 +50,8 @@ impl CcdConstants {
     pub const QUERY_FLAGS: u32 = Self::QDC_ONLY_ACTIVE_PATHS
         | Self::QDC_VIRTUAL_MODE_AWARE
         | Self::QDC_VIRTUAL_REFRESH_RATE_AWARE;
+    pub const ALL_PATH_FLAGS: u32 =
+        Self::QDC_ALL_PATHS | Self::QDC_VIRTUAL_MODE_AWARE | Self::QDC_VIRTUAL_REFRESH_RATE_AWARE;
     pub const SET_BASE_FLAGS: u32 = Self::SDC_USE_SUPPLIED_DISPLAY_CONFIG
         | Self::SDC_ALLOW_CHANGES
         | Self::SDC_VIRTUAL_MODE_AWARE
@@ -304,9 +307,7 @@ pub struct CcdFrame {
 
 pub trait CcdApi {
     fn connected_physical(&self) -> Result<Vec<crate::ScreenIdentity>, String> {
-        let frame = self.capture(
-            1 | CcdConstants::QDC_VIRTUAL_MODE_AWARE | CcdConstants::QDC_VIRTUAL_REFRESH_RATE_AWARE,
-        )?;
+        let frame = self.capture(CcdConstants::ALL_PATH_FLAGS)?;
         let mut connected = Vec::new();
         for (path, row) in frame.paths.iter().zip(frame.snapshot.paths.iter()) {
             if path.target_info.target_available != 0 && row.is_physical() {

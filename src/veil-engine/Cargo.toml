@@ -11,6 +11,7 @@ serde_json = "1"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 windows-sys = { version = "0.59", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",

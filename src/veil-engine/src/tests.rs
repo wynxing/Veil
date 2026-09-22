@@ -2946,6 +2946,190 @@ fn second_physical_intent_is_published_before_vdd_enable() {
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
+const DISPLAY_INSTANCE: &str = r"ROOT\DISPLAY\0002";
+const DISPLAY_INSTANCE_ADAPTER: &str =
+    r"\\?\ROOT#DISPLAY#0002#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+
+fn display_instance_row(active: bool, target_id: u32) -> crate::PathRow {
+    fakes::row(
+        PathRole::Virtual,
+        active,
+        target_id,
+        "Generic Monitor",
+        DISPLAY_INSTANCE_ADAPTER,
+        r"\\?\DISPLAY#ABC123#1",
+        "0000000000000001",
+    )
+}
+
+#[test]
+fn display_instance_row_is_bundled_and_gameviewer_is_not() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let bundled = display_instance_row(true, 3);
+    assert!(bundled.is_bundled_vdd());
+    let gameviewer = fakes::row(
+        PathRole::Virtual,
+        true,
+        4,
+        "GameViewer",
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GVV0001",
+        "0000000000000001",
+    );
+    assert!(!gameviewer.is_bundled_vdd());
+    assert!(DriverStatus::installed());
+}
+
+#[test]
+fn active_display_instance_does_not_restore_second_close() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = dual_physical();
+    let mut hooks = coord_hooks(
+        started.clone(),
+        helper.clone(),
+        true,
+        true,
+        Some(true),
+        Duration::from_secs(2),
+    );
+    let dir_for_enable = started.clone();
+    let ccd_for_enable = ccd.clone();
+    hooks.run_driver_helper = Box::new(move |verb| {
+        if verb == "enable" {
+            let intent: IntentFile =
+                JsonUtil::read(SessionPaths::intent(dir_for_enable.borrow().as_str())).unwrap();
+            assert_eq!(intent.keep_off.len(), 2);
+            let mut paths = ccd_for_enable.paths();
+            let mut rows = ccd_for_enable.rows();
+            paths.push(fakes::path_default(false, 3));
+            rows.push(display_instance_row(true, 3));
+            ccd_for_enable.set_paths_rows(paths, rows);
+        }
+        0
+    });
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let ids: Vec<_> = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .map(|row| row.identity())
+        .collect();
+    assert!(coordinator.keep_off(ids[0].clone()).is_none());
+    assert!(coordinator.keep_off(ids[1].clone()).is_none());
+    let dir = started.borrow().clone();
+    assert!(!SessionPaths::release(&dir).exists());
+    let intent: IntentFile = JsonUtil::read(SessionPaths::intent(&dir)).unwrap();
+    assert_eq!(intent.keep_off.len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn inactive_display_instance_is_activated_before_both_physical_stay_off() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        true,
+    );
+    session.tick();
+    assert!(!session.exited);
+
+    let mut paths = ccd.paths();
+    let mut rows = ccd.rows();
+    paths.push(fakes::path(false, false, 3, 0x0001FFFF, 1));
+    rows.push(display_instance_row(false, 3));
+    ccd.set_paths_rows(paths, rows);
+    session.tick();
+
+    assert!(!session.exited);
+    assert!(!ccd.rows()[0].active, "内置屏应保持关闭");
+    assert!(!ccd.rows()[1].active, "外接屏应保持关闭");
+    assert!(ccd
+        .rows()
+        .iter()
+        .any(|row| row.is_bundled_vdd() && row.active));
+    assert!(
+        !ccd.applied_paths()
+            .iter()
+            .any(|paths| both_physical_targets_active(paths)),
+        "激活辅助路径时不能把两块物理屏一起点亮"
+    );
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("ROOT#DISPLAY#0002"));
+    assert!(events.contains("vdd-activate"));
+}
+
+#[test]
+fn missing_display_instance_restores_once() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let clock = Rc::new(SharedClock::new(0.0));
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        clock.clone(),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        true,
+    );
+    session.tick();
+    assert!(!session.exited);
+    let before = ccd
+        .flags()
+        .iter()
+        .filter(|flag| **flag == CcdConstants::APPLY_FLAGS)
+        .count();
+    clock.set(30.0);
+    session.tick();
+    assert!(session.exited);
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(events.contains("全部路径里没有辅助虚拟输出设备"));
+    let after = ccd
+        .flags()
+        .iter()
+        .filter(|flag| **flag == CcdConstants::APPLY_FLAGS)
+        .count();
+    assert!(after <= before + 1);
+    session.tick();
+    assert_eq!(
+        after,
+        ccd.flags()
+            .iter()
+            .filter(|flag| **flag == CcdConstants::APPLY_FLAGS)
+            .count()
+    );
+}
+
 #[test]
 fn clone_failure_cannot_repeat_on_later_ticks() {
     let dir = TempSession::new();

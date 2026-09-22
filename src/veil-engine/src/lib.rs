@@ -1,5 +1,6 @@
 pub mod capability;
 pub mod coordinator;
+pub mod devices;
 pub mod driver_policy;
 pub mod fakes;
 pub mod maintenance;
@@ -18,6 +19,9 @@ pub use capability::{
     Roles, ScreenIdentity,
 };
 pub use coordinator::{DriverStatus, RecoveryCoordinator, RecoveryCoordinatorHooks};
+pub use devices::{
+    enumerate_bundled_instances, override_bundled_instances, BundledInstanceOverride,
+};
 pub use native::{
     CcdAbi, CcdApi, CcdConstants, CcdFrame, DisplayConfigModeInfo, DisplayConfigPathInfo,
     DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,

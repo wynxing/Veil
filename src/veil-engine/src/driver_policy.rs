@@ -29,6 +29,46 @@ pub enum EnableDriverPlan {
     Nothing,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayDevice {
+    pub instance_id: String,
+    pub hardware_ids: Vec<String>,
+}
+
+pub fn bundled_instance_ids(devices: &[DisplayDevice]) -> Vec<String> {
+    let hardware = crate::CcdConstants::BUNDLED_HARDWARE_ID;
+    devices
+        .iter()
+        .filter(|device| {
+            device
+                .hardware_ids
+                .iter()
+                .any(|id| id.eq_ignore_ascii_case(hardware))
+        })
+        .map(|device| device.instance_id.clone())
+        .collect()
+}
+
+pub fn adapter_matches_bundled_instance(adapter_path: &str, instance_id: &str) -> bool {
+    let token = normalize_device_path(instance_id);
+    if token.is_empty() {
+        return false;
+    }
+    let haystack = normalize_device_path(adapter_path);
+    let Some(at) = haystack.find(&token) else {
+        return false;
+    };
+    haystack[at + token.len()..]
+        .chars()
+        .next()
+        .map(|c| !c.is_ascii_alphanumeric())
+        .unwrap_or(true)
+}
+
+fn normalize_device_path(value: &str) -> String {
+    value.trim().replace('\\', "#").to_lowercase()
+}
+
 pub fn plan_enable_driver(owned: &[String], current: &[String]) -> EnableDriverPlan {
     let matched: Vec<String> = owned
         .iter()
@@ -82,5 +122,39 @@ mod tests {
             EnableDriverPlan::Nothing
         );
         assert_eq!(plan_enable_driver(&[], &[]), EnableDriverPlan::Nothing);
+    }
+
+    #[test]
+    fn display_instance_with_mtt_hardware_id_counts_as_installed() {
+        let devices = [
+            DisplayDevice {
+                instance_id: r"ROOT\DISPLAY\0002".into(),
+                hardware_ids: vec![r"Root\MttVDD".into()],
+            },
+            DisplayDevice {
+                instance_id: r"ROOT\DISPLAY\0000".into(),
+                hardware_ids: vec!["Root\\GameViewer".into()],
+            },
+        ];
+        assert_eq!(
+            bundled_instance_ids(&devices),
+            vec![r"ROOT\DISPLAY\0002".to_string()]
+        );
+    }
+
+    #[test]
+    fn idd_adapter_path_matches_display_instance_not_other_root_display() {
+        assert!(adapter_matches_bundled_instance(
+            r"\\?\ROOT#DISPLAY#0002#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+            r"ROOT\DISPLAY\0002",
+        ));
+        assert!(!adapter_matches_bundled_instance(
+            r"ROOT\DISPLAY\0000",
+            r"ROOT\DISPLAY\0002",
+        ));
+        assert!(!adapter_matches_bundled_instance(
+            r"\\?\ROOT#DISPLAY#00021#{guid}",
+            r"ROOT\DISPLAY\0002",
+        ));
     }
 }

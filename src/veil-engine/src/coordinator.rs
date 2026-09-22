@@ -762,31 +762,7 @@ impl DriverStatus {
     }
 
     pub fn installed() -> bool {
-        // 安装包文件不等于已装设备。P15 上可能只留下 INF，设备从未装过。
-        bundled_vdd_device_present()
-    }
-}
-
-fn bundled_vdd_device_present() -> bool {
-    registry_key_exists(r"SYSTEM\CurrentControlSet\Enum\ROOT\MttVDD")
-        || registry_key_exists(r"SYSTEM\CurrentControlSet\Enum\ROOT\MTTVDD")
-}
-
-fn registry_key_exists(subkey: &str) -> bool {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, HKEY_LOCAL_MACHINE, KEY_READ,
-    };
-    let wide: Vec<u16> = OsStr::new(subkey).encode_wide().chain(Some(0)).collect();
-    let mut key = std::ptr::null_mut();
-    let rc = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, wide.as_ptr(), 0, KEY_READ, &mut key) };
-    if rc == ERROR_SUCCESS {
-        unsafe { RegCloseKey(key) };
-        true
-    } else {
-        false
+        !crate::devices::known_bundled_instance_ids().is_empty()
     }
 }
 
