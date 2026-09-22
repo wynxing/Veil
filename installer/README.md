@@ -1,6 +1,6 @@
 # Veil 安装器
 
-传统 WiX 5 Burn 引导 EXE + 应用 MSI。安装包代码签名未做，**不得标为可公开安装**。
+传统 WiX 5 Burn 引导 EXE + 应用 MSI。安装包没有 Authenticode。无签名预览的发布边界见 [doc/RELEASE.md](../doc/RELEASE.md)。
 
 ## 构建
 
@@ -9,7 +9,7 @@
 3. 运行 `installer/pack.ps1`：用 `cargo build --release` 产出三个 exe（拷成 `Veil.*.exe`）并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
 4. 打 `v*` 标签后由 CI 挂 GitHub prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
 
-无 payload 时不得打出缺驱动的包。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。这不是可公开安装。
+无 payload 时不得打出缺驱动的包。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。
 
 ## 安装行为
 
@@ -21,7 +21,7 @@
 
 ## vdd_settings.xml 路径
 
-产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者。哈希与发布者指纹见 [payload.manifest.json](payload.manifest.json)。这不是可公开安装。
+产品把 INF/DLL 放到 `%ProgramFiles%\Veil\vdd`，并把 `vdd_settings.xml` 同时写到该目录与 **`C:\VirtualDisplayDriver`**。对捆绑 `MttVDD.dll` 的只读字符串检查显示驱动写死后者。哈希与发布者指纹见 [payload.manifest.json](payload.manifest.json)。再分发许可见仓库根目录 `NOTICE`。
 
 ## 可靠性门禁（协议 v2）
 

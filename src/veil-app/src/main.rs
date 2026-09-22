@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod panel_window;
+mod update;
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -246,6 +247,10 @@ struct VeilApp {
     holding: bool,
     topology_fingerprint: String,
     exiting: bool,
+    update_offer: Option<update::UpdateOffer>,
+    update_inflight: bool,
+    update_arm: bool,
+    update_slot: Arc<Mutex<Option<Option<update::UpdateOffer>>>>,
 }
 
 impl VeilApp {
@@ -278,6 +283,10 @@ impl VeilApp {
             holding: false,
             topology_fingerprint: String::new(),
             exiting: false,
+            update_offer: None,
+            update_inflight: false,
+            update_arm: true,
+            update_slot: Arc::new(Mutex::new(None)),
         };
         app_log("界面对象已创建。");
         ctx.request_repaint();
@@ -337,6 +346,7 @@ impl VeilApp {
         }
         self.panel.hide();
         self.panel_open = false;
+        self.update_arm = true;
     }
 
     fn restore_all_from_tray(&mut self, ctx: &egui::Context) {
@@ -461,6 +471,7 @@ impl eframe::App for VeilApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let hwnd = PanelWindow::hwnd_from_frame(frame);
         self.ensure_tray(ctx);
+        self.consider_update();
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
             if self.open_id.as_ref() == Some(&ev.id) {
                 self.queue(TrayCommand::Open);
@@ -610,6 +621,12 @@ impl eframe::App for VeilApp {
                 set_startup(startup);
                 self.startup = startup;
             }
+            if let Some(offer) = self.update_offer.clone() {
+                ui.label(format!("有新版本 {}", offer.version));
+                if ui.button("查看更新").clicked() && !update::open_release_page(&offer.url) {
+                    self.detail = "没能打开发布页。".into();
+                }
+            }
             if ui.button("退出").clicked() {
                 self.try_exit(ctx);
             }
@@ -634,6 +651,43 @@ impl eframe::App for VeilApp {
 }
 
 impl VeilApp {
+    fn consider_update(&mut self) {
+        if self.exiting {
+            return;
+        }
+        if self.update_inflight {
+            let finished = self
+                .update_slot
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            if let Some(offer) = finished {
+                self.update_inflight = false;
+                self.update_offer = offer;
+            }
+            return;
+        }
+        if !self.panel_open {
+            self.update_arm = true;
+            return;
+        }
+        if !self.update_arm {
+            return;
+        }
+        self.update_arm = false;
+        match update::fresh_cached_offer(update::unix_now()) {
+            update::CacheRead::Fresh(offer) => self.update_offer = offer,
+            update::CacheRead::Due => {
+                self.update_inflight = true;
+                let slot = Arc::clone(&self.update_slot);
+                std::thread::spawn(move || {
+                    let offer = update::check_remote();
+                    *slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(offer);
+                });
+            }
+        }
+    }
+
     fn poll_show(&self) -> bool {
         if self.show_event.is_null() {
             return false;

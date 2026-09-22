@@ -1,8 +1,8 @@
 # Veil 技术架构
 
 版本：1.10  
-状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。辅助输出随应用带文件，安装时或面板装设备，已有同一 MTT 则接管。日常预览可用。公开产品未发布。私有预览打包流程见 [RELEASE.md](RELEASE.md)，不是可公开安装。  
-日期：2026-09-21
+状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。辅助输出随应用带文件，安装时或面板装设备，已有同一 MTT 则接管。源码公开。安装包是无签名预览，不是已签名的公开发布。打包流程见 [RELEASE.md](RELEASE.md)。  
+日期：2026-09-22
 
 本文是公开产品的实现架构。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。没有实测证据的条目不得写成已完成或已兼容。
 
@@ -150,6 +150,7 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 - 面板：已连接物理屏列表、每块保持关闭/恢复、底部恢复全部、开机自启（默认关，写当前用户 Startup）、热键状态
 - DPI：`PerMonitorV2`
 - 退出：先 `release` 并等待恢复结果；超时或失败则报告，不默默退出
+- 更新：面板打开时最多每 24 小时向 `wynxing/Veil` 的 GitHub Releases 查询一次。有更新则在面板提示，并打开发布页。不下载、不启动安装包。查询失败不提示。恢复进程不访问网络。
 
 托盘图标用 Win32 `Shell_NotifyIcon`（`tray-icon`）。不引入浏览器控件。Windows 上关面板不调用 eframe 0.31 的 `Visible(false)`，也不 `SW_HIDE`：二者都会让 winit 停泵消息，托盘再显示会卡住。关面板时把窗口停到屏幕外并保持可见，每帧维持 `WS_EX_TOOLWINDOW` 与 `ITaskbarList::DeleteTab`，事件循环继续跑。恢复时不得把停泊坐标（约 `-32000,-32000`）当正常位置；记忆矩形只接受屏幕上足够大的窗口，打开时用 `SetWindowPlacement` 拉回工作区。这是实现对 Windows + eframe 0.31 的约束。
 
@@ -213,4 +214,4 @@ tools/show-session.ps1    打印最近一次产品会话记录
 | 日常使用 | 面板点选、托盘开关、关屏与恢复 | API 成功单独不算通过 |
 | 发布 | 能力检测失败则禁用并说明原因 | 不把未测 GPU / 系统写入支持列表 |
 
-安装包签名、驱动同意文案、卸载恢复，均属发布门禁；未做不得标「可公开安装」。私有仓库可用无签名预览包供协作者下载自用，流程见 [RELEASE.md](RELEASE.md)。
+安装包签名仍未做。公开仓库提供的是无签名预览包，不是已签名的公开发布。流程见 [RELEASE.md](RELEASE.md)。

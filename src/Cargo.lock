@@ -3140,6 +3140,8 @@ dependencies = [
  "eframe",
  "egui",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "tray-icon",
  "veil-engine",
  "windows-sys 0.59.0",
