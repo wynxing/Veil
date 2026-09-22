@@ -1037,6 +1037,40 @@ fn execution_gap_restores_without_reapply() {
 }
 
 #[test]
+fn slow_apply_is_not_an_execution_gap() {
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let clock = Rc::new(SharedClock::new(0.0));
+    let jump = clock.clone();
+    ccd.set_after_apply(move |_| {
+        let now = *jump.seconds.borrow();
+        jump.set(now + 5.0);
+    });
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        clock,
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    assert!(
+        !session.exited,
+        "关屏耗时超过间隔阈值时不应回放基线"
+    );
+    assert_ne!(session.result.reason, "execution-gap");
+    session.tick();
+    assert!(!session.exited);
+    assert_ne!(session.result.reason, "execution-gap");
+}
+
+#[test]
 fn suspend_ignores_topology_churn_until_resume() {
     let dir = TempSession::new();
     let ccd = dual_physical();
@@ -1750,6 +1784,59 @@ fn session_result_clears_keep_off_heartbeat() {
     assert!(!coordinator.hotkey_registered);
     assert!(!helper.borrow().iter().any(|v| v == "disable"));
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
+}
+
+#[test]
+fn restore_without_session_file_does_not_launch_recovery() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let launches = Rc::new(RefCell::new(0u32));
+    let started_hook = started.clone();
+    let launches_hook = launches.clone();
+    let hooks = RecoveryCoordinatorHooks {
+        start_recovery: Box::new(move |dir, _| {
+            *launches_hook.borrow_mut() += 1;
+            *started_hook.borrow_mut() = dir.to_string();
+            JsonUtil::write_atomic(
+                SessionPaths::ready(dir),
+                &ReadyFile {
+                    pid: 4242,
+                    hotkey_registered: true,
+                    hotkey: CcdConstants::HOTKEY_TEXT.into(),
+                },
+            )
+            .unwrap();
+            4242
+        }),
+        run_driver_helper: Box::new(|_| 0),
+        confirm_enable_vdd: None,
+        bundled_vdd_installed: Box::new(|| false),
+        bundled_vdd_payload: Box::new(|| false),
+        is_alive: Box::new(|_| false),
+        virtual_path_wait: Duration::from_secs(15),
+    };
+    let ccd = dual_physical();
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .find(|row| row.role == PathRole::Internal)
+        .unwrap()
+        .identity();
+    assert!(coordinator.keep_off(identity).is_none());
+    let dir = started.borrow().clone();
+    let before = *launches.borrow();
+    assert!(before >= 1);
+    std::fs::remove_file(SessionPaths::metadata(&dir)).unwrap();
+    assert!(coordinator.restore_all().is_none());
+    assert_eq!(*launches.borrow(), before);
+    assert!(!coordinator.has_session());
+    assert!(coordinator
+        .status_text
+        .as_deref()
+        .unwrap()
+        .contains("会话文件"));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

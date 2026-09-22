@@ -453,6 +453,17 @@ impl RecoveryCoordinator {
             return None;
         };
         let request_id = crate::session::request_id();
+        if !SessionPaths::metadata(&dir).exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+            self.directory = None;
+            self.baseline = None;
+            self.recovery_pid = 0;
+            self.vdd_owned = false;
+            self.last_outcome = None;
+            self.result_consumed = false;
+            self.status_text = Some("这次关屏没有留下会话文件，已取消。可以再关一次。".into());
+            return None;
+        }
         // Retry only the failed device cleanup when all still-connected baseline
         // physical targets are active. Never replay a saved topology just for UAC.
         if self.result_consumed
@@ -785,38 +796,51 @@ impl RecoveryCoordinator {
     }
 
     fn prepare_directory(&mut self) -> Result<(), String> {
+        if self.baseline.is_none() {
+            self.baseline = Some(self.ccd.capture(CcdConstants::QUERY_FLAGS)?);
+        }
+        let creating = self.directory.is_none();
         let dir = self
             .directory
             .clone()
             .unwrap_or_else(SessionPaths::new_session_directory);
-        self.directory = Some(dir.clone());
-        let baseline = self.baseline.as_ref().ok_or("缺少恢复基线。")?;
-        TopologyBlob::save(
-            SessionPaths::baseline(&dir),
-            &baseline.paths,
-            &baseline.modes,
-        )?;
+        let baseline = self.baseline.clone().ok_or("缺少恢复基线。")?;
         let handshake = self
             .ccd
             .capture(CcdConstants::QUERY_FLAGS)
             .unwrap_or_else(|_| baseline.clone());
-        TopologyBlob::save(
-            SessionPaths::topology(&dir),
-            &handshake.paths,
-            &handshake.modes,
-        )?;
-        JsonUtil::write_atomic(
-            SessionPaths::metadata(&dir),
-            &SessionMetadata {
-                protocol_version: PROTOCOL_VERSION,
-                physical_targets: baseline
-                    .snapshot
-                    .active_physical()
-                    .map(|p| ScreenIdentityDto::from_identity(&p.identity()))
-                    .collect(),
-                vdd_owned: self.vdd_owned,
-            },
-        )?;
+        let write_session = || -> Result<(), String> {
+            TopologyBlob::save(
+                SessionPaths::baseline(&dir),
+                &baseline.paths,
+                &baseline.modes,
+            )?;
+            TopologyBlob::save(
+                SessionPaths::topology(&dir),
+                &handshake.paths,
+                &handshake.modes,
+            )?;
+            JsonUtil::write_atomic(
+                SessionPaths::metadata(&dir),
+                &SessionMetadata {
+                    protocol_version: PROTOCOL_VERSION,
+                    physical_targets: baseline
+                        .snapshot
+                        .active_physical()
+                        .map(|p| ScreenIdentityDto::from_identity(&p.identity()))
+                        .collect(),
+                    vdd_owned: self.vdd_owned,
+                },
+            )?;
+            Ok(())
+        };
+        if let Err(error) = write_session() {
+            if creating {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            return Err(error);
+        }
+        self.directory = Some(dir);
         Ok(())
     }
 

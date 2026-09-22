@@ -227,6 +227,11 @@ impl RecoverySession {
                 self.fail("error", Some(&ex), self.holding || self.armed);
             }
         }
+        // Stamp liveness after blocking display calls. The gap is the time the
+        // loop was not running, not the time spent applying a topology.
+        if !self.exited {
+            self.previous = self.opt.clock.seconds();
+        }
     }
 
     fn tick_core(&mut self) -> Result<(), String> {
@@ -1338,7 +1343,7 @@ impl RecoverySession {
         }
     }
 
-    fn proceed_after_vdd(&mut self, now: f64) {
+    fn proceed_after_vdd(&mut self, _now: f64) {
         let _ = std::fs::remove_file(SessionPaths::vdd_request(&self.opt.directory));
         SessionLog::append(&self.opt.directory, "vdd-ready", None, None, None, None);
         let selected: Vec<_> = self
@@ -1349,7 +1354,7 @@ impl RecoverySession {
             .collect();
         self.waiting_vdd = false;
         if self.try_apply(&selected, true) && self.holding {
-            self.previous = now;
+            self.previous = self.opt.clock.seconds();
             return;
         }
         let reason = self.result.reason.clone();
