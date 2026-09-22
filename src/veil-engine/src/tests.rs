@@ -3060,8 +3060,18 @@ fn inactive_display_instance_is_activated_before_both_physical_stay_off() {
     session.tick();
 
     assert!(!session.exited);
-    assert!(!ccd.rows()[0].active, "内置屏应保持关闭");
-    assert!(!ccd.rows()[1].active, "外接屏应保持关闭");
+    assert!(
+        !ccd.rows()
+            .iter()
+            .any(|row| row.target_id == 1 && row.active),
+        "内置屏应保持关闭"
+    );
+    assert!(
+        !ccd.rows()
+            .iter()
+            .any(|row| row.target_id == 2 && row.active),
+        "外接屏应保持关闭"
+    );
     assert!(ccd
         .rows()
         .iter()
@@ -3075,6 +3085,92 @@ fn inactive_display_instance_is_activated_before_both_physical_stay_off() {
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("ROOT#DISPLAY#0002"));
     assert!(events.contains("vdd-activate"));
+    assert_activated_vdd_uses_virtual_modes(&ccd);
+}
+
+#[test]
+fn activate_inactive_display_instance_retries_validate_87() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        true,
+    );
+    session.tick();
+    let mut paths = ccd.paths();
+    let mut rows = ccd.rows();
+    paths.push(fakes::path(false, false, 3, 0x0001FFFF, 1));
+    rows.push(display_instance_row(false, 3));
+    ccd.set_paths_rows(paths, rows);
+    ccd.push_validate_rc(87);
+    session.tick();
+
+    assert!(!session.exited);
+    assert!(!ccd.rows().iter().any(|row| row.target_id == 1 && row.active));
+    assert!(!ccd.rows().iter().any(|row| row.target_id == 2 && row.active));
+    assert!(ccd.rows().iter().any(|row| row.is_bundled_vdd() && row.active));
+    assert!(ccd.applied_paths().iter().any(|paths| {
+        paths.iter().any(|path| {
+            path.target_info.id == 3 && path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+        }) && !paths.iter().any(|path| {
+            path.target_info.id == 1 && path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+        })
+    }));
+    let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
+    assert!(!events.contains("未改拓扑"));
+    assert_activated_vdd_uses_virtual_modes(&ccd);
+}
+
+fn assert_activated_vdd_uses_virtual_modes(ccd: &FakeCcd) {
+    let paths = ccd.paths();
+    let modes = ccd.modes();
+    let path = paths
+        .iter()
+        .find(|path| {
+            path.target_info.id == 3 && path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+        })
+        .expect("辅助路径应处于活动");
+    let source_index = (path.source_info.mode_info_idx >> 16) as usize;
+    let target_index = (path.target_info.mode_info_idx >> 16) as usize;
+    let desktop_index = (path.target_info.mode_info_idx & 0xFFFF) as usize;
+    assert_eq!(path.source_info.mode_info_idx & 0xFFFF, 0xFFFF);
+    assert_eq!(
+        modes[source_index].info_type,
+        CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE
+    );
+    assert_eq!(
+        modes[source_index].source_mode().pixel_format,
+        CcdConstants::DISPLAYCONFIG_PIXELFORMAT_32BPP
+    );
+    assert_eq!(
+        modes[target_index].info_type,
+        CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_TARGET
+    );
+    assert_eq!(
+        modes[desktop_index].info_type,
+        CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_DESKTOP_IMAGE
+    );
+    let signal = unsafe { modes[target_index].union.target_mode.target_video_signal_info };
+    assert_ne!(signal.h_sync_freq.numerator, 0);
+    assert!(signal.total_size.cx > signal.active_size.cx);
+    assert_eq!(signal.active_size.cx, 1920);
+    assert_eq!(signal.active_size.cy, 1200);
 }
 
 #[test]

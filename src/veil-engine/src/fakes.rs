@@ -321,15 +321,31 @@ impl CcdApi for FakeCcd {
             inner.paths = paths.to_vec();
             inner.modes = modes.to_vec();
             let applied_paths = inner.paths.clone();
-            for row in &mut inner.rows {
-                let path = applied_paths.iter().find(|p| {
-                    p.target_info.id == row.target_id
-                        && p.target_info.adapter_id.to_hex() == row.adapter_luid
-                });
-                row.active = path
-                    .map(|p| p.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0)
-                    .unwrap_or(false);
-                row.flags = path.map(|p| p.flags).unwrap_or(0);
+            let mut aligned = Vec::new();
+            for path in &applied_paths {
+                let Some(mut row) = inner.rows.iter().find(|row| {
+                    path.target_info.id == row.target_id
+                        && path.target_info.adapter_id.to_hex() == row.adapter_luid
+                }).cloned() else {
+                    continue;
+                };
+                row.active = path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0;
+                row.flags = path.flags;
+                aligned.push(row);
+            }
+            if aligned.len() == applied_paths.len() {
+                inner.rows = aligned;
+            } else {
+                for row in &mut inner.rows {
+                    let path = applied_paths.iter().find(|path| {
+                        path.target_info.id == row.target_id
+                            && path.target_info.adapter_id.to_hex() == row.adapter_luid
+                    });
+                    row.active = path
+                        .map(|path| path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0)
+                        .unwrap_or(false);
+                    row.flags = path.map(|path| path.flags).unwrap_or(0);
+                }
             }
             if let Some(mut cb) = inner.after_apply.take() {
                 cb(&mut inner);

@@ -71,6 +71,7 @@ pub struct RecoverySession {
     waiting_vdd: bool,
     vdd_wait_start: f64,
     vdd_activate_attempted: bool,
+    vdd_activate_logged: bool,
     vdd_instance_seen: bool,
     last_virtual_adapters: Option<String>,
     hotkey_registered: bool,
@@ -104,6 +105,7 @@ impl RecoverySession {
             waiting_vdd: false,
             vdd_wait_start: 0.0,
             vdd_activate_attempted: false,
+            vdd_activate_logged: false,
             vdd_instance_seen: false,
             last_virtual_adapters: None,
             hotkey_registered: false,
@@ -1201,6 +1203,7 @@ impl RecoverySession {
     fn request_bundled_vdd(&mut self) {
         self.waiting_vdd = true;
         self.vdd_activate_attempted = false;
+        self.vdd_activate_logged = false;
         self.vdd_instance_seen = false;
         self.last_virtual_adapters = None;
         self.vdd_wait_start = self.opt.clock.seconds();
@@ -1276,8 +1279,7 @@ impl RecoverySession {
             .iter()
             .any(|row| row.is_bundled_vdd() && !row.active);
         if inactive && !self.vdd_activate_attempted {
-            self.vdd_activate_attempted = true;
-            if self.activate_inactive_bundled(&all) {
+            if self.activate_inactive_bundled(&active, &all) {
                 let Ok(after) = self.opt.ccd.capture(CcdConstants::QUERY_FLAGS) else {
                     return;
                 };
@@ -1334,9 +1336,11 @@ impl RecoverySession {
         );
     }
 
-    fn activate_inactive_bundled(&mut self, frame: &CcdFrame) -> bool {
-        if frame.paths.len() != frame.snapshot.paths.len() {
-            self.write_heartbeat("全部路径与描述数量不一致，未改拓扑。", None, true);
+    fn activate_inactive_bundled(&mut self, active: &CcdFrame, all: &CcdFrame) -> bool {
+        if active.paths.len() != active.snapshot.paths.len()
+            || all.paths.len() != all.snapshot.paths.len()
+        {
+            self.write_heartbeat("路径与描述数量不一致，未改拓扑。", None, true);
             return false;
         }
         let selected: Vec<_> = self
@@ -1345,24 +1349,37 @@ impl RecoverySession {
             .iter()
             .map(|item| item.to_identity())
             .collect();
-        let mut paths = frame.paths.clone();
-        let mut activated = false;
-        for (path, row) in paths.iter_mut().zip(frame.snapshot.paths.iter()) {
-            if row.is_bundled_vdd() && !row.active {
-                path.flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
-                activated = true;
-            } else if row.is_physical()
-                && !row.active
-                && selected.iter().any(|id| id.matches(&row.identity()))
-            {
-                path.flags &= !CcdConstants::DISPLAYCONFIG_PATH_ACTIVE;
-            }
-        }
-        if !activated {
+        let pick_bundled = |available: bool| {
+            all.snapshot
+                .paths
+                .iter()
+                .enumerate()
+                .find(|(index, row)| {
+                    row.is_bundled_vdd()
+                        && !row.active
+                        && (all.paths[*index].target_info.target_available != 0) == available
+                })
+        };
+        let Some((bundled_index, _)) = pick_bundled(true).or_else(|| pick_bundled(false)) else {
+            return false;
+        };
+        let mut paths: Vec<_> = active
+            .paths
+            .iter()
+            .zip(active.snapshot.paths.iter())
+            .filter(|(_, row)| row.active)
+            .map(|(path, _)| *path)
+            .collect();
+        let mut bundled = all.paths[bundled_index];
+        bundled.flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE
+            | CcdConstants::DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+        let mut modes = active.modes.clone();
+        if let Err(error) = attach_active_modes(&mut bundled, &mut modes) {
+            self.write_heartbeat(&error, Some(&selected), true);
             return false;
         }
-        let modes = frame.modes.clone();
-        let validate_rc = match self
+        paths.push(bundled);
+        let mut validate_rc = match self
             .opt
             .ccd
             .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
@@ -1373,17 +1390,47 @@ impl RecoverySession {
                 return false;
             }
         };
+        if validate_rc == 87 {
+            if let Some(path) = paths.last_mut() {
+                path.target_info.scaling = CcdConstants::DISPLAYCONFIG_SCALING_PREFERRED;
+            }
+            validate_rc = match self
+                .opt
+                .ccd
+                .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
+            {
+                Ok(rc) => rc,
+                Err(error) => {
+                    self.write_heartbeat(&error, Some(&selected), true);
+                    return false;
+                }
+            };
+        }
         if validate_rc != 0 {
-            SessionLog::append(
-                &self.opt.directory,
-                "apply-blocked",
-                Some(&format!("激活辅助路径校验 {validate_rc}，未改拓扑。")),
-                None,
-                None,
-                Some(validate_rc),
-            );
+            if !self.vdd_activate_logged {
+                self.vdd_activate_logged = true;
+                let bundled = paths.last();
+                let detail = match bundled {
+                    Some(path) => format!(
+                        "激活辅助路径校验 {validate_rc}，活动路径 {}，辅助源 {:08x} 目标 {:08x}，未改拓扑。",
+                        paths.len(),
+                        path.source_info.mode_info_idx,
+                        path.target_info.mode_info_idx
+                    ),
+                    None => format!("激活辅助路径校验 {validate_rc}，未改拓扑。"),
+                };
+                SessionLog::append(
+                    &self.opt.directory,
+                    "apply-blocked",
+                    Some(&detail),
+                    None,
+                    None,
+                    Some(validate_rc),
+                );
+            }
             return false;
         }
+        self.vdd_activate_attempted = true;
         let apply_rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::APPLY_FLAGS) {
             Ok(rc) => rc,
             Err(error) => {
@@ -1428,6 +1475,108 @@ fn keeps_active_bundled_vdd(
                     && row.target_id == path.target_info.id
             })
     })
+}
+
+fn attach_active_modes(
+    path: &mut crate::native::DisplayConfigPathInfo,
+    modes: &mut Vec<DisplayConfigModeInfo>,
+) -> Result<(), String> {
+    if modes.len() > u16::MAX as usize - 3 {
+        return Err("模式表已满，无法激活辅助路径。".into());
+    }
+    let width = 1920u32;
+    let height = 1200u32;
+    let total_w = width + 160;
+    let total_h = height + 119;
+    let origin_x = modes
+        .iter()
+        .filter(|mode| mode.info_type == CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE)
+        .map(|mode| {
+            let source = mode.source_mode();
+            source.position.x.saturating_add(source.width as i32)
+        })
+        .max()
+        .unwrap_or(0);
+    let source_index = modes.len() as u32;
+    let mut source = DisplayConfigModeInfo {
+        info_type: CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE,
+        id: path.source_info.id,
+        adapter_id: path.source_info.adapter_id,
+        ..DisplayConfigModeInfo::default()
+    };
+    source.set_source_mode(crate::native::DisplayConfigSourceMode {
+        width,
+        height,
+        pixel_format: CcdConstants::DISPLAYCONFIG_PIXELFORMAT_32BPP,
+        position: crate::native::PointL { x: origin_x, y: 0 },
+    });
+    modes.push(source);
+    let target_index = modes.len() as u32;
+    let mut target = DisplayConfigModeInfo {
+        info_type: CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_TARGET,
+        id: path.target_info.id,
+        adapter_id: path.target_info.adapter_id,
+        ..DisplayConfigModeInfo::default()
+    };
+    let mut signal = crate::native::DisplayConfigVideoSignalInfo::default();
+    signal.pixel_rate = u64::from(total_w) * u64::from(total_h) * 60;
+    signal.h_sync_freq = crate::native::DisplayConfigRational {
+        numerator: total_h * 60,
+        denominator: 1,
+    };
+    signal.v_sync_freq = crate::native::DisplayConfigRational {
+        numerator: 60,
+        denominator: 1,
+    };
+    signal.active_size = crate::native::DisplayConfig2DRegion {
+        cx: width,
+        cy: height,
+    };
+    signal.total_size = crate::native::DisplayConfig2DRegion {
+        cx: total_w,
+        cy: total_h,
+    };
+    signal.video_standard = 255;
+    signal.scan_line_ordering = CcdConstants::DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    target.union.target_mode = crate::native::DisplayConfigTargetMode {
+        target_video_signal_info: signal,
+    };
+    modes.push(target);
+    let desktop_index = modes.len() as u32;
+    let mut desktop = DisplayConfigModeInfo {
+        info_type: CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_DESKTOP_IMAGE,
+        id: path.target_info.id,
+        adapter_id: path.target_info.adapter_id,
+        ..DisplayConfigModeInfo::default()
+    };
+    let size = crate::native::PointL {
+        x: width as i32,
+        y: height as i32,
+    };
+    let image = crate::native::RectL {
+        left: 0,
+        top: 0,
+        right: size.x,
+        bottom: size.y,
+    };
+    desktop.union.desktop_image_info = crate::native::DisplayConfigDesktopImageInfo {
+        path_source_size: size,
+        desktop_image_region: image,
+        desktop_image_clip: image,
+    };
+    modes.push(desktop);
+    path.source_info.mode_info_idx = (source_index << 16) | 0xFFFF;
+    path.target_info.mode_info_idx = (target_index << 16) | (desktop_index & 0xFFFF);
+    if path.target_info.rotation == 0 {
+        path.target_info.rotation = 1;
+    }
+    path.target_info.scaling = CcdConstants::DISPLAYCONFIG_SCALING_IDENTITY;
+    path.target_info.scan_line_ordering = CcdConstants::DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    path.target_info.refresh_rate = crate::native::DisplayConfigRational {
+        numerator: 60,
+        denominator: 1,
+    };
+    Ok(())
 }
 
 fn invalidate_inactive_source_indices(paths: &mut [crate::native::DisplayConfigPathInfo]) {
