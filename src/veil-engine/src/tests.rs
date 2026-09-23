@@ -62,6 +62,7 @@ fn last_physical_without_bundled_vdd_is_blocked() {
 
 #[test]
 fn game_viewer_even_with_internal_tech_does_not_unlock_last_physical() {
+    let _bundled = override_bundled_instances(vec![]);
     let viewer = Roles::classify(
         false,
         true,
@@ -93,6 +94,7 @@ fn game_viewer_even_with_internal_tech_does_not_unlock_last_physical() {
 
 #[test]
 fn third_party_virtual_does_not_unlock_last_physical() {
+    let _bundled = override_bundled_instances(vec![]);
     let snap = DisplaySnapshot::new(
         vec![
             fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN1540#1"),
@@ -112,6 +114,27 @@ fn third_party_virtual_does_not_unlock_last_physical() {
     assert_eq!(plan.action, KeepOffAction::Blocked);
     assert!(!snap.has_active_bundled_vdd());
     assert!(snap.has_active_third_party_virtual());
+}
+
+#[test]
+fn display_instance_identity_is_tested_without_host_pnp_state() {
+    let row = fakes::row(
+        PathRole::Virtual,
+        true,
+        2,
+        "GameViewer",
+        r"ROOT\DISPLAY\0000",
+        r"\\?\DISPLAY#GV#1",
+        "0000000000000001",
+    );
+    {
+        let _bundled = override_bundled_instances(vec![]);
+        assert!(!row.is_bundled_vdd());
+    }
+    {
+        let _bundled = override_bundled_instances(vec![r"ROOT\DISPLAY\0000".into()]);
+        assert!(row.is_bundled_vdd());
+    }
 }
 
 #[test]
@@ -1787,7 +1810,7 @@ fn session_result_clears_keep_off_heartbeat() {
 }
 
 #[test]
-fn restore_without_session_file_does_not_launch_recovery() {
+fn missing_metadata_with_live_recovery_waits_for_explicit_result() {
     let started = Rc::new(RefCell::new(String::new()));
     let launches = Rc::new(RefCell::new(0u32));
     let started_hook = started.clone();
@@ -1811,7 +1834,7 @@ fn restore_without_session_file_does_not_launch_recovery() {
         confirm_enable_vdd: None,
         bundled_vdd_installed: Box::new(|| false),
         bundled_vdd_payload: Box::new(|| false),
-        is_alive: Box::new(|_| false),
+        is_alive: Box::new(|_| true),
         virtual_path_wait: Duration::from_secs(15),
     };
     let ccd = dual_physical();
@@ -1823,19 +1846,207 @@ fn restore_without_session_file_does_not_launch_recovery() {
         .find(|row| row.role == PathRole::Internal)
         .unwrap()
         .identity();
-    assert!(coordinator.keep_off(identity).is_none());
+    assert!(coordinator.keep_off(identity.clone()).is_none());
     let dir = started.borrow().clone();
+    let original = ccd.capture(CcdConstants::QUERY_FLAGS).unwrap();
+    ccd.deactivate_path(0);
     let before = *launches.borrow();
     assert!(before >= 1);
     std::fs::remove_file(SessionPaths::metadata(&dir)).unwrap();
-    assert!(coordinator.restore_all().is_none());
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    assert!(coordinator.keep_off(identity).is_some());
     assert_eq!(*launches.borrow(), before);
+    assert!(coordinator.has_session());
+    assert!(SessionPaths::release(&dir).exists());
+    assert!(SessionPaths::baseline(&dir).exists());
+    assert!(!ccd.rows()[0].active);
+    ccd.set(&original.paths, &original.modes, CcdConstants::APPLY_FLAGS)
+        .unwrap();
+    JsonUtil::write_atomic(SessionPaths::result(&dir), &complete_result()).unwrap();
+    coordinator.poll();
     assert!(!coordinator.has_session());
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_ok());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn missing_metadata_with_failed_restore_keeps_owned_vdd() {
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(0);
+    let session_dir = dir.borrow().clone();
+    ccd.deactivate_path(0);
+    std::fs::remove_file(SessionPaths::metadata(&session_dir)).unwrap();
+    assert!(coordinator.restore_all().is_none());
+    assert!(SessionPaths::release(&session_dir).exists());
+    JsonUtil::write_atomic(
+        SessionPaths::result(&session_dir),
+        &ResultFile {
+            protocol_version: PROTOCOL_VERSION,
+            restore_state: RestoreState::Partial,
+            reason: "release".into(),
+            error: Some("测试恢复失败".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    coordinator.poll();
+    assert!(coordinator.recovery_block_reason().is_some());
+    assert!(coordinator.has_session());
+    assert!(!calls.borrow().iter().any(|verb| verb == "disable"));
+    assert!(!ccd.rows()[0].active);
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_some());
+    std::fs::remove_dir_all(session_dir).unwrap();
+}
+
+#[test]
+fn missing_metadata_release_write_failure_blocks_new_close() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (mut coordinator, ccd, dir, calls) = owned_coordinator(0);
+    let session_dir = dir.borrow().clone();
+    ccd.deactivate_path(0);
+    std::fs::remove_file(SessionPaths::metadata(&session_dir)).unwrap();
+    let release = SessionPaths::release(&session_dir);
+    std::fs::write(&release, b"pending").unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&release)
+        .unwrap();
     assert!(coordinator
-        .status_text
-        .as_deref()
+        .restore_all()
         .unwrap()
-        .contains("会话文件"));
+        .contains("恢复请求写入失败"));
+    assert!(coordinator.recovery_block_reason().is_some());
+    assert!(coordinator.has_session());
+    assert!(!calls.borrow().iter().any(|verb| verb == "disable"));
+    assert!(!ccd.rows()[0].active);
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_some());
+    drop(lock);
+    std::fs::remove_dir_all(session_dir).unwrap();
+}
+
+#[test]
+fn missing_metadata_with_dead_recovery_rebuilds_from_saved_baseline() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let launches = Rc::new(RefCell::new(0u32));
+    let ccd = dual_physical();
+    let ccd_for_recovery = ccd.clone();
+    let started_for_hook = started.clone();
+    let launches_for_hook = launches.clone();
+    let hooks = RecoveryCoordinatorHooks {
+        start_recovery: Box::new(move |dir, parent| {
+            *launches_for_hook.borrow_mut() += 1;
+            *started_for_hook.borrow_mut() = dir.to_string();
+            if parent.is_none() {
+                let meta: SessionMetadata = JsonUtil::read(SessionPaths::metadata(dir)).unwrap();
+                assert_eq!(meta.protocol_version, PROTOCOL_VERSION);
+                let (paths, modes) = TopologyBlob::load(SessionPaths::baseline(dir)).unwrap();
+                ccd_for_recovery
+                    .set(&paths, &modes, CcdConstants::APPLY_FLAGS)
+                    .unwrap();
+                JsonUtil::write_atomic(SessionPaths::result(dir), &complete_result()).unwrap();
+            } else {
+                JsonUtil::write_atomic(
+                    SessionPaths::ready(dir),
+                    &ReadyFile {
+                        pid: 4242,
+                        hotkey_registered: true,
+                        hotkey: CcdConstants::HOTKEY_TEXT.into(),
+                    },
+                )
+                .unwrap();
+            }
+            4242
+        }),
+        run_driver_helper: Box::new(|_| 0),
+        confirm_enable_vdd: None,
+        bundled_vdd_installed: Box::new(|| false),
+        bundled_vdd_payload: Box::new(|| false),
+        is_alive: Box::new(|_| false),
+        virtual_path_wait: Duration::from_secs(15),
+    };
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd.rows()[0].identity();
+    assert!(coordinator.keep_off(identity).is_none());
+    let dir = started.borrow().clone();
+    ccd.deactivate_path(0);
+    std::fs::remove_file(SessionPaths::metadata(&dir)).unwrap();
+    assert!(coordinator
+        .restore_all_and_wait(Duration::from_millis(100))
+        .is_ok());
+    assert_eq!(*launches.borrow(), 2);
+    assert!(ccd.rows().iter().all(|row| row.active));
+    assert!(!coordinator.has_session());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn missing_metadata_rebuild_failure_keeps_recovery_and_owned_vdd() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = dual_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            false,
+            false,
+            None,
+            Duration::from_secs(15),
+        ),
+    );
+    let identity = ccd.rows()[0].identity();
+    assert!(coordinator.keep_off(identity.clone()).is_none());
+    let dir = started.borrow().clone();
+    ccd.deactivate_path(0);
+    coordinator.mark_vdd_owned_for_test();
+    std::fs::remove_file(SessionPaths::metadata(&dir)).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(SessionPaths::baseline(&dir))
+        .unwrap();
+    let error = coordinator.restore_all().unwrap();
+    assert!(error.contains("元数据"));
+    assert!(coordinator.has_session());
+    assert!(coordinator.vdd_owned_for_test());
+    assert!(!ccd.rows()[0].active);
+    assert!(!helper.borrow().iter().any(|verb| verb == "disable"));
+    assert!(coordinator.keep_off(identity).is_some());
+    drop(lock);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn missing_metadata_without_trusted_baseline_fails_closed() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = dual_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            started.clone(),
+            helper.clone(),
+            false,
+            false,
+            None,
+            Duration::from_secs(15),
+        ),
+    );
+    assert!(coordinator.keep_off(ccd.rows()[0].identity()).is_none());
+    let dir = started.borrow().clone();
+    ccd.deactivate_path(0);
+    coordinator.forget_baseline_for_test();
+    coordinator.mark_vdd_owned_for_test();
+    std::fs::remove_file(SessionPaths::metadata(&dir)).unwrap();
+    assert!(coordinator.restore_all_and_wait(Duration::ZERO).is_err());
+    assert!(coordinator.has_session());
+    assert!(coordinator.vdd_owned_for_test());
+    assert!(!helper.borrow().iter().any(|verb| verb == "disable"));
+    assert!(!ccd.rows()[0].active);
     let _ = std::fs::remove_dir_all(dir);
 }
 
