@@ -4,7 +4,7 @@
     <OutputName>Veil</OutputName>
     <InstallerPlatform>x64</InstallerPlatform>
     <ProductVersion Condition="'$(ProductVersion)' == ''">0.1.0</ProductVersion>
-    <DefineConstants>PublishDir=$(MSBuildThisFileDirectory)..\out\app;PayloadDir=$(MSBuildThisFileDirectory)..\payload;ProductVersion=$(ProductVersion)</DefineConstants>
+    <DefineConstants>PublishDir=$(MSBuildThisFileDirectory)..\out\app;PayloadDir=$(MSBuildThisFileDirectory)..\payload;IconFile=$(MSBuildThisFileDirectory)..\..\assets\icon\veil.ico;ProductVersion=$(ProductVersion)</DefineConstants>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

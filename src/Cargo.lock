@@ -3139,6 +3139,7 @@ version = "0.1.15"
 dependencies = [
  "eframe",
  "egui",
+ "image",
  "raw-window-handle",
  "serde",
  "serde_json",
