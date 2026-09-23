@@ -102,6 +102,21 @@ impl RecoveryCoordinator {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn forget_baseline_for_test(&mut self) {
+        self.baseline = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_vdd_owned_for_test(&mut self) {
+        self.vdd_owned = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn vdd_owned_for_test(&self) -> bool {
+        self.vdd_owned
+    }
+
     pub fn has_session(&self) -> bool {
         self.directory.is_some()
     }
@@ -453,17 +468,6 @@ impl RecoveryCoordinator {
             return None;
         };
         let request_id = crate::session::request_id();
-        if !SessionPaths::metadata(&dir).exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-            self.directory = None;
-            self.baseline = None;
-            self.recovery_pid = 0;
-            self.vdd_owned = false;
-            self.last_outcome = None;
-            self.result_consumed = false;
-            self.status_text = Some("这次关屏没有留下会话文件，已取消。可以再关一次。".into());
-            return None;
-        }
         // Retry only the failed device cleanup when all still-connected baseline
         // physical targets are active. Never replay a saved topology just for UAC.
         if self.result_consumed
@@ -482,6 +486,22 @@ impl RecoveryCoordinator {
             self.complete_cleanup();
             return None;
         }
+        let recovery_alive = self.recovery_pid > 0 && (self.hooks.is_alive)(self.recovery_pid);
+        let metadata_missing = !SessionPaths::metadata(&dir).exists();
+        if metadata_missing && !recovery_alive {
+            // The original worker can restore from its in-memory baseline. A
+            // replacement worker needs metadata rebuilt from the pre-close
+            // baseline; never capture the currently closed layout as baseline.
+            let trusted_baseline = self.baseline.as_ref().is_some_and(|frame| {
+                !frame.paths.is_empty() && frame.snapshot.active_physical().next().is_some()
+            });
+            if !trusted_baseline {
+                return self.missing_metadata_error("缺少可信的关屏前拓扑", recovery_alive);
+            }
+            if let Err(error) = self.prepare_directory() {
+                return self.missing_metadata_error(&format!("重建失败：{error}"), recovery_alive);
+            }
+        }
         if let Err(e) = JsonUtil::write_atomic(
             SessionPaths::release(&dir),
             &ReleaseFile {
@@ -489,27 +509,56 @@ impl RecoveryCoordinator {
                 request_id,
             },
         ) {
-            return Some(e);
+            return if metadata_missing {
+                self.missing_metadata_error(&format!("恢复请求写入失败：{e}"), recovery_alive)
+            } else {
+                Some(e)
+            };
         }
         self.pending_release = request_id;
-        if self.recovery_pid <= 0 || !(self.hooks.is_alive)(self.recovery_pid) {
+        if !recovery_alive {
             if SessionPaths::result(&dir).exists() {
                 if let Err(e) = std::fs::rename(
                     SessionPaths::result(&dir),
                     dir.join(format!("result-{}.json", crate::session::request_id())),
                 ) {
-                    return Some(e.to_string());
+                    return if metadata_missing {
+                        self.missing_metadata_error(
+                            &format!("旧恢复结果归档失败：{e}"),
+                            recovery_alive,
+                        )
+                    } else {
+                        Some(e.to_string())
+                    };
                 }
             }
             self.recovery_pid = (self.hooks.start_recovery)(&dir.to_string_lossy(), None);
             if self.recovery_pid <= 0 {
                 let exe = ProcessLaunch::recovery_exe_path();
-                return Some(format!("无法启动恢复专用进程（{}）。", exe.display()));
+                let error = format!("无法启动恢复专用进程（{}）。", exe.display());
+                return if metadata_missing {
+                    self.missing_metadata_error(&error, recovery_alive)
+                } else {
+                    Some(error)
+                };
             }
         }
         self.begin_operation(request_id);
         self.intent.keep_off.clear();
         None
+    }
+
+    fn missing_metadata_error(&mut self, detail: &str, recovery_alive: bool) -> Option<String> {
+        let error = format!("会话元数据缺失，无法确认恢复：{detail}。请重试恢复全部。");
+        self.last_outcome = Some(Err(RestoreError::Protocol(error.clone())));
+        self.status_text = Some(error.clone());
+        self.intent.keep_off.clear();
+        if !recovery_alive {
+            self.recovery_pid = 0;
+            self.is_ready = false;
+            self.hotkey_registered = false;
+        }
+        Some(error)
     }
 
     pub fn restore_all_and_wait(
@@ -529,7 +578,7 @@ impl RecoveryCoordinator {
             return self
                 .last_outcome
                 .clone()
-                .unwrap_or_else(|| Ok(RestoreOutcome::complete("已恢复全部。")));
+                .unwrap_or_else(|| Err(RestoreError::Protocol("恢复缺少明确结果。".into())));
         }
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -541,9 +590,10 @@ impl RecoveryCoordinator {
             }
             std::thread::sleep(Duration::from_millis(150));
         }
-        Err(RestoreError::Timeout(
-            "恢复超时或清理失败，未退出。请重试恢复全部。".into(),
-        ))
+        let error = RestoreError::Timeout("恢复超时或清理失败，未退出。请重试恢复全部。".into());
+        self.status_text = Some(error.to_string());
+        self.last_outcome = Some(Err(error.clone()));
+        Err(error)
     }
 
     fn apply_intent(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
