@@ -1,15 +1,24 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <?ifndef ProductVersion?>
     <?define ProductVersion="0.1.0"?>
   <?endif?>
-  <Bundle Name="Veil" Version="$(var.ProductVersion)" Manufacturer="Veil" UpgradeCode="b3c91d44-0e7a-4f2c-8a55-21d6c80e4aa2">
+  <Bundle Name="Veil" Version="$(var.ProductVersion)" Manufacturer="Veil" UpgradeCode="b3c91d44-0e7a-4f2c-8a55-21d6c80e4aa2" IconSourceFile="$(var.IconFile)">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication
         LicenseUrl=""
         Theme="hyperlinkLicense"
+        ThemeFile="VeilTheme.xml"
+        LogoFile="$(var.LogoFile)"
         SuppressOptionsUI="no" />
     </BootstrapperApplication>
     <Variable Name="InstallVdd" Type="string" Value="1" bal:Overridable="yes" />
+    <Variable Name="InstallFolder" Type="formatted" Value="[ProgramFiles64Folder]Veil" bal:Overridable="yes" />
+    <Variable Name="CreateDesktopShortcut" Type="string" Value="0" bal:Overridable="yes" />
+    <Variable Name="ExistingVeilState" Type="numeric" Value="2" />
+    <util:ProductSearch Id="ExistingVeilProduct" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Variable="ExistingVeilState" Result="state" />
+    <util:RegistrySearch Id="ExistingInstallFolder" Root="HKLM" Key="Software\Veil" Value="InstallDir" Variable="InstallFolder" Result="value" Bitness="always64" />
+    <util:RegistrySearch Id="ExistingDesktopShortcut" Root="HKLM" Key="Software\Veil" Value="DesktopShortcutPref" Variable="CreateDesktopShortcut" Result="value" Bitness="always64" />
+    <util:RegistrySearch Id="ExistingInstallVdd" Root="HKLM" Key="Software\Veil" Value="InstallVddPref" Variable="InstallVdd" Result="value" Bitness="always64" />
     <Chain>
       <ExePackage
         Id="RetireOldVeil"
@@ -18,9 +27,11 @@
         Vital="yes"
         PerMachine="yes"
         DetectCondition="0"
-        InstallArguments="retire-old" />
+        InstallArguments='retire-old "[InstallFolder]\Veil.App.exe"' />
       <MsiPackage SourceFile="$(var.PackageMsi)" Compressed="yes">
         <MsiProperty Name="INSTALLVDD" Value="[InstallVdd]" />
+        <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
+        <MsiProperty Name="CREATEDESKTOPSHORTCUT" Value="[CreateDesktopShortcut]" />
       </MsiPackage>
     </Chain>
   </Bundle>

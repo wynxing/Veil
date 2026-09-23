@@ -5,6 +5,8 @@
   <Package Name="Veil" Manufacturer="Veil" Version="$(var.ProductVersion)" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Language="1033" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 Veil。" />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="VeilIcon.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="VeilIcon.ico" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLDIR" Name="Veil">
         <Directory Id="VDDDIR" Name="vdd" />
@@ -16,8 +18,10 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="VeilMenuDir" Name="Veil" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
 
     <Property Id="INSTALLVDD" Value="1" />
+    <Property Id="CREATEDESKTOPSHORTCUT" Value="0" />
     <Feature Id="App" Title="Veil 应用" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentGroupRef Id="VddFiles" />
@@ -27,13 +31,15 @@
     <Binary Id="MaintenanceHelper" SourceFile="$(var.PublishDir)\Veil.DriverHelper.exe" />
     <CustomAction Id="BeginMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="begin-maintenance"
                   Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="ValidateInstallPath" BinaryRef="MaintenanceHelper" ExeCommand='validate-install-path "[INSTALLDIR]Veil.App.exe"'
+                  Execute="immediate" Return="check" />
     <CustomAction Id="RollbackMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="end-maintenance"
                   Execute="rollback" Impersonate="no" Return="check" />
     <CustomAction Id="CommitMaintenance" BinaryRef="MaintenanceHelper" ExeCommand="end-maintenance"
                   Execute="commit" Impersonate="no" Return="check" />
     <CustomAction Id="SweepHistoricalSessions" BinaryRef="MaintenanceHelper" ExeCommand="sweep-sessions"
                   Execute="immediate" Impersonate="yes" Return="ignore" />
-    <CustomAction Id="RestoreDisplays" BinaryRef="MaintenanceHelper" ExeCommand="restore-displays"
+    <CustomAction Id="RestoreDisplays" BinaryRef="MaintenanceHelper" ExeCommand='restore-displays "[#VeilAppExe]"'
                   Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction Id="RollbackVdd" FileRef="VeilDriverHelperExe" ExeCommand="uninstall-driver"
                   Execute="rollback" Impersonate="no" Return="check" />
@@ -43,6 +49,7 @@
                   Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
+      <Custom Action="ValidateInstallPath" Before="InstallInitialize" Condition="NOT Installed" />
       <Custom Action="SweepHistoricalSessions" Before="RemoveExistingProducts" Condition="WIX_UPGRADE_DETECTED" />
       <Custom Action="RollbackMaintenance" After="InstallInitialize" />
       <Custom Action="BeginMaintenance" After="RollbackMaintenance" />

@@ -1,10 +1,15 @@
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
+    let icon =
+        std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+            .join("../../assets/icon/veil.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
     let informational = informational_version();
     println!("cargo:rustc-env=VEIL_INFORMATIONAL_VERSION={informational}");
 
     let mut res = winresource::WindowsResource::new();
     res.set_manifest_file("app.manifest");
+    res.set_icon(icon.to_str().expect("icon path"));
     stamp_version(&mut res);
     let _ = res.compile();
 }

@@ -109,6 +109,7 @@ fn run_panel(mutex: HANDLE, show_event: HANDLE) -> Result<(), String> {
                 .with_inner_size([420.0, 560.0])
                 .with_min_inner_size([360.0, 360.0])
                 .with_title("Veil")
+                .with_icon(window_icon())
                 .with_visible(true)
                 .with_active(true),
             renderer,
@@ -864,23 +865,26 @@ fn default_icon() -> Icon {
 }
 
 fn tray_icon_for(holding: bool) -> Icon {
-    let (fill, edge) = if holding {
-        ([196u8, 72, 48, 255], [255u8, 220, 200, 255])
+    let bytes = if holding {
+        include_bytes!("../../../assets/icon/tray-holding.png").as_slice()
     } else {
-        ([28u8, 140, 150, 255], [240u8, 252, 255, 255])
+        include_bytes!("../../../assets/icon/tray-idle.png").as_slice()
     };
-    let mut rgba = Vec::with_capacity(16 * 16 * 4);
-    for y in 0..16 {
-        for x in 0..16 {
-            let px = if x == 0 || y == 0 || x == 15 || y == 15 {
-                edge
-            } else {
-                fill
-            };
-            rgba.extend_from_slice(&px);
-        }
-    }
-    Icon::from_rgba(rgba, 16, 16).expect("icon")
+    let rgba = image::load_from_memory(bytes)
+        .expect("tray image")
+        .to_rgba8();
+    Icon::from_rgba(rgba.into_raw(), 16, 16).expect("tray icon")
+}
+
+fn window_icon() -> std::sync::Arc<egui::IconData> {
+    let rgba = image::load_from_memory(include_bytes!("../../../assets/icon/veil.png"))
+        .expect("window image")
+        .to_rgba8();
+    std::sync::Arc::new(egui::IconData {
+        rgba: rgba.into_raw(),
+        width: 64,
+        height: 64,
+    })
 }
 
 fn install_cjk_fonts(ctx: &egui::Context) {

@@ -15,11 +15,21 @@
       <Component Id="VeilApp" Guid="a1f3c8e2-7b14-4d6a-9e20-1c5d8f3a6b47">
         <File Id="VeilAppExe" Source="$(var.PublishDir)\Veil.App.exe" KeyPath="yes" />
       </Component>
+      <Component Id="VeilInstallDirRecord" Guid="0bf572f0-f21b-4726-a2c9-3705e9e5f728">
+        <RegistryValue Root="HKLM" Key="Software\Veil" Name="InstallDir" Value="[INSTALLDIR]" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Veil" Name="DesktopShortcutPref" Value="[CREATEDESKTOPSHORTCUT]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Veil" Name="InstallVddPref" Value="[INSTALLVDD]" Type="string" />
+      </Component>
       <Component Id="VeilStartMenu" Directory="VeilMenuDir" Guid="e5b7a2c6-1f58-4a0e-d264-5f912d7e0a8b">
         <Shortcut Id="VeilStartMenuShortcut" Name="Veil" Description="Veil 屏幕保持关闭"
-                  Target="[INSTALLDIR]Veil.App.exe" WorkingDirectory="INSTALLDIR" />
+                  Target="[INSTALLDIR]Veil.App.exe" WorkingDirectory="INSTALLDIR" Icon="VeilIcon.ico" />
         <RemoveFolder Id="CleanVeilMenuDir" Directory="VeilMenuDir" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\Veil" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="VeilDesktopShortcut" Directory="DesktopFolder" Guid="f38b82f3-bc59-4a74-8a81-62990449481b" Condition="CREATEDESKTOPSHORTCUT=1">
+        <Shortcut Id="VeilDesktopLink" Name="Veil" Description="Veil 屏幕保持关闭"
+                  Target="[INSTALLDIR]Veil.App.exe" WorkingDirectory="INSTALLDIR" Icon="VeilIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\Veil" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
       <Component Id="VeilRecovery" Guid="b2e4d9f3-8c25-4e7b-af31-2d6e9a4b7c58">
         <File Id="VeilRecoveryExe" Source="$(var.PublishDir)\Veil.Recovery.exe" KeyPath="yes" />

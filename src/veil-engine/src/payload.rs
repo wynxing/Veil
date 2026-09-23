@@ -30,8 +30,8 @@ pub fn current_exe_dir() -> PathBuf {
 }
 
 pub fn default_search_roots() -> Vec<PathBuf> {
-    let mut roots = vec![program_files_veil()];
-    roots.extend(roots_from_exe(&current_exe_dir()));
+    let mut roots = roots_from_exe(&current_exe_dir());
+    roots.push(program_files_veil());
     dedup_paths(roots)
 }
 

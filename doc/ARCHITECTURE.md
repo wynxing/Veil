@@ -162,9 +162,9 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 
 引导 EXE 提权后：
 
-1. 安装 `Veil.App.exe`、`Veil.Recovery.exe`、资源到 `%ProgramFiles%\Veil`
+1. 默认安装 `Veil.App.exe`、`Veil.Recovery.exe`、资源到 `%ProgramFiles%\Veil`；首次安装可选本机固定磁盘上受保护的目录，升级沿用原目录
 2. 展示驱动同意页：这是显示驱动，用于关光全部物理屏时留下活动路径。不同意装设备时，文件仍写入，以后可在面板安装
-3. 将已签名 MTT VDD **始终**放到 `%ProgramFiles%\Veil\vdd`。默认用 INF 安装，**设备保持禁用**；本机已有同一硬件 ID 则接管，不新建第二块
+3. 将已签名 MTT VDD **始终**放到实际安装目录的 `vdd` 子目录。默认用 INF 安装，**设备保持禁用**；本机已有同一硬件 ID 则接管，不新建第二块
 4. 校验 CAT/DLL 签名与发布者指纹；不启用测试签名；不经确认不装设备
 5. 写卸载信息。开机自启不在安装时打开
 
@@ -174,7 +174,7 @@ egui 窗口只承担展示与点击。关屏期间允许隐藏到托盘，后台
 - 只认 MTT 硬件 ID（`Root\MttVDD`）与已记录发布者指纹；已有同一 ID 则接管
 - 允许机器上存在 GameViewer / 向日葵等其它虚拟屏，但永不把它们当退路、不改装它们
 
-具体文件哈希以安装时捆绑的版本为准，写入 [`installer/payload.manifest.json`](../installer/payload.manifest.json)。更换上游包必须重新核签名与指纹。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到 `%ProgramFiles%\Veil\vdd` 与该目录。
+具体文件哈希以安装时捆绑的版本为准，写入 [`installer/payload.manifest.json`](../installer/payload.manifest.json)。更换上游包必须重新核签名与指纹。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到实际安装目录的 `vdd` 子目录与该目录。
 
 ### 7.2 按需启用
 

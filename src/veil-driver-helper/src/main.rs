@@ -23,9 +23,23 @@ fn main() {
         std::process::exit(0);
     }
     let code = match verb {
-        "restore-displays" => match veil_engine::maintenance::restore_in_user_session(
-            &program_files_veil().join("Veil.App.exe"),
-        ) {
+        "validate-install-path" => match args.get(1) {
+            Some(path) => validate_install_path(Path::new(path)),
+            None => 2,
+        },
+        "restore-displays" => match args
+            .get(1)
+            .map(PathBuf::from)
+            .ok_or_else(|| "restore-displays 缺少安装目录中的 Veil.App.exe 路径。".to_string())
+            .and_then(|app| {
+                if app
+                    .file_name()
+                    .is_none_or(|name| !name.to_string_lossy().eq_ignore_ascii_case("Veil.App.exe"))
+                {
+                    return Err("restore-displays 收到无效的主程序路径。".into());
+                }
+                veil_engine::maintenance::restore_in_user_session(&app)
+            }) {
             Ok(code) => code,
             Err(e) => {
                 helper_log(&e);
@@ -34,6 +48,13 @@ fn main() {
         },
         "sweep-sessions" => sweep_sessions(),
         "retire-old" => {
+            if args
+                .get(1)
+                .is_none_or(|app| validate_install_path(Path::new(app)) != 0)
+            {
+                helper_log("安装目录检查失败，未卸载旧版。");
+                std::process::exit(2);
+            }
             retire::stop_veil_apps();
             if sweep_sessions() != 0 {
                 helper_log("sweep-sessions 未完成，继续卸旧版。");
@@ -110,8 +131,47 @@ fn maintenance(active: bool) -> i32 {
 }
 
 fn ownership_path() -> PathBuf {
-    program_files_veil().join("owned-devices.json")
+    veil_engine::payload::current_exe_dir().join("owned-devices.json")
 }
+
+fn validate_install_path(path: &Path) -> i32 {
+    if path
+        .file_name()
+        .is_none_or(|name| !name.to_string_lossy().eq_ignore_ascii_case("Veil.App.exe"))
+    {
+        helper_log("安装目录检查收到无效的主程序路径。");
+        return 2;
+    }
+    let Some(install_dir) = path.parent() else {
+        return 2;
+    };
+    let powershell =
+        PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into()))
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let result = std::process::Command::new(powershell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            include_str!("../install_path_check.ps1"),
+        ])
+        .env("VEIL_INSTALL_DIR", install_dir)
+        .output();
+    match result {
+        Ok(output) if output.status.success() => 0,
+        Ok(output) => {
+            helper_log(&String::from_utf8_lossy(&output.stderr));
+            2
+        }
+        Err(error) => {
+            helper_log(&format!("无法检查安装路径：{error}"));
+            2
+        }
+    }
+}
+
 fn owned_ids() -> Result<Vec<String>, String> {
     let path = ownership_path();
     if !path.exists() {
@@ -347,10 +407,6 @@ fn helper_log(line: &str) {
         }
     }
     eprintln!("{line}");
-}
-
-fn program_files_veil() -> PathBuf {
-    veil_engine::payload::program_files_veil()
 }
 
 fn to_wide(s: &str) -> Vec<u16> {

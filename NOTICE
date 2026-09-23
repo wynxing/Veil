@@ -7,7 +7,7 @@ Copyright (c) 2024 Virtual Display
 上游：<https://github.com/VirtualDrivers/Virtual-Display-Driver>
 发布包：<https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip>
 
-随安装包写入 `%ProgramFiles%\Veil\vdd` 的文件：`MttVDD.inf`、`MttVDD.dll`、`mttvdd.cat`。
+随安装包写入实际安装目录的 `vdd` 子目录的文件：`MttVDD.inf`、`MttVDD.dll`、`mttvdd.cat`。
 
 ## NefCon 1.20.0
 
@@ -17,6 +17,10 @@ Copyright (c) 2022-2025 Nefarius Software Solutions e.U.
 发布包：<https://github.com/nefarius/nefcon/releases/download/v1.20.0/nefcon_v1.20.0.zip>
 
 随安装包使用的文件：`nefcon/x64/nefconc.exe`。
+
+## WiX Toolset 安装界面模板
+
+安装界面从 WiX Toolset v5.0.2 的 HyperlinkTheme.xml 修改而来。原始文件 Copyright (c) .NET Foundation and contributors，按 Microsoft Reciprocal License (MS-RL) 授权。修改后的源文件位于 installer/Veil.Bundle/VeilTheme.xml，完整许可见 installer/Veil.Bundle/WIX-LICENSE.TXT。
 
 ## 许可
 

@@ -4183,7 +4183,8 @@ fn uninstall_actions_check_results_before_removal_and_hold_marker_through_commit
     assert!(xml.contains("Execute=\"rollback\""));
     let bundle = include_str!("../../../installer/Veil.Bundle/Bundle.wxs");
     assert!(bundle.contains("Id=\"RetireOldVeil\""));
-    assert!(bundle.contains("InstallArguments=\"retire-old\""));
+    assert!(bundle.contains("retire-old"));
+    assert!(bundle.contains("[InstallFolder]\\Veil.App.exe"));
 }
 
 #[test]
