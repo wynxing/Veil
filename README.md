@@ -35,6 +35,7 @@ cargo test --manifest-path src\Cargo.toml
 - [产品需求](doc/PRD.md)
 - [产品设计](doc/PRODUCT_DESIGN.md)
 - [技术架构](doc/ARCHITECTURE.md)
+- [等待过程、日志与机旁验收](doc/validation/responsive-operations.md)
 - [预览发布](doc/RELEASE.md)
 - [安装器](installer/README.md)
 - [许可证](LICENSE)（MIT）。安装包再分发的驱动与 NefCon 见 [NOTICE](NOTICE)。

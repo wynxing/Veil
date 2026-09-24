@@ -1083,10 +1083,7 @@ fn slow_apply_is_not_an_execution_gap() {
     session.tick();
     write_keep_internal_off(&dir.0, false);
     session.tick();
-    assert!(
-        !session.exited,
-        "关屏耗时超过间隔阈值时不应回放基线"
-    );
+    assert!(!session.exited, "关屏耗时超过间隔阈值时不应回放基线");
     assert_ne!(session.result.reason, "execution-gap");
     session.tick();
     assert!(!session.exited);
@@ -1496,6 +1493,56 @@ fn restore_one_writes_shrunk_intent_when_targets_already_off() {
         JsonUtil::read(SessionPaths::intent(started.borrow().as_str())).unwrap();
     assert_eq!(intent.keep_off.len(), 1);
     assert_eq!(intent.keep_off[0].target_id, ids[1].target_id);
+    JsonUtil::write_atomic(
+        SessionPaths::heartbeat(started.borrow().as_str()),
+        &HeartbeatFile {
+            processed_request_id: intent.request_id,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(coordinator
+        .wait_for_single_restore_confirmation(&ids[0], Duration::from_millis(1))
+        .is_err());
+    let _ = std::fs::remove_dir_all(started.borrow().as_str());
+}
+
+#[test]
+fn single_restore_wait_accepts_acknowledged_active_target() {
+    let started = Rc::new(RefCell::new(String::new()));
+    let ccd = three_physical();
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            started.clone(),
+            Rc::new(RefCell::new(Vec::new())),
+            false,
+            true,
+            None,
+            Duration::from_secs(15),
+        ),
+    );
+    let snap = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap();
+    let ids: Vec<_> = snap.physical_screens().map(|r| r.identity()).collect();
+    assert!(coordinator.keep_off(ids[0].clone()).is_none());
+    assert!(coordinator.keep_off(ids[1].clone()).is_none());
+    ccd.deactivate_path(0);
+    ccd.deactivate_path(1);
+    assert!(coordinator.restore_one(&ids[0]).is_none());
+    let intent: IntentFile =
+        JsonUtil::read(SessionPaths::intent(started.borrow().as_str())).unwrap();
+    JsonUtil::write_atomic(
+        SessionPaths::heartbeat(started.borrow().as_str()),
+        &HeartbeatFile {
+            processed_request_id: intent.request_id,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ccd.activate_path(0);
+    assert!(coordinator
+        .wait_for_single_restore_confirmation(&ids[0], Duration::from_secs(1))
+        .is_ok());
     let _ = std::fs::remove_dir_all(started.borrow().as_str());
 }
 
@@ -1561,6 +1608,8 @@ fn coord_hooks(
         bundled_vdd_payload: Box::new(|| false),
         is_alive: Box::new(move |_| alive),
         virtual_path_wait: wait,
+        on_progress: Box::new(|_| {}),
+        cancel_requested: Box::new(|| false),
     }
 }
 
@@ -1756,6 +1805,7 @@ fn session_result_clears_keep_off_heartbeat() {
         .identity();
     assert!(coordinator.keep_off(identity.clone()).is_none());
     assert!(coordinator.has_session());
+    assert!(!coordinator.restore_request_pending());
     JsonUtil::write_atomic(
         SessionPaths::heartbeat(started.borrow().as_str()),
         &HeartbeatFile {
@@ -1836,6 +1886,8 @@ fn missing_metadata_with_live_recovery_waits_for_explicit_result() {
         bundled_vdd_payload: Box::new(|| false),
         is_alive: Box::new(|_| true),
         virtual_path_wait: Duration::from_secs(15),
+        on_progress: Box::new(|_| {}),
+        cancel_requested: Box::new(|| false),
     };
     let ccd = dual_physical();
     let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
@@ -1964,6 +2016,8 @@ fn missing_metadata_with_dead_recovery_rebuilds_from_saved_baseline() {
         bundled_vdd_payload: Box::new(|| false),
         is_alive: Box::new(|_| false),
         virtual_path_wait: Duration::from_secs(15),
+        on_progress: Box::new(|_| {}),
+        cancel_requested: Box::new(|| false),
     };
     let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
     let identity = ccd.rows()[0].identity();
@@ -2558,6 +2612,11 @@ fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() 
     assert_eq!(*helper.borrow(), vec!["enable".to_string()]);
     let dir = coordinator.session_directory().unwrap().to_path_buf();
     assert!(SessionPaths::release(&dir).exists());
+    assert!(coordinator.restore_request_pending());
+    let events = std::fs::read_to_string(SessionPaths::events(&dir)).unwrap();
+    assert!(events.contains("vdd-path-wait-end"));
+    assert!(events.contains("active=1 virtual=0 bundled=0"));
+    assert!(events.contains("helper-operation"));
     JsonUtil::write_atomic(
         SessionPaths::result(&dir),
         &ResultFile {
@@ -2574,6 +2633,94 @@ fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() 
     );
     std::fs::remove_dir_all(dir).unwrap();
     assert!(!coordinator.has_session());
+}
+
+#[test]
+fn cancel_after_helper_enable_does_not_publish_close_intent() {
+    let cancelled = Rc::new(std::cell::Cell::new(false));
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![fakes::path_default(true, 1)],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![fakes::row_simple(
+            PathRole::Internal,
+            1,
+            "Panel",
+            r"\\?\DISPLAY#CMN#1",
+        )],
+    ));
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        helper.clone(),
+        true,
+        true,
+        Some(true),
+        Duration::ZERO,
+    );
+    let cancelled_for_helper = cancelled.clone();
+    let helper_for_hook = helper.clone();
+    hooks.run_driver_helper = Box::new(move |verb| {
+        helper_for_hook.borrow_mut().push(verb.into());
+        if verb == "enable" {
+            cancelled_for_helper.set(true);
+        }
+        0
+    });
+    hooks.cancel_requested = Box::new(move || cancelled.get());
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd.clone()), hooks);
+    let identity = ccd.query_snapshot(CcdConstants::QUERY_FLAGS).unwrap().paths[0].identity();
+    let error = coordinator.keep_off(identity).unwrap();
+    let dir = coordinator.session_directory().unwrap().to_path_buf();
+    assert!(error.contains("已取消"));
+    assert!(!SessionPaths::intent(&dir).exists());
+    assert!(SessionPaths::release(&dir).exists());
+    assert_eq!(*helper.borrow(), vec!["enable".to_string()]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cancel_while_recovery_becomes_ready_does_not_publish_close_intent() {
+    let cancelled = Rc::new(std::cell::Cell::new(false));
+    let ccd = internal_plus_vdd();
+    let mut hooks = coord_hooks(
+        Rc::new(RefCell::new(String::new())),
+        Rc::new(RefCell::new(Vec::new())),
+        true,
+        true,
+        None,
+        Duration::ZERO,
+    );
+    let cancelled_for_start = cancelled.clone();
+    hooks.start_recovery = Box::new(move |dir, _| {
+        JsonUtil::write_atomic(
+            SessionPaths::ready(dir),
+            &ReadyFile {
+                pid: 4242,
+                hotkey_registered: true,
+                hotkey: CcdConstants::HOTKEY_TEXT.into(),
+            },
+        )
+        .unwrap();
+        cancelled_for_start.set(true);
+        4242
+    });
+    hooks.cancel_requested = Box::new(move || cancelled.get());
+    let identity = ccd
+        .rows()
+        .iter()
+        .find(|r| r.is_physical())
+        .unwrap()
+        .identity();
+    let mut coordinator = RecoveryCoordinator::new(Box::new(ccd), hooks);
+    let error = coordinator.keep_off(identity).unwrap();
+    let dir = coordinator.session_directory().unwrap().to_path_buf();
+    assert!(error.contains("已取消"));
+    assert!(!SessionPaths::intent(&dir).exists());
+    assert!(SessionPaths::release(&dir).exists());
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -3433,9 +3580,18 @@ fn activate_inactive_display_instance_retries_validate_87() {
     session.tick();
 
     assert!(!session.exited);
-    assert!(!ccd.rows().iter().any(|row| row.target_id == 1 && row.active));
-    assert!(!ccd.rows().iter().any(|row| row.target_id == 2 && row.active));
-    assert!(ccd.rows().iter().any(|row| row.is_bundled_vdd() && row.active));
+    assert!(!ccd
+        .rows()
+        .iter()
+        .any(|row| row.target_id == 1 && row.active));
+    assert!(!ccd
+        .rows()
+        .iter()
+        .any(|row| row.target_id == 2 && row.active));
+    assert!(ccd
+        .rows()
+        .iter()
+        .any(|row| row.is_bundled_vdd() && row.active));
     assert!(ccd.applied_paths().iter().any(|paths| {
         paths.iter().any(|path| {
             path.target_info.id == 3 && path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
@@ -3477,7 +3633,12 @@ fn assert_activated_vdd_uses_virtual_modes(ccd: &FakeCcd) {
         modes[desktop_index].info_type,
         CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_DESKTOP_IMAGE
     );
-    let signal = unsafe { modes[target_index].union.target_mode.target_video_signal_info };
+    let signal = unsafe {
+        modes[target_index]
+            .union
+            .target_mode
+            .target_video_signal_info
+    };
     assert_ne!(signal.h_sync_freq.numerator, 0);
     assert!(signal.total_size.cx > signal.active_size.cx);
     assert_eq!(signal.active_size.cx, 1920);

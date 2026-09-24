@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+mod operation_worker;
 mod panel_window;
 mod update;
 
@@ -10,11 +11,10 @@ use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+use operation_worker::{Action, Event as OperationEvent, OperationWorker};
 use panel_window::PanelWindow;
 use veil_engine::{
-    AuxiliaryInstallItem, BundledVddAvailability, CcdApi, CcdConstants, DriverStatus,
-    OpenSessionRelease, ParentWatcher, RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenItem,
-    ScreenListBuilder, TopologyBlob, Win32CcdApi, Win32ParentWatcher,
+    AuxiliaryInstallItem, CcdApi, CcdConstants, OpenSessionRelease, ScreenItem, Win32CcdApi,
 };
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
 use windows_sys::Win32::System::Threading::{
@@ -28,6 +28,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const MUTEX_NAME: &str = "Local\\Veil";
 const SHOW_EVENT_NAME: &str = "Local\\Veil.ShowPanel";
 const DEFAULT_DETAIL: &str = "托盘常驻。关面板退回托盘，不退出。黑色画面不是关屏成功。";
+static PENDING_HELPER: Mutex<Option<(usize, String)>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TrayCommand {
@@ -234,7 +235,17 @@ struct VeilApp {
     _tray: Option<TrayIcon>,
     panel: PanelWindow,
     commands: Arc<Mutex<Vec<TrayCommand>>>,
-    coordinator: RecoveryCoordinator,
+    worker: OperationWorker,
+    pending: Vec<(u64, Action)>,
+    operation_started: Instant,
+    stage_started: Instant,
+    stage: String,
+    auto_stage: bool,
+    cancel_requested: bool,
+    last_operation_error: Option<String>,
+    worker_failed: bool,
+    confirmation: Option<(String, std::sync::mpsc::Sender<bool>)>,
+    has_session: bool,
     screens: Vec<ScreenItem>,
     auxiliary: AuxiliaryInstallItem,
     detail: String,
@@ -256,11 +267,7 @@ struct VeilApp {
 
 impl VeilApp {
     fn new(mutex: HANDLE, show_event: HANDLE, ctx: &egui::Context) -> Self {
-        let mut hooks = RecoveryCoordinatorHooks::production();
-        hooks.confirm_enable_vdd = Some(Box::new(confirm_bundled_vdd));
-        hooks.run_driver_helper = Box::new(|verb| run_helper_elevated(verb));
-        hooks.is_alive = Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false));
-        let coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
+        let worker = OperationWorker::start(ctx.clone());
         let app = Self {
             mutex,
             show_event,
@@ -270,7 +277,17 @@ impl VeilApp {
             _tray: None,
             panel: PanelWindow::new(),
             commands: Arc::new(Mutex::new(Vec::new())),
-            coordinator,
+            worker,
+            pending: Vec::new(),
+            operation_started: Instant::now(),
+            stage_started: Instant::now(),
+            stage: String::new(),
+            auto_stage: false,
+            cancel_requested: false,
+            last_operation_error: None,
+            worker_failed: false,
+            confirmation: None,
+            has_session: false,
             screens: vec![],
             auxiliary: AuxiliaryInstallItem::from_availability(false),
             detail: DEFAULT_DETAIL.into(),
@@ -352,109 +369,166 @@ impl VeilApp {
 
     fn restore_all_from_tray(&mut self, ctx: &egui::Context) {
         self.open_panel(ctx);
-        if let Some(e) = self.coordinator.restore_all() {
-            self.detail = e;
-        }
-        self.refresh();
+        self.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
     }
 
-    fn refresh(&mut self) {
-        self.coordinator.poll();
-        let snapshot =
-            match veil_engine::CcdApi::query_snapshot(&Win32CcdApi, CcdConstants::QUERY_FLAGS) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.detail = format!("无法枚举显示器：{e}");
-                    return;
+    fn refresh(&mut self, ctx: &egui::Context) {
+        loop {
+            let event = match self.worker.events.try_recv() {
+                Ok(event) => event,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if !self.worker_failed {
+                        self.worker_failed = true;
+                        self.pending.clear();
+                        self.stage.clear();
+                        self.detail = "显示操作线程已退出，当前恢复状态未知。请使用仍可用的紧急热键，并保留日志。".into();
+                        self.open_panel(ctx);
+                    }
+                    break;
                 }
             };
-        let hotkey = self.coordinator.hotkey_registered;
-        self.hotkey_status = if hotkey {
-            format!("{}：可用", CcdConstants::HOTKEY_TEXT)
-        } else if !self.coordinator.has_session() {
-            format!("{}：空闲，下次关屏前启用", CcdConstants::HOTKEY_TEXT)
-        } else {
-            format!("{}：不可用", CcdConstants::HOTKEY_TEXT)
-        };
-        let bundled = BundledVddAvailability::from_flags(
-            DriverStatus::installed(),
-            DriverStatus::payload_present(),
-        );
-        self.screens = ScreenListBuilder::build(
-            &snapshot,
-            self.coordinator.heartbeat.as_ref(),
-            &self.coordinator.wanted(),
-            bundled,
-            self.coordinator.is_ready || !self.coordinator.has_session(),
-            hotkey || !self.coordinator.has_session(),
-        );
-        if let Some(reason) = self.coordinator.recovery_block_reason() {
-            for screen in &mut self.screens {
-                screen.can_keep_off = false;
-                screen.block_reason = reason.to_owned();
+            match event {
+                OperationEvent::Fault(error) => {
+                    self.detail = error;
+                    self.screens.clear();
+                    self.auto_stage = false;
+                }
+                OperationEvent::View(view) => {
+                    self.screens = view.screens;
+                    self.auxiliary = view.auxiliary;
+                    self.hotkey_status = view.hotkey_status;
+                    self.holding = view.holding;
+                    self.has_session = view.has_session;
+                    if self.pending.is_empty() {
+                        if let Some(detail) = view.detail.filter(|text| !text.is_empty()) {
+                            self.detail = match &self.last_operation_error {
+                                Some(error) if !detail.contains(error) => {
+                                    format!("{error} 当前状态：{detail}")
+                                }
+                                _ => detail,
+                            };
+                        }
+                    }
+                    self.sync_topology_viewport(ctx, &view.topology_fingerprint);
+                    self.auto_stage = false;
+                }
+                OperationEvent::Phase(phase) => {
+                    if self.pending.is_empty() {
+                        self.operation_started = Instant::now();
+                    }
+                    self.stage = phase;
+                    self.stage_started = Instant::now();
+                    self.auto_stage = self.pending.is_empty();
+                }
+                OperationEvent::Confirm { reason, reply } => {
+                    self.stage = "等待你确认是否启用显示驱动".into();
+                    self.stage_started = Instant::now();
+                    self.confirmation = Some((reason, reply));
+                    self.open_panel(ctx);
+                }
+                OperationEvent::Done { id, action, error } => {
+                    self.pending.retain(|(pending_id, _)| *pending_id != id);
+                    if let Some(error) = error {
+                        self.last_operation_error = Some(error.clone());
+                        self.detail = error;
+                        self.open_panel(ctx);
+                    } else {
+                        if matches!(action, Action::Cancel | Action::RestoreAll | Action::Exit) {
+                            self.last_operation_error = None;
+                        }
+                        match action {
+                            Action::KeepOff
+                                if !self.cancel_requested && self.pending.is_empty() =>
+                            {
+                                self.hide_panel();
+                                self.hide_before_apply = true;
+                            }
+                            Action::RestoreAll => self.detail = "恢复全部已确认完成。".into(),
+                            Action::Cancel => self.detail = "取消已处理；恢复结果已确认。".into(),
+                            Action::Install => self.detail = "辅助虚拟输出已安装。".into(),
+                            _ => {}
+                        }
+                    }
+                    if self.pending.is_empty() {
+                        self.stage.clear();
+                        self.cancel_requested = false;
+                    }
+                }
+                OperationEvent::ShowPanel => {
+                    self.open_panel(ctx);
+                    let _ = self.worker.send(Action::PanelShown, None);
+                }
+                OperationEvent::ExitReady => {
+                    self.exiting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
-        self.auxiliary = AuxiliaryInstallItem::from_availability(bundled);
-        if let Some(text) = &self.coordinator.status_text {
-            if !text.is_empty() {
-                self.detail = text.clone();
-            }
-        }
-        self.holding = self
-            .screens
-            .iter()
-            .any(|s| s.wanted == "保持关闭" || s.confirmed == "处理中");
         if let Some(tray) = &self._tray {
-            let _ = tray.set_icon(Some(tray_icon_for(self.holding)));
+            let _ = tray.set_icon(Some(tray_icon_for(
+                self.holding || !self.pending.is_empty() || self.auto_stage,
+            )));
         }
         self.last_refresh = Instant::now();
     }
 
-    fn keep_off(&mut self, ctx: &egui::Context, item: ScreenItem) {
-        if let Some(err) = self.coordinator.keep_off(item.identity) {
-            self.open_panel(ctx);
-            self.refresh();
-            self.detail = err;
+    fn submit(&mut self, action: Action, target: Option<veil_engine::ScreenIdentity>, label: &str) {
+        if self.worker_failed {
+            self.detail = "显示操作线程不可用，无法确认恢复状态。".into();
             return;
         }
-        self.hide_panel();
-        self.hide_before_apply = true;
-        self.refresh();
+        if self.pending.iter().any(|(_, pending)| *pending == action) {
+            return;
+        }
+        if matches!(action, Action::Cancel | Action::RestoreAll | Action::Exit) {
+            if let Some((_, reply)) = self.confirmation.take() {
+                let _ = reply.send(false);
+            }
+        }
+        let was_idle = self.pending.is_empty();
+        match self.worker.send(action, target) {
+            Ok(id) => {
+                self.pending.push((id, action));
+                if action != Action::Cancel {
+                    self.last_operation_error = None;
+                }
+                if was_idle {
+                    self.operation_started = Instant::now();
+                }
+                self.stage_started = Instant::now();
+                self.stage = label.into();
+                self.auto_stage = false;
+            }
+            Err(error) => self.detail = error,
+        }
+    }
+
+    fn keep_off(&mut self, _ctx: &egui::Context, item: ScreenItem) {
+        self.submit(
+            Action::KeepOff,
+            Some(item.identity),
+            "正在检查显示状态和恢复能力",
+        );
     }
 
     fn try_exit(&mut self, ctx: &egui::Context) -> bool {
-        match self
-            .coordinator
-            .restore_all_and_wait(Duration::from_secs(20))
-        {
-            Ok(_outcome) => {
-                self.exiting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                true
-            }
-            Err(msg) => {
-                self.open_panel(ctx);
-                message_box(&msg.to_string(), false);
-                false
-            }
-        }
+        self.open_panel(ctx);
+        self.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
+        false
     }
 
-    fn sync_topology_viewport(&mut self, ctx: &egui::Context) {
-        let Ok(frame) = Win32CcdApi.capture(CcdConstants::QUERY_FLAGS) else {
-            return;
-        };
-        let fingerprint = TopologyBlob::fingerprint(&frame.paths, &frame.modes);
+    fn sync_topology_viewport(&mut self, ctx: &egui::Context, fingerprint: &str) {
         if self.topology_fingerprint.is_empty() {
-            self.topology_fingerprint = fingerprint;
+            self.topology_fingerprint = fingerprint.into();
             return;
         }
         if fingerprint == self.topology_fingerprint {
             return;
         }
-        self.topology_fingerprint = fingerprint;
+        self.topology_fingerprint = fingerprint.into();
         ctx.request_repaint();
-        if self.hide_before_apply || self.coordinator.has_session() {
+        if self.hide_before_apply || self.has_session {
             return;
         }
         if self.holding {
@@ -542,12 +616,7 @@ impl eframe::App for VeilApp {
         }
         self.panel.sync(hwnd, self.panel_open && !self.exiting);
         if self.last_refresh.elapsed() >= Duration::from_millis(400) {
-            self.refresh();
-            self.sync_topology_viewport(ctx);
-        }
-        if self.coordinator.take_should_show_panel() {
-            self.open_panel(ctx);
-            self.coordinator.panel_show_attempt_finished();
+            self.refresh(ctx);
         }
         ctx.request_repaint_after(Duration::from_millis(400));
 
@@ -555,6 +624,47 @@ impl eframe::App for VeilApp {
             ui.heading("Veil");
             ui.label(&self.hotkey_status);
             ui.label(&self.detail);
+            if !self.pending.is_empty() || self.auto_stage {
+                ui.group(|ui| {
+                    ui.strong(&self.stage);
+                    ui.label(format!(
+                        "已等待 {} 秒（当前阶段 {} 秒）",
+                        self.operation_started.elapsed().as_secs(),
+                        self.stage_started.elapsed().as_secs()
+                    ));
+                    if self.cancel_requested {
+                        ui.label("取消已收到；正在等待设备操作结束并确认恢复状态。");
+                    } else if self
+                        .pending
+                        .iter()
+                        .any(|(_, action)| *action == Action::KeepOff)
+                    {
+                        if ui.button("取消本次操作").clicked() {
+                            if let Some((_, reply)) = self.confirmation.take() {
+                                let _ = reply.send(false);
+                            }
+                            self.submit(Action::Cancel, None, "取消已收到，正在确认恢复");
+                            self.cancel_requested = true;
+                        }
+                    }
+                });
+            }
+            if let Some(reason) = self.confirmation.as_ref().map(|(reason, _)| reason.clone()) {
+                ui.group(|ui| {
+                    ui.label(&reason);
+                    ui.label("这是显示驱动操作，继续前需要你明确确认。");
+                    if ui.button("继续").clicked() {
+                        if let Some((_, reply)) = self.confirmation.take() {
+                            let _ = reply.send(true);
+                        }
+                    }
+                    if ui.button("取消").clicked() {
+                        if let Some((_, reply)) = self.confirmation.take() {
+                            let _ = reply.send(false);
+                        }
+                    }
+                });
+            }
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for item in self.screens.clone() {
@@ -572,19 +682,32 @@ impl eframe::App for VeilApp {
                         }
                         ui.horizontal(|ui| {
                             if ui
-                                .add_enabled(item.can_keep_off, egui::Button::new("保持关闭"))
+                                .add_enabled(
+                                    item.can_keep_off
+                                        && self.pending.is_empty()
+                                        && !self.auto_stage
+                                        && !self.worker_failed,
+                                    egui::Button::new("保持关闭"),
+                                )
                                 .clicked()
                             {
                                 self.keep_off(ctx, item.clone());
                             }
                             if ui
-                                .add_enabled(item.can_restore, egui::Button::new("恢复"))
+                                .add_enabled(
+                                    item.can_restore
+                                        && self.pending.is_empty()
+                                        && !self.auto_stage
+                                        && !self.worker_failed,
+                                    egui::Button::new("恢复"),
+                                )
                                 .clicked()
                             {
-                                if let Some(err) = self.coordinator.restore_one(&item.identity) {
-                                    self.detail = err;
-                                }
-                                self.refresh();
+                                self.submit(
+                                    Action::RestoreOne,
+                                    Some(item.identity.clone()),
+                                    "正在恢复所选物理屏",
+                                );
                             }
                         });
                     });
@@ -598,24 +721,19 @@ impl eframe::App for VeilApp {
                 }
                 if ui
                     .add_enabled(
-                        self.auxiliary.enabled,
+                        self.auxiliary.enabled
+                            && self.pending.is_empty()
+                            && !self.auto_stage
+                            && !self.worker_failed,
                         egui::Button::new(&self.auxiliary.label),
                     )
                     .clicked()
                 {
-                    if let Some(e) = self.coordinator.install_auxiliary_output() {
-                        self.detail = e;
-                    } else {
-                        self.detail = "辅助虚拟输出已安装，关最后一块物理屏时将启用。".into();
-                    }
-                    self.refresh();
+                    self.submit(Action::Install, None, "正在安装辅助虚拟输出");
                 }
             }
             if ui.button("恢复全部").clicked() {
-                if let Some(e) = self.coordinator.restore_all() {
-                    self.detail = e;
-                }
-                self.refresh();
+                self.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
             }
             let mut startup = self.startup;
             if ui.checkbox(&mut startup, "开机自启（默认关）").changed() {
@@ -697,10 +815,6 @@ impl VeilApp {
     }
 }
 
-fn confirm_bundled_vdd(reason: &str) -> bool {
-    message_box(&format!("{reason}\n\n继续？取消则物理屏不改动。"), true)
-}
-
 fn message_box(text: &str, cancel: bool) -> bool {
     let text_w = to_wide(text);
     let caption = to_wide("Veil");
@@ -712,14 +826,9 @@ fn message_box(text: &str, cancel: bool) -> bool {
 fn run_helper_elevated(verb: &str) -> i32 {
     use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-    use windows_sys::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
     // A timed-out helper can still be running. Retain its handle and never launch
     // a second device operation until the first one has actually ended.
-    static PENDING: std::sync::Mutex<Option<(usize, String)>> = std::sync::Mutex::new(None);
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pending = PENDING_HELPER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((raw, previous_verb)) = pending.as_ref() {
         let handle = *raw as HANDLE;
         let wait = unsafe { WaitForSingleObject(handle, 0) };
@@ -741,45 +850,33 @@ fn run_helper_elevated(verb: &str) -> i32 {
             return if ok != 0 { code as i32 } else { 1 };
         }
     }
-    let exe = veil_engine::ProcessLaunch::driver_helper_exe_path();
-    let exe_w = to_wide(&exe.to_string_lossy());
-    let verb_w = to_wide("runas");
-    let params = to_wide(verb);
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = verb_w.as_ptr();
-    info.lpFile = exe_w.as_ptr();
-    info.lpParameters = params.as_ptr();
-    info.nShow = SW_HIDE;
     app_log(&format!("helper start verb={verb}"));
-    if unsafe { ShellExecuteExW(&mut info) } == 0 {
-        let error = unsafe { GetLastError() };
-        app_log(&format!("helper launch-failed verb={verb} win32={error}"));
-        return if error == 0 { 1 } else { error as i32 };
-    }
-    if info.hProcess.is_null() {
-        app_log(&format!("helper missing-process verb={verb}"));
-        return 1;
-    }
-    let wait = unsafe { WaitForSingleObject(info.hProcess, 60_000) };
+    let raw = match launch_helper_elevated(verb) {
+        Ok(raw) => raw,
+        Err(error) => {
+            app_log(&format!("helper launch-failed verb={verb} win32={error}"));
+            return error;
+        }
+    };
+    let handle = raw as HANDLE;
+    let wait = unsafe { WaitForSingleObject(handle, 60_000) };
     if wait != WAIT_OBJECT_0 {
         let error = unsafe { GetLastError() };
-        *pending = Some((info.hProcess as usize, verb.to_string()));
+        *pending = Some((raw, verb.to_string()));
         app_log(&format!(
             "helper wait-incomplete verb={verb} wait={wait} win32={error}"
         ));
         return if wait == WAIT_TIMEOUT { 1460 } else { 1 };
     }
     let mut code = 1;
-    let ok = unsafe { GetExitCodeProcess(info.hProcess, &mut code) };
+    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
     let error = if ok == 0 {
         unsafe { GetLastError() }
     } else {
         0
     };
     unsafe {
-        CloseHandle(info.hProcess);
+        CloseHandle(handle);
     }
     app_log(&format!("helper end verb={verb} exit={code} win32={error}"));
     if ok != 0 {
@@ -787,6 +884,62 @@ fn run_helper_elevated(verb: &str) -> i32 {
     } else {
         error.max(1) as i32
     }
+}
+
+fn helper_operation_unfinished() -> bool {
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    let pending = PENDING_HELPER.lock().unwrap_or_else(|e| e.into_inner());
+    pending.as_ref().is_some_and(|(raw, _)| {
+        (unsafe { WaitForSingleObject(*raw as HANDLE, 0) }) != WAIT_OBJECT_0
+    })
+}
+
+fn launch_helper_elevated(verb: &str) -> Result<usize, i32> {
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let exe = veil_engine::ProcessLaunch::driver_helper_exe_path();
+    let exe_w = to_wide(&exe.to_string_lossy());
+    let params = to_wide(verb);
+    let launcher = std::thread::Builder::new()
+        .name("veil-elevated-launch".into())
+        .spawn(move || {
+            // ShellExecuteEx can load STA shell extensions. Keep its apartment on
+            // this short-lived launcher; the operation thread waits on the handle.
+            let hr = unsafe {
+                CoInitializeEx(
+                    std::ptr::null(),
+                    (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+                )
+            };
+            if hr < 0 {
+                return Err(hr);
+            }
+            let verb_w = to_wide("runas");
+            let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+            info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+            info.lpVerb = verb_w.as_ptr();
+            info.lpFile = exe_w.as_ptr();
+            info.lpParameters = params.as_ptr();
+            info.nShow = SW_HIDE;
+            let result = if unsafe { ShellExecuteExW(&mut info) } == 0 {
+                Err(unsafe { GetLastError() }.max(1) as i32)
+            } else if info.hProcess.is_null() {
+                Err(1)
+            } else {
+                Ok(info.hProcess as usize)
+            };
+            unsafe { CoUninitialize() };
+            result
+        })
+        .map_err(|_| 1)?;
+    launcher.join().unwrap_or(Err(1))
 }
 
 fn try_acquire_mutex() -> Option<HANDLE> {
@@ -952,4 +1105,21 @@ fn chrono_like_stamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", now.as_secs())
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+
+    #[test]
+    fn unfinished_helper_blocks_new_device_work_until_process_exits() {
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        assert!(!handle.is_null());
+        *PENDING_HELPER.lock().unwrap() = Some((handle as usize, "test".into()));
+        assert!(helper_operation_unfinished());
+        assert_ne!(unsafe { SetEvent(handle) }, 0);
+        assert!(!helper_operation_unfinished());
+        PENDING_HELPER.lock().unwrap().take();
+        unsafe { CloseHandle(handle) };
+    }
 }
