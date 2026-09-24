@@ -504,6 +504,10 @@ impl RecoveryCoordinator {
         self.apply_intent(selected)
     }
 
+    pub fn restore_request_pending(&self) -> bool {
+        self.directory.is_some() && self.pending_release != 0 && self.last_outcome.is_none()
+    }
+
     pub fn wait_for_single_restore_confirmation(
         &mut self,
         identity: &ScreenIdentity,

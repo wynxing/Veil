@@ -186,8 +186,9 @@ fn run(
                                 .target
                                 .map(|id| coordinator.keep_off(id))
                                 .unwrap_or_else(|| Some("缺少目标物理屏。".into()));
-                            let had_session = result.is_some() && coordinator.has_session();
-                            let recovery_error = if had_session {
+                            let restore_requested =
+                                result.is_some() && coordinator.restore_request_pending();
+                            let recovery_error = if restore_requested {
                                 coordinator
                                     .wait_for_restore_completion(Duration::from_secs(20))
                                     .err()
@@ -199,7 +200,7 @@ fn run(
                                 if let Some(restore) = &recovery_error {
                                     *error =
                                         format!("{error} 关屏请求未提交；恢复未确认：{restore}");
-                                } else if had_session {
+                                } else if restore_requested {
                                     error.push_str(" 关屏请求未提交；恢复和清理已确认。");
                                 } else {
                                     error.push_str(" 关屏请求未提交。");

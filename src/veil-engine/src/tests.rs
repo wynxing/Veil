@@ -1805,6 +1805,7 @@ fn session_result_clears_keep_off_heartbeat() {
         .identity();
     assert!(coordinator.keep_off(identity.clone()).is_none());
     assert!(coordinator.has_session());
+    assert!(!coordinator.restore_request_pending());
     JsonUtil::write_atomic(
         SessionPaths::heartbeat(started.borrow().as_str()),
         &HeartbeatFile {
@@ -2611,6 +2612,7 @@ fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() 
     assert_eq!(*helper.borrow(), vec!["enable".to_string()]);
     let dir = coordinator.session_directory().unwrap().to_path_buf();
     assert!(SessionPaths::release(&dir).exists());
+    assert!(coordinator.restore_request_pending());
     let events = std::fs::read_to_string(SessionPaths::events(&dir)).unwrap();
     assert!(events.contains("vdd-path-wait-end"));
     assert!(events.contains("active=1 virtual=0 bundled=0"));
