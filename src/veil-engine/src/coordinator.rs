@@ -33,6 +33,8 @@ pub struct RecoveryCoordinatorHooks {
     pub bundled_vdd_payload: Box<dyn Fn() -> bool>,
     pub is_alive: Box<dyn Fn(i32) -> bool>,
     pub virtual_path_wait: Duration,
+    pub on_progress: Box<dyn FnMut(&str)>,
+    pub cancel_requested: Box<dyn Fn() -> bool>,
 }
 
 impl RecoveryCoordinatorHooks {
@@ -47,6 +49,8 @@ impl RecoveryCoordinatorHooks {
             bundled_vdd_payload: Box::new(|| DriverStatus::payload_present()),
             is_alive: Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false)),
             virtual_path_wait: Duration::from_secs(15),
+            on_progress: Box::new(|_| {}),
+            cancel_requested: Box::new(|| false),
         }
     }
 }
@@ -204,6 +208,38 @@ impl RecoveryCoordinator {
                 rc,
             );
         }
+    }
+
+    fn progress(&mut self, stage: &str) {
+        (self.hooks.on_progress)(stage);
+        self.log_operation("operation-stage", stage, None);
+    }
+
+    fn run_helper(&mut self, verb: &str) -> i32 {
+        let stage = match verb {
+            "install-driver" => "正在安装辅助虚拟输出，请处理 Windows 权限提示",
+            "enable" => "正在启用辅助虚拟输出，请处理 Windows 权限提示",
+            "disable" => "正在清理辅助虚拟输出，请处理 Windows 权限提示",
+            _ => "正在等待设备操作",
+        };
+        self.progress(stage);
+        let started = Instant::now();
+        let rc = (self.hooks.run_driver_helper)(verb);
+        if let Some(dir) = &self.directory {
+            SessionLog::append(
+                dir,
+                "helper-operation",
+                Some(&format!(
+                    "operation={} verb={verb} elapsed_ms={}",
+                    self.operation_id,
+                    started.elapsed().as_millis()
+                )),
+                None,
+                None,
+                Some(rc),
+            );
+        }
+        rc
     }
 
     pub fn is_interrupt_reason(reason: &str) -> bool {
@@ -414,7 +450,7 @@ impl RecoveryCoordinator {
             }
             return;
         }
-        let rc = (self.hooks.run_driver_helper)("enable");
+        let rc = self.run_helper("enable");
         if rc != 0 {
             self.status_text = Some("再次启用辅助输出失败，结束本轮要求。".into());
             if let Some(e) = self.restore_all() {
@@ -436,6 +472,7 @@ impl RecoveryCoordinator {
     }
 
     pub fn install_auxiliary_output(&mut self) -> Option<String> {
+        self.operation_id = crate::session::request_id();
         if (self.hooks.bundled_vdd_installed)() {
             return Some(AUXILIARY_ALREADY_INSTALLED.into());
         }
@@ -447,9 +484,13 @@ impl RecoveryCoordinator {
                 return Some(INSTALL_VDD_CANCELLED.into());
             }
         }
-        let helper_rc = (self.hooks.run_driver_helper)("install-driver");
+        let helper_rc = self.run_helper("install-driver");
         if helper_rc != 0 {
-            return Some(INSTALL_VDD_FAILED.into());
+            return Some(match helper_rc {
+                1223 => "Windows 权限确认已取消，辅助虚拟输出未安装。".into(),
+                1460 => "辅助程序等待超时，安装状态未知；请等待其结束后重试。".into(),
+                _ => INSTALL_VDD_FAILED.into(),
+            });
         }
         None
     }
@@ -463,7 +504,53 @@ impl RecoveryCoordinator {
         self.apply_intent(selected)
     }
 
+    pub fn wait_for_single_restore_confirmation(
+        &mut self,
+        identity: &ScreenIdentity,
+        timeout: Duration,
+    ) -> Result<(), RestoreError> {
+        if self.directory.is_none() {
+            return self
+                .last_outcome
+                .clone()
+                .unwrap_or(Ok(RestoreOutcome::complete("无需恢复。")))
+                .map(|_| ());
+        }
+        if self.wanted().is_empty() {
+            return self.wait_for_restore_completion(timeout).map(|_| ());
+        }
+        self.progress("正在确认所选物理屏已恢复");
+        let request_id = self.intent.request_id;
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            self.poll();
+            if let Some(Err(error)) = &self.last_outcome {
+                return Err(error.clone());
+            }
+            let acknowledged = self
+                .heartbeat
+                .as_ref()
+                .is_some_and(|hb| hb.processed_request_id >= request_id);
+            if acknowledged {
+                if let Ok(snapshot) = self.ccd.query_snapshot(CcdConstants::QUERY_FLAGS) {
+                    if snapshot
+                        .active_physical()
+                        .any(|path| path.identity().matches(identity))
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let error = RestoreError::Timeout("所选物理屏的恢复未确认；请点恢复全部。".into());
+        self.status_text = Some(error.to_string());
+        self.last_outcome = Some(Err(error.clone()));
+        Err(error)
+    }
+
     pub fn restore_all(&mut self) -> Option<String> {
+        self.progress("正在恢复物理屏并确认结果");
         let Some(dir) = self.directory.clone() else {
             return None;
         };
@@ -574,6 +661,13 @@ impl RecoveryCoordinator {
         if let Some(e) = self.restore_all() {
             return Err(RestoreError::Protocol(e));
         }
+        self.wait_for_restore_completion(timeout)
+    }
+
+    pub fn wait_for_restore_completion(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<RestoreOutcome, RestoreError> {
         if self.directory.is_none() {
             return self
                 .last_outcome
@@ -599,6 +693,10 @@ impl RecoveryCoordinator {
     fn apply_intent(&mut self, selected: Vec<ScreenIdentity>) -> Option<String> {
         if selected.is_empty() {
             return self.restore_all();
+        }
+        self.operation_id = crate::session::request_id();
+        if (self.hooks.cancel_requested)() {
+            return Some("已取消本次保持关闭请求。".into());
         }
         if matches!(self.last_outcome, Some(Err(_))) {
             return Some("上次恢复未完成，请先恢复全部。".into());
@@ -678,9 +776,13 @@ impl RecoveryCoordinator {
                 }
             }
             if plan.action == KeepOffAction::InstallBundledVdd {
-                let helper_rc = (self.hooks.run_driver_helper)("install-driver");
+                let helper_rc = self.run_helper("install-driver");
                 if helper_rc != 0 {
-                    return Some(INSTALL_VDD_FAILED.into());
+                    return Some(match helper_rc {
+                        1223 => "Windows 权限确认已取消。".into(),
+                        1460 => "辅助程序等待超时，安装状态未知。".into(),
+                        _ => INSTALL_VDD_FAILED.into(),
+                    });
                 }
             }
             // Mark cleanup responsibility before launching: failure may be partial.
@@ -704,12 +806,24 @@ impl RecoveryCoordinator {
                     }
                 }
             }
-            let helper_rc = (self.hooks.run_driver_helper)("enable");
+            let helper_rc = self.run_helper("enable");
             if helper_rc != 0 {
-                return Some(ENABLE_VDD_FAILED.into());
+                return Some(match helper_rc {
+                    1223 => "Windows 权限确认已取消。".into(),
+                    1460 => "辅助程序等待超时，启用状态未知。".into(),
+                    _ => ENABLE_VDD_FAILED.into(),
+                });
             }
+            if (self.hooks.cancel_requested)() {
+                return Some("已取消本次保持关闭请求；正在恢复并清理辅助输出。".into());
+            }
+            self.progress("正在等待辅助虚拟路径出现");
+            let wait_started = Instant::now();
             let wait_until = Instant::now() + self.hooks.virtual_path_wait;
             while Instant::now() < wait_until {
+                if (self.hooks.cancel_requested)() {
+                    return Some("已取消本次保持关闭请求；正在恢复并清理辅助输出。".into());
+                }
                 snapshot = match self.ccd.query_snapshot(CcdConstants::QUERY_FLAGS) {
                     Ok(s) => s,
                     Err(e) => return Some(e),
@@ -718,6 +832,18 @@ impl RecoveryCoordinator {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(400));
+            }
+            if let Some(dir) = &self.directory {
+                let active = snapshot.active_paths().count();
+                let virtual_paths = snapshot
+                    .active_paths()
+                    .filter(|p| p.role == crate::PathRole::Virtual)
+                    .count();
+                let bundled = snapshot
+                    .active_paths()
+                    .filter(|p| p.is_bundled_vdd())
+                    .count();
+                SessionLog::append(dir, "vdd-path-wait-end", Some(&format!("operation={} elapsed_ms={} active={active} virtual={virtual_paths} bundled={bundled}", self.operation_id, wait_started.elapsed().as_millis())), None, None, None);
             }
             if !snapshot.has_active_bundled_vdd() {
                 return Some(VDD_PATH_MISSING.into());
@@ -730,6 +856,10 @@ impl RecoveryCoordinator {
                 );
             }
         }
+        if (self.hooks.cancel_requested)() {
+            return Some("已取消本次保持关闭请求；尚未提交关屏要求。".into());
+        }
+        self.progress("正在校验显示配置并准备安全恢复");
         let planned = match DisplayPlanner::validate_deactivate(
             self.ccd.as_ref(),
             &selected,
@@ -745,6 +875,9 @@ impl RecoveryCoordinator {
             }
             return Some(format!("无法保持关闭：校验 {}。", planned.rc));
         }
+        if (self.hooks.cancel_requested)() {
+            return Some("已取消本次保持关闭请求；尚未提交关屏要求。".into());
+        }
         self.publish_intent(
             &selected,
             plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
@@ -754,6 +887,9 @@ impl RecoveryCoordinator {
     fn publish_intent(&mut self, selected: &[ScreenIdentity], vdd_assist: bool) -> Option<String> {
         if let Some(error) = self.ensure_recovery() {
             return Some(error);
+        }
+        if (self.hooks.cancel_requested)() {
+            return Some("已取消本次保持关闭请求；尚未提交关屏要求。".into());
         }
         let intent = IntentFile {
             request_id: crate::session::request_id(),
@@ -800,6 +936,7 @@ impl RecoveryCoordinator {
     }
 
     fn ensure_recovery(&mut self) -> Option<String> {
+        self.progress("正在等待恢复进程和紧急热键就绪");
         self.poll();
         if matches!(self.last_outcome, Some(Err(_))) {
             return Some("恢复未完成，拒绝新的关屏。".into());
@@ -908,7 +1045,7 @@ impl RecoveryCoordinator {
             self.log_operation("cleanup-end", "physical-output-unconfirmed", None);
             return;
         }
-        let rc = (self.hooks.run_driver_helper)("disable");
+        let rc = self.run_helper("disable");
         self.log_operation("cleanup-end", "disable-owned-vdd", Some(rc));
         if rc != 0 {
             let detail = match rc {
