@@ -1,6 +1,7 @@
 # Local development settings
 .idea/
 .vscode/
+.worktrees
 *.swp
 *.swo
 
