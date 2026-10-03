@@ -21,7 +21,7 @@
 - 标签：`v` + 数字版本 + 可选 suffix，例如 `v0.1.1-preview.1`。
 - 文件名：`VeilSetup-0.1.1-preview.1-x64.exe`。
 
-改版本只改 props，不要在 WiX 里手写另一套数字。`src/Cargo.toml` 的 `version` 与 `workspace.metadata.veil.suffix` 必须和这份 props 一致，发布预检会核对，不一致则失败。应用内更新比较的是 props 编出来的信息版本（例如 `0.1.17-preview.1`），不是丢掉后缀的文件版本 `0.1.17.0`。
+改版本只改 props，不要在 WiX 里手写另一套数字。`src/Cargo.toml` 的 `version` 与 `workspace.metadata.veil.suffix` 必须和这份 props 一致，发布预检会核对，不一致则失败。应用内更新比较的是 props 编出来的信息版本（例如 `0.1.18-preview.1`），不是丢掉后缀的文件版本 `0.1.18.0`。
 
 ## 本机打包
 
@@ -76,7 +76,7 @@ Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Wind
 
 ## 下一次预览
 
-当前预览版本是 `0.1.17-preview.1`（`v0.1.17-preview.1`）。数字版本从 `0.1.16` 升高，满足 MajorUpgrade 的版本递增要求，实际升级仍待安装验收。本版改善“保持关闭”及恢复等耗时操作的界面响应、等待阶段与取消引导，并补充辅助程序和虚拟路径诊断日志；具体边界见 [等待过程验收](validation/responsive-operations.md)。客户机器上虚拟路径不出现的原因尚未确认。安装、升级、修复、卸载及屏幕恢复尚未在隔离 Windows 环境完成验收，睡眠回路与唤醒闪屏的机旁矩阵仍未通过。0.1.7 起升级先 `retire-old`。下次改代码：升高 `Version`、合并、再打新 tag。
+当前预览版本是 `0.1.18-preview.1`（`v0.1.18-preview.1`）。数字版本从 `0.1.17` 升高，满足 MajorUpgrade 的版本递增要求，实际升级仍待安装验收。本版让停泊在托盘、视图没有变化时不再预约界面重绘；操作线程仍每 400 毫秒枚举显示器。托盘空闲时的内存曲线尚未在本机复测，不得写成泄漏已经消失。客户机器上虚拟路径不出现的原因尚未确认。安装、升级、修复、卸载及屏幕恢复尚未在隔离 Windows 环境完成验收，睡眠回路与唤醒闪屏的机旁矩阵仍未通过。0.1.7 起升级先 `retire-old`。下次改代码：升高 `Version`、合并、再打新 tag。
 
 ## 明确延后
 
