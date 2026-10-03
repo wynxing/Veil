@@ -39,7 +39,7 @@ impl AuxiliaryInstallItem {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenItem {
     pub identity: ScreenIdentity,
     pub name: String,
