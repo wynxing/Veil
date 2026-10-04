@@ -9,6 +9,7 @@ use veil_engine::{
     TopologyBlob, Win32CcdApi, Win32ParentWatcher,
 };
 
+use crate::wake::UiWake;
 use crate::{app_log, helper_operation_unfinished, run_helper_elevated};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,14 +65,14 @@ pub(crate) struct OperationWorker {
 }
 
 impl OperationWorker {
-    pub fn start(ctx: egui::Context) -> Self {
+    pub fn start(wake: Arc<UiWake>) -> Self {
         let (commands, incoming) = mpsc::channel::<Command>();
         let (outgoing, events) = mpsc::channel();
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel_requested);
         std::thread::Builder::new()
             .name("veil-display-operations".into())
-            .spawn(move || run(incoming, outgoing, flag, ctx))
+            .spawn(move || run(incoming, outgoing, flag, wake))
             .expect("无法启动显示操作线程");
         Self {
             commands,
@@ -97,23 +98,23 @@ impl OperationWorker {
     }
 }
 
-fn emit(out: &Sender<Event>, ctx: &egui::Context, event: Event) {
+fn emit(out: &Sender<Event>, wake: &UiWake, event: Event) {
     let _ = out.send(event);
-    ctx.request_repaint();
+    wake.ping();
 }
 
 fn run(
     incoming: Receiver<Command>,
     outgoing: Sender<Event>,
     cancel: Arc<AtomicBool>,
-    ctx: egui::Context,
+    wake: Arc<UiWake>,
 ) {
     let current_id = Arc::new(AtomicU64::new(0));
     let stage_clock: Arc<Mutex<Option<(String, Instant)>>> = Arc::new(Mutex::new(None));
     let confirm_out = outgoing.clone();
-    let confirm_ctx = ctx.clone();
+    let confirm_wake = Arc::clone(&wake);
     let progress_out = outgoing.clone();
-    let progress_ctx = ctx.clone();
+    let progress_wake = Arc::clone(&wake);
     let progress_id = Arc::clone(&current_id);
     let helper_id = Arc::clone(&current_id);
     let progress_clock = Arc::clone(&stage_clock);
@@ -123,7 +124,7 @@ fn run(
         let (reply, received) = mpsc::channel();
         emit(
             &confirm_out,
-            &confirm_ctx,
+            &confirm_wake,
             Event::Confirm {
                 reason: reason.to_string(),
                 reply,
@@ -154,14 +155,14 @@ fn run(
         app_log(&format!("operation-stage id={id} {phase}"));
         emit(
             &progress_out,
-            &progress_ctx,
+            &progress_wake,
             Event::Phase(phase.to_string()),
         );
     });
     hooks.cancel_requested = Box::new(move || cancel_for_hook.load(Ordering::SeqCst));
     let mut coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
     let mut published_view = None;
-    send_view(&mut coordinator, &outgoing, &ctx, &mut published_view);
+    send_view(&mut coordinator, &outgoing, &wake, &mut published_view);
     let mut cancel_outcome: Option<Option<String>> = None;
     loop {
         match incoming.recv_timeout(Duration::from_millis(400)) {
@@ -265,7 +266,7 @@ fn run(
                 current_id.store(0, Ordering::SeqCst);
                 emit(
                     &outgoing,
-                    &ctx,
+                    &wake,
                     Event::Done {
                         id: command.id,
                         action,
@@ -273,13 +274,13 @@ fn run(
                     },
                 );
                 if action == Action::Exit && error.is_none() {
-                    emit(&outgoing, &ctx, Event::ExitReady);
+                    emit(&outgoing, &wake, Event::ExitReady);
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        send_view(&mut coordinator, &outgoing, &ctx, &mut published_view);
+        send_view(&mut coordinator, &outgoing, &wake, &mut published_view);
         if current_id.load(Ordering::SeqCst) == 0 {
             finish_stage(&stage_clock, 0);
         }
@@ -303,13 +304,13 @@ fn ui_wake(show_panel: bool, previous: Option<&View>, next: &View) -> (bool, boo
 fn send_view(
     coordinator: &mut RecoveryCoordinator,
     outgoing: &Sender<Event>,
-    ctx: &egui::Context,
+    wake: &UiWake,
     published: &mut Option<View>,
 ) {
     coordinator.poll();
     let show_panel = coordinator.take_should_show_panel();
     if show_panel {
-        emit(outgoing, ctx, Event::ShowPanel);
+        emit(outgoing, wake, Event::ShowPanel);
     }
     let frame = match Win32CcdApi.capture(CcdConstants::QUERY_FLAGS) {
         Ok(frame) => frame,
@@ -318,7 +319,7 @@ fn send_view(
             *published = None;
             emit(
                 outgoing,
-                ctx,
+                wake,
                 Event::Fault(format!("无法枚举显示器：{error}")),
             );
             return;
@@ -364,7 +365,7 @@ fn send_view(
     let (_, publish_view) = ui_wake(false, published.as_ref(), &view);
     if publish_view {
         *published = Some(view.clone());
-        emit(outgoing, ctx, Event::View(view));
+        emit(outgoing, wake, Event::View(view));
     }
 }
 
