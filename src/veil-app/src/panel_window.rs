@@ -107,6 +107,21 @@ impl PanelWindow {
         hwnd != 0 && unsafe { IsIconic(hwnd as HWND) } != 0
     }
 
+    /// Remember a still-valid rectangle and forget the HWND. The next window
+    /// session restores `last_rect` instead of calling placement on a destroyed
+    /// window. This does not park the old window.
+    pub fn release_hwnd(&self, hwnd: isize) {
+        if hwnd != 0 && is_window(hwnd) {
+            self.remember_rect(hwnd);
+        }
+        *self.cached.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        self.parked.store(false, Ordering::Relaxed);
+        *self.synced.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Off-screen parking remains for a live window that must not be destroyed.
+    /// The steady path ends the eframe session instead, so this is unused there.
+    #[allow(dead_code)]
     pub fn hide(&self) {
         let hwnd = self.hwnd();
         if hwnd == 0 {

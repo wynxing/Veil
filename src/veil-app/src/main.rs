@@ -2,21 +2,28 @@
 
 mod operation_worker;
 mod panel_window;
+mod session;
 mod update;
+mod wake;
 
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use operation_worker::{Action, Event as OperationEvent, OperationWorker};
+use operation_worker::{Action, OperationWorker};
 use panel_window::PanelWindow;
-use veil_engine::{
-    AuxiliaryInstallItem, CcdApi, CcdConstants, OpenSessionRelease, ScreenItem, Win32CcdApi,
+use session::{
+    after_ui_session, classify_tray_commands, idle_response, merge_effect, IdleAction, LoopNext,
+    PanelEffect, SessionState, SessionStop, TrayCommand, DEFAULT_DETAIL,
 };
+use veil_engine::{CcdApi, CcdConstants, OpenSessionRelease, Win32CcdApi};
+use wake::UiWake;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
@@ -30,14 +37,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const MUTEX_NAME: &str = "Local\\Veil";
 const SHOW_EVENT_NAME: &str = "Local\\Veil.ShowPanel";
-const DEFAULT_DETAIL: &str = "托盘常驻。关面板退回托盘，不退出。黑色画面不是关屏成功。";
 static PENDING_HELPER: Mutex<Option<(usize, String)>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrayCommand {
-    Open,
-    RestoreAll,
-    Exit,
+enum RendererChoice {
+    Wgpu,
+    Glow,
 }
 
 fn main() {
@@ -93,51 +98,232 @@ fn main() {
     }
 }
 
+struct AppSession {
+    mutex: HANDLE,
+    show_event: HANDLE,
+    wake: Arc<UiWake>,
+    tray: Option<TrayIcon>,
+    open_id: tray_icon::menu::MenuId,
+    restore_id: tray_icon::menu::MenuId,
+    exit_id: tray_icon::menu::MenuId,
+    commands: Arc<Mutex<Vec<TrayCommand>>>,
+    deferred: Vec<TrayCommand>,
+    worker: OperationWorker,
+    panel: PanelWindow,
+    state: SessionState,
+    show_pending: Arc<AtomicBool>,
+    show_stop: Arc<AtomicBool>,
+    show_thread: Option<std::thread::JoinHandle<()>>,
+    stop: SessionStop,
+    renderer: Option<RendererChoice>,
+    startup: bool,
+    update_offer: Option<update::UpdateOffer>,
+    update_inflight: bool,
+    update_arm: bool,
+    update_slot: Arc<Mutex<Option<Option<update::UpdateOffer>>>>,
+    last_refresh: Instant,
+}
+
+impl Drop for AppSession {
+    fn drop(&mut self) {
+        self.wake.unbind();
+        self.show_stop.store(true, Ordering::SeqCst);
+        if !self.show_event.is_null() {
+            unsafe {
+                SetEvent(self.show_event);
+            }
+        }
+        if let Some(thread) = self.show_thread.take() {
+            let _ = thread.join();
+        }
+        if !self.show_event.is_null() {
+            unsafe {
+                CloseHandle(self.show_event);
+            }
+            self.show_event = std::ptr::null_mut();
+        }
+        if !self.mutex.is_null() {
+            unsafe {
+                ReleaseMutex(self.mutex);
+                CloseHandle(self.mutex);
+            }
+            self.mutex = std::ptr::null_mut();
+        }
+    }
+}
+
 fn run_panel(mutex: HANDLE, show_event: HANDLE) -> Result<(), String> {
-    let attempts = [
-        (
-            "wgpu",
-            eframe::Renderer::Wgpu,
-            eframe::HardwareAcceleration::Preferred,
+    let wake = Arc::new(UiWake::new());
+    let (tray, open_id, restore_id, exit_id) = build_tray();
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    install_tray_handlers(
+        &wake,
+        &commands,
+        open_id.clone(),
+        restore_id.clone(),
+        exit_id.clone(),
+    );
+    let (show_pending, show_stop, show_thread) = watch_show_event(show_event, Arc::clone(&wake));
+    let session = Rc::new(RefCell::new(AppSession {
+        mutex,
+        show_event,
+        wake: Arc::clone(&wake),
+        tray,
+        open_id,
+        restore_id,
+        exit_id,
+        commands,
+        deferred: Vec::new(),
+        worker: OperationWorker::start(wake),
+        panel: PanelWindow::new(),
+        state: SessionState::new(
+            DEFAULT_DETAIL.into(),
+            format!("{}：未知", CcdConstants::HOTKEY_TEXT),
         ),
-        (
-            "glow",
-            eframe::Renderer::Glow,
-            eframe::HardwareAcceleration::Off,
-        ),
-    ];
+        show_pending,
+        show_stop,
+        show_thread,
+        stop: SessionStop::Dismiss,
+        renderer: None,
+        startup: startup_enabled(),
+        update_offer: None,
+        update_inflight: false,
+        update_arm: true,
+        update_slot: Arc::new(Mutex::new(None)),
+        last_refresh: Instant::now() - Duration::from_secs(1),
+    }));
+    let mut opened_once = false;
+    loop {
+        if opened_once {
+            log_process_memory("面板已收起");
+            match idle_until_present(&session) {
+                IdleAction::Exit => break,
+                IdleAction::Present => log_process_memory("准备重新打开面板"),
+                IdleAction::Wait => continue,
+            }
+        }
+        opened_once = true;
+        log_process_memory("面板会话开始");
+        match run_ui_once(&session) {
+            Ok(stop) => match after_ui_session(stop) {
+                LoopNext::Idle => continue,
+                LoopNext::ExitProcess => break,
+            },
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn run_ui_once(session: &Rc<RefCell<AppSession>>) -> Result<SessionStop, String> {
+    let attempts = {
+        let mut app = session.borrow_mut();
+        app.stop = SessionStop::Dismiss;
+        app.state.dismiss = false;
+        app.state.exiting = false;
+        app.last_refresh = Instant::now() - Duration::from_secs(1);
+        app.panel.release_hwnd(0);
+        match app.renderer {
+            Some(choice) => vec![choice],
+            None => vec![RendererChoice::Wgpu, RendererChoice::Glow],
+        }
+    };
     let mut last = String::from("没有可用的窗口后端");
-    for (name, renderer, accel) in attempts {
-        let native = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([420.0, 560.0])
-                .with_min_inner_size([360.0, 360.0])
-                .with_title("Veil")
-                .with_icon(window_icon())
-                .with_visible(true)
-                .with_active(true),
-            renderer,
-            hardware_acceleration: accel,
-            persist_window: false,
-            ..Default::default()
+    for choice in attempts {
+        let name = match choice {
+            RendererChoice::Wgpu => "wgpu",
+            RendererChoice::Glow => "glow",
         };
         app_log(&format!("尝试 eframe {name}"));
+        let app_session = Rc::clone(session);
         match eframe::run_native(
             "Veil",
-            native,
+            native_options(choice),
             Box::new(move |cc| {
                 install_cjk_fonts(&cc.egui_ctx);
-                Ok(Box::new(VeilApp::new(mutex, show_event, &cc.egui_ctx)))
+                {
+                    let app = app_session.borrow();
+                    app.wake.bind(&cc.egui_ctx);
+                }
+                Ok(Box::new(VeilApp {
+                    session: app_session,
+                    close_armed: false,
+                    minimize_armed: false,
+                    dismiss_logged: false,
+                }))
             }),
         ) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                let mut app = session.borrow_mut();
+                app.wake.unbind();
+                if app.renderer.is_none() {
+                    app.renderer = Some(choice);
+                    app_log(&format!("渲染器已选定：{name}"));
+                }
+                drain_thread_messages();
+                return Ok(app.stop);
+            }
             Err(err) => {
+                session.borrow().wake.unbind();
                 last = format!("{name}: {err}");
                 app_log(&format!("eframe {name} 失败：{err}"));
+                drain_thread_messages();
             }
         }
     }
     Err(last)
+}
+
+fn native_options(choice: RendererChoice) -> eframe::NativeOptions {
+    let (renderer, accel) = match choice {
+        RendererChoice::Wgpu => (
+            eframe::Renderer::Wgpu,
+            eframe::HardwareAcceleration::Preferred,
+        ),
+        RendererChoice::Glow => (eframe::Renderer::Glow, eframe::HardwareAcceleration::Off),
+    };
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([420.0, 560.0])
+            .with_min_inner_size([360.0, 360.0])
+            .with_title("Veil")
+            .with_icon(window_icon())
+            .with_visible(true)
+            .with_active(true),
+        renderer,
+        hardware_acceleration: accel,
+        persist_window: false,
+        ..Default::default()
+    }
+}
+
+fn idle_until_present(session: &Rc<RefCell<AppSession>>) -> IdleAction {
+    app_log("面板已退回托盘，渲染器会话已结束。");
+    loop {
+        let action = {
+            let mut app = session.borrow_mut();
+            let mut commands = app.take_commands();
+            if app.poll_show() {
+                commands.push(TrayCommand::Open);
+            }
+            let (present, deferred) = classify_tray_commands(&commands);
+            app.deferred.extend(deferred);
+            let effect = app.drain_worker();
+            let idle = idle_response(effect);
+            if matches!(idle, IdleAction::Exit) || app.stop == SessionStop::Exit {
+                IdleAction::Exit
+            } else if present || matches!(idle, IdleAction::Present) || !app.deferred.is_empty() {
+                IdleAction::Present
+            } else {
+                IdleAction::Wait
+            }
+        };
+        if action != IdleAction::Wait {
+            return action;
+        }
+        let handle = session.borrow().wake.handle();
+        wait_for_wake(handle);
+    }
 }
 
 fn build_tray() -> (
@@ -172,25 +358,20 @@ fn build_tray() -> (
 }
 
 fn install_tray_handlers(
-    ctx: &egui::Context,
-    panel: &PanelWindow,
+    wake: &Arc<UiWake>,
     commands: &Arc<Mutex<Vec<TrayCommand>>>,
     open_id: tray_icon::menu::MenuId,
     restore_id: tray_icon::menu::MenuId,
     exit_id: tray_icon::menu::MenuId,
 ) {
-    let menu_ctx = ctx.clone();
-    let menu_panel = panel.clone();
+    let menu_wake = Arc::clone(wake);
     let menu_commands = commands.clone();
     MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
         let command = if ev.id == open_id {
-            menu_panel.show();
             Some(TrayCommand::Open)
         } else if ev.id == restore_id {
-            menu_panel.show();
             Some(TrayCommand::RestoreAll)
         } else if ev.id == exit_id {
-            menu_panel.show();
             Some(TrayCommand::Exit)
         } else {
             None
@@ -201,11 +382,10 @@ fn install_tray_handlers(
                 .unwrap_or_else(|e| e.into_inner())
                 .push(command);
         }
-        menu_ctx.request_repaint();
+        menu_wake.ping();
     }));
 
-    let icon_ctx = ctx.clone();
-    let icon_panel = panel.clone();
+    let icon_wake = Arc::clone(wake);
     let icon_commands = commands.clone();
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
         if matches!(
@@ -219,137 +399,26 @@ fn install_tray_handlers(
                 ..
             }
         ) {
-            icon_panel.show();
             icon_commands
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(TrayCommand::Open);
-            icon_ctx.request_repaint();
+            icon_wake.ping();
         }
     }));
 }
 
 struct VeilApp {
-    mutex: HANDLE,
-    show_event: HANDLE,
-    open_id: Option<tray_icon::menu::MenuId>,
-    restore_id: Option<tray_icon::menu::MenuId>,
-    exit_id: Option<tray_icon::menu::MenuId>,
-    _tray: Option<TrayIcon>,
-    panel: PanelWindow,
-    commands: Arc<Mutex<Vec<TrayCommand>>>,
-    worker: OperationWorker,
-    pending: Vec<(u64, Action)>,
-    operation_started: Instant,
-    stage_started: Instant,
-    stage: String,
-    auto_stage: bool,
-    cancel_requested: bool,
-    last_operation_error: Option<String>,
-    worker_failed: bool,
-    confirmation: Option<(String, std::sync::mpsc::Sender<bool>)>,
-    has_session: bool,
-    screens: Vec<ScreenItem>,
-    auxiliary: AuxiliaryInstallItem,
-    detail: String,
-    hotkey_status: String,
-    startup: bool,
-    last_refresh: Instant,
-    hide_before_apply: bool,
-    panel_open: bool,
+    session: Rc<RefCell<AppSession>>,
     close_armed: bool,
     minimize_armed: bool,
-    holding: bool,
-    topology_fingerprint: String,
-    exiting: bool,
-    update_offer: Option<update::UpdateOffer>,
-    update_inflight: bool,
-    update_arm: bool,
-    update_slot: Arc<Mutex<Option<Option<update::UpdateOffer>>>>,
-    show_pending: Arc<AtomicBool>,
-    show_stop: Arc<AtomicBool>,
-    show_thread: Option<std::thread::JoinHandle<()>>,
+    dismiss_logged: bool,
 }
 
-impl VeilApp {
-    fn new(mutex: HANDLE, show_event: HANDLE, ctx: &egui::Context) -> Self {
-        let worker = OperationWorker::start(ctx.clone());
-        let (show_pending, show_stop, show_thread) = watch_show_event(show_event, ctx.clone());
-        let app = Self {
-            mutex,
-            show_event,
-            open_id: None,
-            restore_id: None,
-            exit_id: None,
-            _tray: None,
-            panel: PanelWindow::new(),
-            commands: Arc::new(Mutex::new(Vec::new())),
-            worker,
-            pending: Vec::new(),
-            operation_started: Instant::now(),
-            stage_started: Instant::now(),
-            stage: String::new(),
-            auto_stage: false,
-            cancel_requested: false,
-            last_operation_error: None,
-            worker_failed: false,
-            confirmation: None,
-            has_session: false,
-            screens: vec![],
-            auxiliary: AuxiliaryInstallItem::from_availability(false),
-            detail: DEFAULT_DETAIL.into(),
-            hotkey_status: format!("{}：未知", CcdConstants::HOTKEY_TEXT),
-            startup: startup_enabled(),
-            last_refresh: Instant::now() - Duration::from_secs(1),
-            hide_before_apply: false,
-            panel_open: true,
-            close_armed: false,
-            minimize_armed: false,
-            holding: false,
-            topology_fingerprint: String::new(),
-            exiting: false,
-            update_offer: None,
-            update_inflight: false,
-            update_arm: true,
-            update_slot: Arc::new(Mutex::new(None)),
-            show_pending,
-            show_stop,
-            show_thread,
-        };
-        app_log("界面对象已创建。");
-        ctx.request_repaint();
-        app
-    }
-
-    fn ensure_tray(&mut self, ctx: &egui::Context) {
-        if self._tray.is_some() || self.open_id.is_some() {
-            return;
-        }
-        let (tray, open_id, restore_id, exit_id) = build_tray();
-        install_tray_handlers(
-            ctx,
-            &self.panel,
-            &self.commands,
-            open_id.clone(),
-            restore_id.clone(),
-            exit_id.clone(),
-        );
-        self.open_id = Some(open_id);
-        self.restore_id = Some(restore_id);
-        self.exit_id = Some(exit_id);
-        self._tray = tray;
-    }
-
-    fn queue(&self, command: TrayCommand) {
-        self.commands
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(command);
-    }
-
-    fn take_commands(&self) -> Vec<TrayCommand> {
-        let mut pending = self.commands.lock().unwrap_or_else(|e| e.into_inner());
-        let mut out = Vec::new();
+impl AppSession {
+    fn take_commands(&mut self) -> Vec<TrayCommand> {
+        let mut out = std::mem::take(&mut self.deferred);
+        let mut pending = self.commands.lock().unwrap_or_else(|err| err.into_inner());
         for command in pending.drain(..) {
             if !out.contains(&command) {
                 out.push(command);
@@ -358,433 +427,97 @@ impl VeilApp {
         out
     }
 
-    fn open_panel(&mut self, ctx: &egui::Context) {
-        self.panel.show();
-        self.panel_open = true;
-        self.hide_before_apply = false;
-        self.minimize_armed = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.request_repaint();
-    }
-
-    fn hide_panel(&mut self) {
-        if !self.panel_open {
-            return;
+    fn poll_show(&self) -> bool {
+        if self.show_thread.is_some() {
+            return self.show_pending.swap(false, Ordering::SeqCst);
         }
-        self.panel.hide();
-        self.panel_open = false;
-        self.update_arm = true;
+        if self.show_event.is_null() {
+            return false;
+        }
+        unsafe { WaitForSingleObject(self.show_event, 0) == WAIT_OBJECT_0 }
     }
 
-    fn restore_all_from_tray(&mut self, ctx: &egui::Context) {
-        self.open_panel(ctx);
-        self.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
-    }
-
-    fn refresh(&mut self, ctx: &egui::Context) {
+    fn drain_worker(&mut self) -> PanelEffect {
+        let mut effect = PanelEffect::Stay;
         loop {
             let event = match self.worker.events.try_recv() {
                 Ok(event) => event,
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if !self.worker_failed {
-                        self.worker_failed = true;
-                        self.pending.clear();
-                        self.stage.clear();
-                        self.detail = "显示操作线程已退出，当前恢复状态未知。请使用仍可用的紧急热键，并保留日志。".into();
-                        self.open_panel(ctx);
-                    }
+                    effect = merge_effect(effect, self.state.note_worker_disconnected());
                     break;
                 }
             };
-            match event {
-                OperationEvent::Fault(error) => {
-                    self.detail = error;
-                    self.screens.clear();
-                    self.auto_stage = false;
-                }
-                OperationEvent::View(view) => {
-                    self.screens = view.screens;
-                    self.auxiliary = view.auxiliary;
-                    self.hotkey_status = view.hotkey_status;
-                    self.holding = view.holding;
-                    self.has_session = view.has_session;
-                    if self.pending.is_empty() {
-                        if let Some(detail) = view.detail.filter(|text| !text.is_empty()) {
-                            self.detail = match &self.last_operation_error {
-                                Some(error) if !detail.contains(error) => {
-                                    format!("{error} 当前状态：{detail}")
-                                }
-                                _ => detail,
-                            };
-                        }
-                    }
-                    self.sync_topology_viewport(ctx, &view.topology_fingerprint);
-                    self.auto_stage = false;
-                }
-                OperationEvent::Phase(phase) => {
-                    if self.pending.is_empty() {
-                        self.operation_started = Instant::now();
-                    }
-                    self.stage = phase;
-                    self.stage_started = Instant::now();
-                    self.auto_stage = self.pending.is_empty();
-                }
-                OperationEvent::Confirm { reason, reply } => {
-                    self.stage = "等待你确认是否启用显示驱动".into();
-                    self.stage_started = Instant::now();
-                    self.confirmation = Some((reason, reply));
-                    self.open_panel(ctx);
-                }
-                OperationEvent::Done { id, action, error } => {
-                    self.pending.retain(|(pending_id, _)| *pending_id != id);
-                    if let Some(error) = error {
-                        self.last_operation_error = Some(error.clone());
-                        self.detail = error;
-                        self.open_panel(ctx);
-                    } else {
-                        if matches!(action, Action::Cancel | Action::RestoreAll | Action::Exit) {
-                            self.last_operation_error = None;
-                        }
-                        match action {
-                            Action::KeepOff
-                                if !self.cancel_requested && self.pending.is_empty() =>
-                            {
-                                self.hide_panel();
-                                self.hide_before_apply = true;
-                            }
-                            Action::RestoreAll => self.detail = "恢复全部已确认完成。".into(),
-                            Action::Cancel => self.detail = "取消已处理；恢复结果已确认。".into(),
-                            Action::Install => self.detail = "辅助虚拟输出已安装。".into(),
-                            _ => {}
-                        }
-                    }
-                    if self.pending.is_empty() {
-                        self.stage.clear();
-                        self.cancel_requested = false;
-                    }
-                }
-                OperationEvent::ShowPanel => {
-                    self.open_panel(ctx);
-                    let _ = self.worker.send(Action::PanelShown, None);
-                }
-                OperationEvent::ExitReady => {
-                    self.exiting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
+            effect = merge_effect(effect, self.state.apply_event(event));
         }
-        if let Some(tray) = &self._tray {
-            let _ = tray.set_icon(Some(tray_icon_for(
-                self.holding || !self.pending.is_empty() || self.auto_stage,
-            )));
+        if effect == PanelEffect::Exit {
+            self.state.exiting = true;
+            self.stop = SessionStop::Exit;
+        }
+        self.update_tray_icon();
+        if self.state.announce_panel_shown {
+            self.state.announce_panel_shown = false;
+            let _ = self.worker.send(Action::PanelShown, None);
         }
         self.last_refresh = Instant::now();
+        effect
     }
 
-    fn submit(&mut self, action: Action, target: Option<veil_engine::ScreenIdentity>, label: &str) {
-        if self.worker_failed {
-            self.detail = "显示操作线程不可用，无法确认恢复状态。".into();
+    fn update_tray_icon(&self) {
+        if let Some(tray) = &self.tray {
+            let busy =
+                self.state.holding || !self.state.pending.is_empty() || self.state.auto_stage;
+            let _ = tray.set_icon(Some(tray_icon_for(busy)));
+        }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.panel.show();
+        self.state.hide_before_apply = false;
+        self.state.dismiss = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.request_repaint();
+    }
+
+    fn submit(
+        &mut self,
+        action: Action,
+        target: Option<veil_engine::ScreenIdentity>,
+        label: &str,
+    ) {
+        if self.state.worker_failed {
+            self.state.detail = "显示操作线程不可用，无法确认恢复状态。".into();
             return;
         }
-        if self.pending.iter().any(|(_, pending)| *pending == action) {
+        if self.state.pending.iter().any(|(_, pending)| *pending == action) {
             return;
         }
         if matches!(action, Action::Cancel | Action::RestoreAll | Action::Exit) {
-            if let Some((_, reply)) = self.confirmation.take() {
+            if let Some((_, reply)) = self.state.confirmation.take() {
                 let _ = reply.send(false);
             }
         }
-        let was_idle = self.pending.is_empty();
+        let was_idle = self.state.pending.is_empty();
         match self.worker.send(action, target) {
             Ok(id) => {
-                self.pending.push((id, action));
+                self.state.pending.push((id, action));
                 if action != Action::Cancel {
-                    self.last_operation_error = None;
+                    self.state.last_operation_error = None;
                 }
                 if was_idle {
-                    self.operation_started = Instant::now();
+                    self.state.operation_started = Instant::now();
                 }
-                self.stage_started = Instant::now();
-                self.stage = label.into();
-                self.auto_stage = false;
+                self.state.stage_started = Instant::now();
+                self.state.stage = label.into();
+                self.state.auto_stage = false;
             }
-            Err(error) => self.detail = error,
+            Err(error) => self.state.detail = error,
         }
     }
 
-    fn keep_off(&mut self, _ctx: &egui::Context, item: ScreenItem) {
-        self.submit(
-            Action::KeepOff,
-            Some(item.identity),
-            "正在检查显示状态和恢复能力",
-        );
-    }
-
-    fn try_exit(&mut self, ctx: &egui::Context) -> bool {
-        self.open_panel(ctx);
-        self.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
-        false
-    }
-
-    fn sync_topology_viewport(&mut self, ctx: &egui::Context, fingerprint: &str) {
-        if self.topology_fingerprint.is_empty() {
-            self.topology_fingerprint = fingerprint.into();
-            return;
-        }
-        if fingerprint == self.topology_fingerprint {
-            return;
-        }
-        self.topology_fingerprint = fingerprint.into();
-        ctx.request_repaint();
-        if self.hide_before_apply || self.has_session {
-            return;
-        }
-        if self.holding {
-            self.detail = "显示拓扑已变化，保持关闭已结束。".into();
-            self.holding = false;
-            if let Some(tray) = &self._tray {
-                let _ = tray.set_icon(Some(tray_icon_for(false)));
-            }
-            self.open_panel(ctx);
-        }
-    }
-}
-
-impl eframe::App for VeilApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let hwnd = PanelWindow::hwnd_from_frame(frame);
-        self.ensure_tray(ctx);
-        self.consider_update();
-        while let Ok(ev) = MenuEvent::receiver().try_recv() {
-            if self.open_id.as_ref() == Some(&ev.id) {
-                self.queue(TrayCommand::Open);
-            } else if self.restore_id.as_ref() == Some(&ev.id) {
-                self.queue(TrayCommand::RestoreAll);
-            } else if self.exit_id.as_ref() == Some(&ev.id) {
-                self.queue(TrayCommand::Exit);
-            }
-        }
-        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if matches!(
-                ev,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                } | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                }
-            ) {
-                self.queue(TrayCommand::Open);
-            }
-        }
-        if self.poll_show() {
-            self.queue(TrayCommand::Open);
-        }
-        let commands = self.take_commands();
-        let wants_foreground = commands.iter().any(|c| {
-            matches!(
-                c,
-                TrayCommand::Open | TrayCommand::RestoreAll | TrayCommand::Exit
-            )
-        });
-        if ctx.input(|i| i.viewport().close_requested()) && !self.exiting {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if self.close_armed && !wants_foreground {
-                self.hide_panel();
-            }
-        }
-        let minimized =
-            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || self.panel.is_iconic();
-        if !minimized {
-            self.minimize_armed = true;
-        }
-        if self.panel_open
-            && !self.exiting
-            && !wants_foreground
-            && minimized
-            && self.minimize_armed
-            && !self.panel.is_parked()
-        {
-            self.hide_panel();
-            self.minimize_armed = false;
-        }
-        self.close_armed = true;
-        for command in commands {
-            match command {
-                TrayCommand::Open => self.open_panel(ctx),
-                TrayCommand::RestoreAll => self.restore_all_from_tray(ctx),
-                TrayCommand::Exit => {
-                    if self.try_exit(ctx) {
-                        return;
-                    }
-                }
-            }
-        }
-        self.panel.sync(hwnd, self.panel_open && !self.exiting);
-        if self.last_refresh.elapsed() >= Duration::from_millis(400) {
-            self.refresh(ctx);
-        }
-        if schedule_continuous_repaint(self.panel.is_parked()) {
-            ctx.request_repaint_after(Duration::from_millis(400));
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Veil");
-            ui.label(&self.hotkey_status);
-            ui.label(&self.detail);
-            if !self.pending.is_empty() || self.auto_stage {
-                ui.group(|ui| {
-                    ui.strong(&self.stage);
-                    ui.label(format!(
-                        "已等待 {} 秒（当前阶段 {} 秒）",
-                        self.operation_started.elapsed().as_secs(),
-                        self.stage_started.elapsed().as_secs()
-                    ));
-                    if self.cancel_requested {
-                        ui.label("取消已收到；正在等待设备操作结束并确认恢复状态。");
-                    } else if self
-                        .pending
-                        .iter()
-                        .any(|(_, action)| *action == Action::KeepOff)
-                    {
-                        if ui.button("取消本次操作").clicked() {
-                            if let Some((_, reply)) = self.confirmation.take() {
-                                let _ = reply.send(false);
-                            }
-                            self.submit(Action::Cancel, None, "取消已收到，正在确认恢复");
-                            self.cancel_requested = true;
-                        }
-                    }
-                });
-            }
-            if let Some(reason) = self.confirmation.as_ref().map(|(reason, _)| reason.clone()) {
-                ui.group(|ui| {
-                    ui.label(&reason);
-                    ui.label("这是显示驱动操作，继续前需要你明确确认。");
-                    if ui.button("继续").clicked() {
-                        if let Some((_, reply)) = self.confirmation.take() {
-                            let _ = reply.send(true);
-                        }
-                    }
-                    if ui.button("取消").clicked() {
-                        if let Some((_, reply)) = self.confirmation.take() {
-                            let _ = reply.send(false);
-                        }
-                    }
-                });
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for item in self.screens.clone() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong(&item.name);
-                            ui.label(format!("· {}", item.kind));
-                        });
-                        ui.label(&item.status_text);
-                        if !item.block_reason.is_empty() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(180, 80, 40),
-                                &item.block_reason,
-                            );
-                        }
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(
-                                    item.can_keep_off
-                                        && self.pending.is_empty()
-                                        && !self.auto_stage
-                                        && !self.worker_failed,
-                                    egui::Button::new("保持关闭"),
-                                )
-                                .clicked()
-                            {
-                                self.keep_off(ctx, item.clone());
-                            }
-                            if ui
-                                .add_enabled(
-                                    item.can_restore
-                                        && self.pending.is_empty()
-                                        && !self.auto_stage
-                                        && !self.worker_failed,
-                                    egui::Button::new("恢复"),
-                                )
-                                .clicked()
-                            {
-                                self.submit(
-                                    Action::RestoreOne,
-                                    Some(item.identity.clone()),
-                                    "正在恢复所选物理屏",
-                                );
-                            }
-                        });
-                    });
-                    ui.add_space(6.0);
-                }
-            });
-            ui.separator();
-            if self.auxiliary.visible {
-                if !self.auxiliary.hint.is_empty() {
-                    ui.colored_label(egui::Color32::from_rgb(180, 80, 40), &self.auxiliary.hint);
-                }
-                if ui
-                    .add_enabled(
-                        self.auxiliary.enabled
-                            && self.pending.is_empty()
-                            && !self.auto_stage
-                            && !self.worker_failed,
-                        egui::Button::new(&self.auxiliary.label),
-                    )
-                    .clicked()
-                {
-                    self.submit(Action::Install, None, "正在安装辅助虚拟输出");
-                }
-            }
-            if ui.button("恢复全部").clicked() {
-                self.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
-            }
-            let mut startup = self.startup;
-            if ui.checkbox(&mut startup, "开机自启（默认关）").changed() {
-                set_startup(startup);
-                self.startup = startup;
-            }
-            if let Some(offer) = self.update_offer.clone() {
-                ui.label(format!("有新版本 {}", offer.version));
-                if ui.button("查看更新").clicked() && !update::open_release_page(&offer.url) {
-                    self.detail = "没能打开发布页。".into();
-                }
-            }
-            if ui.button("退出").clicked() {
-                self.try_exit(ctx);
-            }
-        });
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.stop_show_watch();
-        if !self.show_event.is_null() {
-            unsafe {
-                CloseHandle(self.show_event);
-            }
-            self.show_event = std::ptr::null_mut();
-        }
-        if !self.mutex.is_null() {
-            unsafe {
-                ReleaseMutex(self.mutex);
-                CloseHandle(self.mutex);
-            }
-            self.mutex = std::ptr::null_mut();
-        }
-    }
-}
-
-impl VeilApp {
     fn consider_update(&mut self) {
-        if self.exiting {
+        if self.state.exiting || self.state.dismiss {
             return;
         }
         if self.update_inflight {
@@ -797,10 +530,6 @@ impl VeilApp {
                 self.update_inflight = false;
                 self.update_offer = offer;
             }
-            return;
-        }
-        if !self.panel_open {
-            self.update_arm = true;
             return;
         }
         if !self.update_arm {
@@ -819,24 +548,289 @@ impl VeilApp {
             }
         }
     }
+}
 
-    fn poll_show(&self) -> bool {
-        if self.show_thread.is_some() {
-            return self.show_pending.swap(false, Ordering::SeqCst);
+impl eframe::App for VeilApp {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let hwnd = PanelWindow::hwnd_from_frame(frame);
+        let mut app = self.session.borrow_mut();
+        app.wake.bind(ctx);
+        app.consider_update();
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            if ev.id == app.open_id {
+                app.commands
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(TrayCommand::Open);
+            } else if ev.id == app.restore_id {
+                app.commands
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(TrayCommand::RestoreAll);
+            } else if ev.id == app.exit_id {
+                app.commands
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(TrayCommand::Exit);
+            }
         }
-        if self.show_event.is_null() {
-            return false;
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if matches!(
+                ev,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                app.commands
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .push(TrayCommand::Open);
+            }
         }
-        unsafe { WaitForSingleObject(self.show_event, 0) == WAIT_OBJECT_0 }
+        if app.poll_show() {
+            app.commands
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(TrayCommand::Open);
+        }
+        let commands = app.take_commands();
+        let wants_foreground = commands.iter().any(|command| {
+            matches!(
+                command,
+                TrayCommand::Open | TrayCommand::RestoreAll | TrayCommand::Exit
+            )
+        });
+        if ctx.input(|i| i.viewport().close_requested())
+            && !app.state.exiting
+            && !app.state.dismiss
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.close_armed && !wants_foreground {
+                app.state.dismiss = true;
+            }
+        }
+        let minimized =
+            ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || app.panel.is_iconic();
+        if !minimized {
+            self.minimize_armed = true;
+        }
+        if !app.state.exiting
+            && !app.state.dismiss
+            && !wants_foreground
+            && minimized
+            && self.minimize_armed
+            && !app.panel.is_parked()
+        {
+            app.state.dismiss = true;
+            self.minimize_armed = false;
+        }
+        self.close_armed = true;
+        if !app.state.dismiss && !app.state.exiting {
+            app.panel.sync(hwnd, true);
+        }
+        for command in commands {
+            if app.state.exiting {
+                break;
+            }
+            match command {
+                TrayCommand::Open => {
+                    app.show_window(ctx);
+                    self.minimize_armed = false;
+                }
+                TrayCommand::RestoreAll => {
+                    app.show_window(ctx);
+                    self.minimize_armed = false;
+                    app.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
+                }
+                TrayCommand::Exit => {
+                    app.show_window(ctx);
+                    self.minimize_armed = false;
+                    app.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
+                }
+            }
+        }
+        if app.last_refresh.elapsed() >= Duration::from_millis(400) {
+            let effect = app.drain_worker();
+            if effect == PanelEffect::Present && !app.state.exiting {
+                app.show_window(ctx);
+                self.minimize_armed = false;
+            } else if effect == PanelEffect::Dismiss && !wants_foreground {
+                app.state.dismiss = true;
+            }
+        }
+        if app.state.dismiss && !app.state.exiting {
+            app.panel.release_hwnd(hwnd);
+            app.update_arm = true;
+            app.stop = SessionStop::Dismiss;
+            if !self.dismiss_logged {
+                self.dismiss_logged = true;
+                app_log("面板会话即将结束，释放渲染器。");
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if app.state.exiting {
+            app.stop = SessionStop::Exit;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if schedule_continuous_repaint(app.panel.is_parked()) {
+            ctx.request_repaint_after(Duration::from_millis(400));
+        }
+
+        let startup_now = app.startup;
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Veil");
+            ui.label(&app.state.hotkey_status);
+            ui.label(&app.state.detail);
+            if !app.state.pending.is_empty() || app.state.auto_stage {
+                ui.group(|ui| {
+                    ui.strong(&app.state.stage);
+                    ui.label(format!(
+                        "已等待 {} 秒（当前阶段 {} 秒）",
+                        app.state.operation_started.elapsed().as_secs(),
+                        app.state.stage_started.elapsed().as_secs()
+                    ));
+                    if app.state.cancel_requested {
+                        ui.label("取消已收到；正在等待设备操作结束并确认恢复状态。");
+                    } else if app
+                        .state
+                        .pending
+                        .iter()
+                        .any(|(_, action)| *action == Action::KeepOff)
+                    {
+                        if ui.button("取消本次操作").clicked() {
+                            if let Some((_, reply)) = app.state.confirmation.take() {
+                                let _ = reply.send(false);
+                            }
+                            app.submit(Action::Cancel, None, "取消已收到，正在确认恢复");
+                            app.state.cancel_requested = true;
+                        }
+                    }
+                });
+            }
+            if let Some(reason) = app
+                .state
+                .confirmation
+                .as_ref()
+                .map(|(reason, _)| reason.clone())
+            {
+                ui.group(|ui| {
+                    ui.label(&reason);
+                    ui.label("这是显示驱动操作，继续前需要你明确确认。");
+                    if ui.button("继续").clicked() {
+                        if let Some((_, reply)) = app.state.confirmation.take() {
+                            let _ = reply.send(true);
+                        }
+                    }
+                    if ui.button("取消").clicked() {
+                        if let Some((_, reply)) = app.state.confirmation.take() {
+                            let _ = reply.send(false);
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for item in app.state.screens.clone() {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong(&item.name);
+                            ui.label(format!("· {}", item.kind));
+                        });
+                        ui.label(&item.status_text);
+                        if !item.block_reason.is_empty() {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(180, 80, 40),
+                                &item.block_reason,
+                            );
+                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    item.can_keep_off
+                                        && app.state.pending.is_empty()
+                                        && !app.state.auto_stage
+                                        && !app.state.worker_failed,
+                                    egui::Button::new("保持关闭"),
+                                )
+                                .clicked()
+                            {
+                                app.submit(
+                                    Action::KeepOff,
+                                    Some(item.identity.clone()),
+                                    "正在检查显示状态和恢复能力",
+                                );
+                            }
+                            if ui
+                                .add_enabled(
+                                    item.can_restore
+                                        && app.state.pending.is_empty()
+                                        && !app.state.auto_stage
+                                        && !app.state.worker_failed,
+                                    egui::Button::new("恢复"),
+                                )
+                                .clicked()
+                            {
+                                app.submit(
+                                    Action::RestoreOne,
+                                    Some(item.identity.clone()),
+                                    "正在恢复所选物理屏",
+                                );
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+            ui.separator();
+            if app.state.auxiliary.visible {
+                if !app.state.auxiliary.hint.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(180, 80, 40),
+                        &app.state.auxiliary.hint,
+                    );
+                }
+                if ui
+                    .add_enabled(
+                        app.state.auxiliary.enabled
+                            && app.state.pending.is_empty()
+                            && !app.state.auto_stage
+                            && !app.state.worker_failed,
+                        egui::Button::new(&app.state.auxiliary.label),
+                    )
+                    .clicked()
+                {
+                    app.submit(Action::Install, None, "正在安装辅助虚拟输出");
+                }
+            }
+            if ui.button("恢复全部").clicked() {
+                app.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
+            }
+            let mut startup = startup_now;
+            if ui.checkbox(&mut startup, "开机自启（默认关）").changed() {
+                set_startup(startup);
+                app.startup = startup;
+            }
+            if let Some(offer) = app.update_offer.clone() {
+                ui.label(format!("有新版本 {}", offer.version));
+                if ui.button("查看更新").clicked() && !update::open_release_page(&offer.url) {
+                    app.state.detail = "没能打开发布页。".into();
+                }
+            }
+            if ui.button("退出").clicked() {
+                app.show_window(ctx);
+                app.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
+            }
+        });
     }
 
-    fn stop_show_watch(&mut self) {
-        self.show_stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.show_thread.take() {
-            let _ = thread.join();
-        }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.session.borrow().wake.unbind();
     }
 }
+
 
 fn message_box(text: &str, cancel: bool) -> bool {
     let text_w = to_wide(text);
@@ -989,7 +983,7 @@ const SHOW_EVENT_WAIT_MS: u32 = 500;
 
 fn watch_show_event(
     handle: HANDLE,
-    ctx: egui::Context,
+    wake: Arc<UiWake>,
 ) -> (
     Arc<AtomicBool>,
     Arc<AtomicBool>,
@@ -1014,7 +1008,7 @@ fn watch_show_event(
                 }
                 if wait == WAIT_OBJECT_0 {
                     pending_bg.store(true, Ordering::SeqCst);
-                    ctx.request_repaint();
+                    wake.ping();
                 } else if wait != WAIT_TIMEOUT {
                     break;
                 }
@@ -1022,6 +1016,57 @@ fn watch_show_event(
         })
         .ok();
     (pending, stop, thread)
+}
+
+fn wait_for_wake(handle: HANDLE) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjects, QS_ALLINPUT};
+    if handle.is_null() {
+        drain_thread_messages();
+        return;
+    }
+    unsafe {
+        MsgWaitForMultipleObjects(1, &handle, 0, 500, QS_ALLINPUT);
+    }
+    drain_thread_messages();
+}
+
+fn drain_thread_messages() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, WM_QUIT,
+    };
+    unsafe {
+        let mut msg = std::mem::zeroed::<MSG>();
+        while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            if msg.message == WM_QUIT {
+                continue;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+fn log_process_memory(reason: &str) {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let mut counters = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS_EX>();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let ok = GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters as *mut PROCESS_MEMORY_COUNTERS_EX as *mut PROCESS_MEMORY_COUNTERS,
+            counters.cb,
+        );
+        if ok != 0 {
+            app_log(&format!(
+                "{reason} working_set_kb={} private_kb={}",
+                counters.WorkingSetSize / 1024,
+                counters.PrivateUsage / 1024
+            ));
+        }
+    }
 }
 
 fn create_show_event() -> HANDLE {
