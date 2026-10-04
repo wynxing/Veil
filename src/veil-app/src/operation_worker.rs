@@ -28,6 +28,7 @@ struct Command {
     target: Option<ScreenIdentity>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct View {
     pub screens: Vec<ScreenItem>,
     pub auxiliary: AuxiliaryInstallItem,
@@ -159,7 +160,8 @@ fn run(
     });
     hooks.cancel_requested = Box::new(move || cancel_for_hook.load(Ordering::SeqCst));
     let mut coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
-    send_view(&mut coordinator, &outgoing, &ctx);
+    let mut published_view = None;
+    send_view(&mut coordinator, &outgoing, &ctx, &mut published_view);
     let mut cancel_outcome: Option<Option<String>> = None;
     loop {
         match incoming.recv_timeout(Duration::from_millis(400)) {
@@ -277,7 +279,7 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        send_view(&mut coordinator, &outgoing, &ctx);
+        send_view(&mut coordinator, &outgoing, &ctx, &mut published_view);
         if current_id.load(Ordering::SeqCst) == 0 {
             finish_stage(&stage_clock, 0);
         }
@@ -294,15 +296,26 @@ fn finish_stage(clock: &Mutex<Option<(String, Instant)>>, id: u64) {
     }
 }
 
-fn send_view(coordinator: &mut RecoveryCoordinator, outgoing: &Sender<Event>, ctx: &egui::Context) {
+fn ui_wake(show_panel: bool, previous: Option<&View>, next: &View) -> (bool, bool) {
+    (show_panel, previous != Some(next))
+}
+
+fn send_view(
+    coordinator: &mut RecoveryCoordinator,
+    outgoing: &Sender<Event>,
+    ctx: &egui::Context,
+    published: &mut Option<View>,
+) {
     coordinator.poll();
-    if coordinator.take_should_show_panel() {
+    let show_panel = coordinator.take_should_show_panel();
+    if show_panel {
         emit(outgoing, ctx, Event::ShowPanel);
     }
     let frame = match Win32CcdApi.capture(CcdConstants::QUERY_FLAGS) {
         Ok(frame) => frame,
         Err(error) => {
             app_log(&format!("display-refresh-error {error}"));
+            *published = None;
             emit(
                 outgoing,
                 ctx,
@@ -339,19 +352,20 @@ fn send_view(coordinator: &mut RecoveryCoordinator, outgoing: &Sender<Event>, ct
     } else {
         format!("{}：不可用", CcdConstants::HOTKEY_TEXT)
     };
-    emit(
-        outgoing,
-        ctx,
-        Event::View(View {
-            screens,
-            auxiliary: AuxiliaryInstallItem::from_availability(bundled),
-            hotkey_status,
-            detail: coordinator.status_text.clone(),
-            holding,
-            topology_fingerprint: TopologyBlob::fingerprint(&frame.paths, &frame.modes),
-            has_session: coordinator.has_session(),
-        }),
-    );
+    let view = View {
+        screens,
+        auxiliary: AuxiliaryInstallItem::from_availability(bundled),
+        hotkey_status,
+        detail: coordinator.status_text.clone(),
+        holding,
+        topology_fingerprint: TopologyBlob::fingerprint(&frame.paths, &frame.modes),
+        has_session: coordinator.has_session(),
+    };
+    let (_, publish_view) = ui_wake(false, published.as_ref(), &view);
+    if publish_view {
+        *published = Some(view.clone());
+        emit(outgoing, ctx, Event::View(view));
+    }
 }
 
 #[cfg(test)]
@@ -387,5 +401,70 @@ mod tests {
         assert!(flag.load(Ordering::SeqCst));
         release_out.send(()).unwrap();
         assert_eq!(backend.join().unwrap(), (Action::KeepOff, Action::Cancel));
+    }
+
+    fn sample_view(fingerprint: &str, holding: bool, hotkey: &str) -> View {
+        View {
+            screens: vec![ScreenItem {
+                identity: ScreenIdentity::new("luid", 1, r"\\.\DISPLAY1"),
+                name: "内置屏".into(),
+                kind: "internal".into(),
+                wanted: if holding { "保持关闭" } else { "开启" }.into(),
+                confirmed: "已显示".into(),
+                can_keep_off: !holding,
+                can_restore: holding,
+                status_text: String::new(),
+                block_reason: String::new(),
+            }],
+            auxiliary: AuxiliaryInstallItem::from_availability(false),
+            hotkey_status: hotkey.into(),
+            detail: None,
+            holding,
+            topology_fingerprint: fingerprint.into(),
+            has_session: false,
+        }
+    }
+
+    #[test]
+    fn unchanged_view_is_not_published() {
+        let view = sample_view("same", false, "热键：空闲");
+        assert_eq!(ui_wake(false, Some(&view), &view), (false, false));
+    }
+
+    #[test]
+    fn fingerprint_holding_or_hotkey_change_is_published() {
+        let view = sample_view("same", false, "热键：空闲");
+        assert!(
+            ui_wake(
+                false,
+                Some(&view),
+                &sample_view("other", false, "热键：空闲")
+            )
+            .1
+        );
+        assert!(ui_wake(false, Some(&view), &sample_view("same", true, "热键：空闲")).1);
+        assert!(
+            ui_wake(
+                false,
+                Some(&view),
+                &sample_view("same", false, "热键：可用")
+            )
+            .1
+        );
+        assert!(ui_wake(false, None, &view).1);
+    }
+
+    #[test]
+    fn show_panel_does_not_depend_on_view_equality() {
+        let view = sample_view("same", false, "热键：空闲");
+        assert_eq!(ui_wake(true, Some(&view), &view), (true, false));
+        assert_eq!(
+            ui_wake(
+                true,
+                Some(&view),
+                &sample_view("other", false, "热键：空闲")
+            ),
+            (true, true)
+        );
     }
 }

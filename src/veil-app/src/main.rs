@@ -6,6 +6,7 @@ mod update;
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
@@ -16,7 +17,9 @@ use panel_window::PanelWindow;
 use veil_engine::{
     AuxiliaryInstallItem, CcdApi, CcdConstants, OpenSessionRelease, ScreenItem, Win32CcdApi,
 };
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HWND};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, CreateMutexW, OpenEventW, ReleaseMutex, SetEvent, WaitForSingleObject,
     EVENT_MODIFY_STATE,
@@ -263,11 +266,15 @@ struct VeilApp {
     update_inflight: bool,
     update_arm: bool,
     update_slot: Arc<Mutex<Option<Option<update::UpdateOffer>>>>,
+    show_pending: Arc<AtomicBool>,
+    show_stop: Arc<AtomicBool>,
+    show_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl VeilApp {
     fn new(mutex: HANDLE, show_event: HANDLE, ctx: &egui::Context) -> Self {
         let worker = OperationWorker::start(ctx.clone());
+        let (show_pending, show_stop, show_thread) = watch_show_event(show_event, ctx.clone());
         let app = Self {
             mutex,
             show_event,
@@ -305,6 +312,9 @@ impl VeilApp {
             update_inflight: false,
             update_arm: true,
             update_slot: Arc::new(Mutex::new(None)),
+            show_pending,
+            show_stop,
+            show_thread,
         };
         app_log("界面对象已创建。");
         ctx.request_repaint();
@@ -618,7 +628,9 @@ impl eframe::App for VeilApp {
         if self.last_refresh.elapsed() >= Duration::from_millis(400) {
             self.refresh(ctx);
         }
-        ctx.request_repaint_after(Duration::from_millis(400));
+        if schedule_continuous_repaint(self.panel.is_parked()) {
+            ctx.request_repaint_after(Duration::from_millis(400));
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Veil");
@@ -753,6 +765,7 @@ impl eframe::App for VeilApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.stop_show_watch();
         if !self.show_event.is_null() {
             unsafe {
                 CloseHandle(self.show_event);
@@ -808,10 +821,20 @@ impl VeilApp {
     }
 
     fn poll_show(&self) -> bool {
+        if self.show_thread.is_some() {
+            return self.show_pending.swap(false, Ordering::SeqCst);
+        }
         if self.show_event.is_null() {
             return false;
         }
-        unsafe { WaitForSingleObject(self.show_event, 0) == 0 }
+        unsafe { WaitForSingleObject(self.show_event, 0) == WAIT_OBJECT_0 }
+    }
+
+    fn stop_show_watch(&mut self) {
+        self.show_stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.show_thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -956,6 +979,49 @@ fn try_acquire_mutex() -> Option<HANDLE> {
         }
         Some(handle)
     }
+}
+
+fn schedule_continuous_repaint(parked: bool) -> bool {
+    !parked
+}
+
+const SHOW_EVENT_WAIT_MS: u32 = 500;
+
+fn watch_show_event(
+    handle: HANDLE,
+    ctx: egui::Context,
+) -> (
+    Arc<AtomicBool>,
+    Arc<AtomicBool>,
+    Option<std::thread::JoinHandle<()>>,
+) {
+    let pending = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    if handle.is_null() {
+        return (pending, stop, None);
+    }
+    let pending_bg = Arc::clone(&pending);
+    let stop_bg = Arc::clone(&stop);
+    let raw = handle as usize;
+    let thread = std::thread::Builder::new()
+        .name("veil-show-event".into())
+        .spawn(move || {
+            let handle = raw as HANDLE;
+            while !stop_bg.load(Ordering::SeqCst) {
+                let wait = unsafe { WaitForSingleObject(handle, SHOW_EVENT_WAIT_MS) };
+                if stop_bg.load(Ordering::SeqCst) {
+                    break;
+                }
+                if wait == WAIT_OBJECT_0 {
+                    pending_bg.store(true, Ordering::SeqCst);
+                    ctx.request_repaint();
+                } else if wait != WAIT_TIMEOUT {
+                    break;
+                }
+            }
+        })
+        .ok();
+    (pending, stop, thread)
 }
 
 fn create_show_event() -> HANDLE {
@@ -1121,5 +1187,11 @@ mod operation_tests {
         assert!(!helper_operation_unfinished());
         PENDING_HELPER.lock().unwrap().take();
         unsafe { CloseHandle(handle) };
+    }
+
+    #[test]
+    fn parked_panel_does_not_schedule_continuous_repaint() {
+        assert!(!schedule_continuous_repaint(true));
+        assert!(schedule_continuous_repaint(false));
     }
 }
