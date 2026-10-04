@@ -20,7 +20,7 @@ function Heart({x, y, delay, size}: {x: number; y: number; delay: number; size: 
     rotate: `${Math.sin(t / 10) * 12}deg`, textShadow: '3px 3px 0 #fff8e9'}}>♥</div>;
 }
 
-export const Opening = () => {
+export const Opening = ({sample = true}: {sample?: boolean}) => {
   const frame = useCurrentFrame();
   const intro = interpolate(frame, [0, 10, 77, 94], [0, 1, 1, 0], clamp);
   const reveal = interpolate(frame, [110, 120, 181, 191], [0, 1, 1, 0], clamp);
@@ -30,7 +30,7 @@ export const Opening = () => {
   const shock = frame >= 119 && frame < 128 ? Math.sin(frame * 2.8) * (128 - frame) : 0;
 
   return <AbsoluteFill style={{backgroundColor: ink, fontFamily: font, overflow: 'hidden'}}>
-    <Audio src={staticFile('opening.wav')} />
+    {sample && <Audio src={staticFile('opening.wav')} />}
     <AbsoluteFill style={{scale: camera, transformOrigin: '90% 47%', translate: `${shock}px 0`}}>
       <Img src={staticFile('dorm.png')} style={{width: '100%', height: '100%', objectFit: 'cover'}} />
     </AbsoluteFill>
@@ -90,6 +90,6 @@ export const Opening = () => {
       <div style={{marginTop: 34, color: '#fff8e9', fontSize: 28, letterSpacing: 6}}>VEIL</div>
     </div>
     <div style={{position: 'absolute', right: 90, bottom: 54, color: '#fff8e9',
-      opacity: 0.8, fontSize: 22, letterSpacing: 2}}>原创动画 · 开头样片</div>
+      opacity: 0.8, fontSize: 22, letterSpacing: 2}}>{sample ? '原创动画 · 开头样片' : '原创动画 · 情境示意'}</div>
   </AbsoluteFill>;
 };
