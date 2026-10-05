@@ -1,4 +1,4 @@
-function Get-VeilVersion {
+﻿function Get-VeilVersion {
     param(
         [string]$PropsPath
     )
@@ -59,5 +59,7 @@ function Get-VeilReleaseNotes {
     $text = Get-Content -LiteralPath $template -Raw -Encoding UTF8
     $text = $text.Replace("{{INFORMATIONAL}}", [string]$VersionInfo.Informational)
     $text = $text.Replace("{{SETUP_FILE}}", [string]$VersionInfo.SetupFileName)
+    $channel = if ($VersionInfo.VersionSuffix) { '预览版' } else { '正式版' }
+    $text = $text.Replace("{{CHANNEL}}", $channel)
     return $text
 }

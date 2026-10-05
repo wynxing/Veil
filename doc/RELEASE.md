@@ -1,87 +1,48 @@
-# Veil 预览发布
+# Veil 版本与发布
 
-这是公开仓库的无签名预览打包与分发说明，不是产品合同，也不是已签名的公开发布。产品要求仍见 [PRD.md](PRD.md) 与 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。安装包没有 Authenticode。
+当前正式版本为 **1.0.0**，发布范围为 Windows 11 x64。安装包没有 Authenticode 签名；Windows 可能显示 SmartScreen 或「未知发布者」提示。支持与验证范围集中见 [支持与诊断](validation/support-and-diagnostics.md)。
 
-## 定位
+## 版本来源与渠道
 
-| 项 | 状态 |
-| --- | --- |
-| 产品要求 | 能力检测失败则禁用并说明；不宣称全平台兼容 |
-| 本次流程 | 公开仓库 GitHub Release 挂无签名的 Windows x64 预览包（Rust MSVC 三个 exe + WiX） |
-| 已验证 | payload 哈希门禁成立；本机可用 `pack.ps1` 打出无签名 Burn EXE |
-| 不是 | 代码签名、SmartScreen 信誉、已签名的公开发布、全平台兼容 |
+数字版本和可选后缀由 `src/version.props` 定义；`src/Cargo.toml` 的 workspace 版本与后缀、`src/Cargo.lock` 的本地包版本须保持一致。
 
-预览包能装、能跑，不等于公开产品已发布，也不等于硬件兼容已过。
+| 版本 | 标签与安装包 | GitHub 渠道 |
+| --- | --- | --- |
+| 无后缀，例如 `1.0.0` | `v1.0.0`、`VeilSetup-1.0.0-x64.exe` | 正式 Release，设为 Latest |
+| 有后缀，例如 `1.1.0-preview.1` | `v1.1.0-preview.1`、`VeilSetup-1.1.0-preview.1-x64.exe` | prerelease，不设为 Latest |
 
-## 版本
+MSI / Burn 使用数字版本，每次更新安装包必须升高数字版本，否则 MajorUpgrade 会拒绝同号版本。应用更新比较完整信息版本；正式版只提示后续正式版，预览版可以发现正式版本。面板打开时最多每 24 小时检查一次，只提示并打开发布页。
 
-单一来源：[src/version.props](../src/version.props) 的 `Version` 与可选 `VersionSuffix`。
-
-- MSI / Burn 只用数字版本，例如 `0.1.1`。下一包必须升高（`0.1.2`），否则 `MajorUpgrade` 拒装。
-- 标签：`v` + 数字版本 + 可选 suffix，例如 `v0.1.1-preview.1`。
-- 文件名：`VeilSetup-0.1.1-preview.1-x64.exe`。
-
-改版本只改 props，不要在 WiX 里手写另一套数字。`src/Cargo.toml` 的 `version` 与 `workspace.metadata.veil.suffix` 必须和这份 props 一致，发布预检会核对，不一致则失败。应用内更新比较的是 props 编出来的信息版本（例如 `0.1.19-preview.1`），不是丢掉后缀的文件版本 `0.1.19.0`。
-
-## 本机打包
-
-在仓库根：
+## 本机验证与打包
 
 ```powershell
-cargo test --manifest-path src\Cargo.toml
-.\installer\FetchPayload.ps1
+pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1
+cargo test --manifest-path src/Cargo.toml --workspace --locked --release --target x86_64-pc-windows-msvc
+cargo check --manifest-path src/Cargo.toml --workspace --all-targets --locked --release --target x86_64-pc-windows-msvc
 .\installer\pack.ps1
 ```
 
-`pack.ps1` 在 payload 缺文件时会自己调用 `FetchPayload.ps1`。已有文件但哈希/签名不符时必须失败，不得改哈希凑合。
+`pack.ps1` 在 payload 缺失时调用 `FetchPayload.ps1`，按 [清单](../installer/payload.manifest.json) 下载并核验哈希、签名和发布者指纹；已有文件校验不符时失败，不替换预期哈希。二进制不进 Git。
 
-`FetchPayload.ps1` 从 [payload.manifest.json](../installer/payload.manifest.json) 的 `sources` 下载已核验上游包，抽出 4 个文件后再跑 [ValidatePayload.ps1](../installer/ValidatePayload.ps1)。二进制不进 Git。
+产物位于 `installer/dist/`：`VeilSetup-<完整版本>-x64.exe` 与 `SHA256SUMS.txt`。应用为 Rust x64 MSVC 静态链接发布，目标机不需要 .NET；构建 WiX 安装器需要 .NET SDK。安装后的程序名为 `Veil.App.exe`、`Veil.Recovery.exe`、`Veil.DriverHelper.exe`。
 
-产物在 `installer/dist/`（不进 Git）：
+## PR、标签与发布工作流
 
-- `VeilSetup-<informational>-x64.exe`
-- `SHA256SUMS.txt`
+1. 从最新远端 `main` 新建工作树和分支，修改版本、实现及发布说明，完成本机验证后提交 PR。
+2. 等待必需的 `windows` 检查成功并合并，确认目标提交已进入远端 `main`。
+3. 在合并提交上创建对应标签，推送该标签；例如 `git tag v1.0.0`、`git push origin v1.0.0`。
+4. `.github/workflows/release.yml` 执行预检、payload 获取、测试、打包及发布，按版本后缀选择渠道。
+5. 等待最终成功，检查 Release 非草稿、渠道正确、标签指向预期提交、附件大小非零。下载公开安装包，按同页 `SHA256SUMS.txt` 核验 SHA-256。
+6. 整合回本地并保留已有成果；只清理本次已整合的工作树和分支。
 
-应用按 Rust `x86_64-pc-windows-msvc` release 静态链接发布，目标机不必先装 .NET。WiX 仍用本机 `dotnet` 编译安装器工程。安装目录里的 exe 名保持 `Veil.App.exe` / `Veil.Recovery.exe` / `Veil.DriverHelper.exe`。
+优先使用「推送标签 → CI 发布」入口。本机 `installer/release.ps1` 也能测试、打包和上传，但可能由 GitHub 创建远端标签并触发标签 CI，不要再重复推送同名标签。
 
-## 打 tag 与 CI
+只读结构预检：`./installer/release.ps1 -CheckOnly -Tag <标签>`。同名 Release 完整、渠道一致、远端标签指向当前提交时直接成功退出，保留已发布附件；草稿、渠道不符、缺失附件、标签冲突或查询失败均报错，不自动覆盖。结构预检不替代下载后的哈希校验。
 
-1. 把流程变更合并进 `main`。
-2. 确认 props 版本与即将打的 tag 一致。
-3. 推送标签，例如 `git tag v0.1.0-preview.1` 后 `git push origin v0.1.0-preview.1`。
-4. `.github/workflows/release.yml` 在 `windows-latest` 上：拉取 payload、跑测试、打包、以 **prerelease** 创建 GitHub Release。
+工作流使用 Rust 缓存、locked release 构建和分步超时。同一标签串行发布，打包产物另存为保留 14 天的 Actions artifact。失败时先检查实际 Release 状态；不存在则可重跑，附件不完整时先排查，不自动覆盖。旧标签重跑仍使用该标签中的旧流程。
 
-本机也可以在干净工作区跑 `.\installer\release.ps1`：测试、打包、用 `gh release create --prerelease` 上传。它可能在本地创建 tag，**不会**执行 `git push --tags`。CI 传入的 tag 必须与 props 算出的 tag 一致。
+## 安装与维护
 
-优先使用「推送标签 → CI 发布」这一条入口。本机发布会在 GitHub 创建标签，可能同时触发标签 CI；不要再重复手动推送同名标签。
+MTT 是关光全部物理屏时的辅助显示驱动。`INSTALLVDD=0` 只取消本次设备安装，驱动文件仍随应用写入，以后可从面板安装。升级沿用原安装目录；退出、升级维护及卸载遵守屏幕恢复门禁，详见 [安装器](../installer/README.md)。
 
-发布前会查询 GitHub：同名 Release 非草稿、远端标签指向当前提交，且安装包与校验文件均已上传、大小非零时，直接成功退出并保留已有附件；草稿、缺失附件、标签冲突或查询失败均明确报错，不覆盖安装包。此检查确认发布结构完整，不代替下载后的 SHA-256 校验。只读检查可运行 `./installer/release.ps1 -CheckOnly`。
-
-CI 使用 Rust 依赖缓存，测试和打包统一使用 `--locked --release --target x86_64-pc-windows-msvc`；`pack.ps1` 负责构建，无单独的重复构建步骤。同一标签的发布串行执行，任务预算为 25 分钟，并为下载、测试、打包、上传设置步骤超时。执行机器失联时，GitHub 的故障检测仍可能晚于预算，超时配置不保证失联任务立即终止。
-
-打包完成后先保存 14 天的 Actions artifact，再创建 Release。若上传阶段失败，可先取回 artifact 排查。执行机器失联且 Release 尚不存在时，重跑失败任务；若 Release 已存在但附件不完整，应人工检查并修复，脚本不会自动覆盖。旧标签重跑仍使用该标签中的旧流程，新的缓存与预检配置只对包含此次流程修改的标签生效。
-
-发布预检回归验证：`pwsh -NoProfile -File installer/Test-ReleasePreflight.ps1`。构建或发布成功仍不代表安装、升级及屏幕控制已在每台机器上实测。
-
-Release 正文固定声明：无 Authenticode、SmartScreen 会拦截、仅 Windows 11 x64 预览、不是已签名的公开发布、不是全平台兼容。应用内更新只提示并打开发布页，不下载安装包。
-
-## 下载与安装注意
-
-- 公开仓库的 Release：[Releases](https://github.com/wynxing/Veil/releases)。
-- 下载后核 `SHA256SUMS.txt`。
-- SmartScreen /「未知发布者」是无签名预览的预期现象；这不是发布门禁已通过。
-- 已安装的预览在面板打开时最多每 24 小时检查一次更新。有新版本只提示并打开发布页，不下载、不启动安装包。
-- MTT 是显示驱动。`INSTALLVDD=0` 只表示这次不创建设备，驱动文件仍随应用写入，以后可在面板安装。
-- 未测 GPU / 系统不得当成已完成。这不是已签名的公开发布。
-
-## 下一次预览
-
-当前预览版本是 `0.1.19-preview.1`（`v0.1.19-preview.1`）。数字版本从 `0.1.18` 升高，满足 MajorUpgrade 的版本递增要求，实际升级仍待安装验收。本版在面板收起时结束 eframe 会话，使 wgpu 设备可以随窗口释放；托盘和显示操作线程继续留在进程里。操作线程仍每 400 毫秒枚举显示器。收起后面板进程的工作集是否下降，只以本机日志里的读数为准，不得写成泄漏已经消失或全平台结果。客户机器上虚拟路径不出现的原因尚未确认。安装、升级、修复、卸载及屏幕恢复尚未在隔离 Windows 环境完成验收，睡眠回路与唤醒闪屏的机旁矩阵仍未通过。0.1.7 起升级先 `retire-old`。下次改代码：升高 `Version`、合并、再打新 tag。
-
-## 明确延后
-
-- 安装包 Authenticode、时间戳、SmartScreen 信誉。有签名之前，不做下载并启动安装包的自更新。
-- 对外把无签名预览说成已签名的公开发布。
-- Burn 许可页。根目录 `LICENSE` 与 `NOTICE` 已经写明 MIT 和再分发组件。
-- 把 Windows 10、ARM 或未测机器写入支持列表。
-- 把 PRD / 产品设计改成功能已完成或全平台兼容。
+代码签名、时间戳、SmartScreen 信誉与未来自动下载安装更新单独处理，不作为版本后缀的定义。当前程序只打开发布页，不自动下载安装包。

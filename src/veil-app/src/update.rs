@@ -13,6 +13,8 @@ const MAX_BODY: usize = 1024 * 1024;
 pub struct UpdateOffer {
     pub version: String,
     pub url: String,
+    #[serde(default)]
+    pub prerelease: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +41,8 @@ struct GithubRelease {
     tag_name: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     html_url: String,
 }
 
@@ -122,6 +126,9 @@ pub fn select_update(body: &str, local: &str) -> Result<Option<UpdateOffer>, ()>
         let Some(version) = parse_version(&release.tag_name) else {
             continue;
         };
+        if local.preview.is_none() && (release.prerelease || version.preview.is_some()) {
+            continue;
+        }
         if version <= local {
             continue;
         }
@@ -132,6 +139,7 @@ pub fn select_update(body: &str, local: &str) -> Result<Option<UpdateOffer>, ()>
         let offer = UpdateOffer {
             version: version.display(),
             url: release.html_url,
+            prerelease: release.prerelease || version.preview.is_some(),
         };
         if best.as_ref().is_none_or(|(current, _)| version > *current) {
             best = Some((version, offer));
@@ -157,6 +165,9 @@ fn retain_newer(offer: Option<UpdateOffer>, local: &str) -> Option<UpdateOffer> 
     let offer = offer?;
     let remote = parse_version(&offer.version)?;
     let local = parse_version(local)?;
+    if local.preview.is_none() && (offer.prerelease || remote.preview.is_some()) {
+        return None;
+    }
     (remote > local).then_some(offer)
 }
 
@@ -376,6 +387,7 @@ mod tests {
         UpdateOffer {
             version: version.to_string(),
             url: release_page_url(&tag),
+            prerelease: version.contains('-'),
         }
     }
 
@@ -458,6 +470,60 @@ mod tests {
                 .map(|item| item.version.as_str()),
             Some("0.1.13-preview.1")
         );
+    }
+
+    #[test]
+    fn stable_install_ignores_higher_preview_updates() {
+        let body = r#"[
+            {"tag_name":"v1.1.0-preview.1","draft":false,"prerelease":true,"html_url":"https://github.com/wynxing/Veil/releases/tag/v1.1.0-preview.1"},
+            {"tag_name":"v1.0.1","draft":false,"prerelease":false,"html_url":"https://github.com/wynxing/Veil/releases/tag/v1.0.1"}
+        ]"#;
+        assert_eq!(select_update(body, "1.0.0").unwrap(), Some(offer("1.0.1")));
+    }
+
+    #[test]
+    fn stable_install_ignores_prerelease_flag_even_without_suffix() {
+        let body = r#"[{"tag_name":"v1.1.0","draft":false,"prerelease":true,"html_url":"https://github.com/wynxing/Veil/releases/tag/v1.1.0"}]"#;
+        assert_eq!(select_update(body, "1.0.0").unwrap(), None);
+    }
+
+    #[test]
+    fn stable_install_ignores_preview_suffix_even_if_flag_is_false() {
+        let body = r#"[{"tag_name":"v1.1.0-preview.1","draft":false,"prerelease":false,"html_url":"https://github.com/wynxing/Veil/releases/tag/v1.1.0-preview.1"}]"#;
+        assert_eq!(select_update(body, "1.0.0").unwrap(), None);
+    }
+
+    #[test]
+    fn preview_install_discovers_the_first_stable_release() {
+        let body = r#"[{"tag_name":"v1.0.0","draft":false,"prerelease":false,"html_url":"https://github.com/wynxing/Veil/releases/tag/v1.0.0"}]"#;
+        assert_eq!(
+            select_update(body, "0.1.19-preview.1").unwrap(),
+            Some(offer("1.0.0"))
+        );
+    }
+
+    #[test]
+    fn stable_install_drops_cached_preview_offer() {
+        assert_eq!(retain_newer(Some(offer("1.1.0-preview.1")), "1.0.0"), None);
+        assert_eq!(
+            retain_newer(Some(offer("1.0.1")), "1.0.0"),
+            Some(offer("1.0.1"))
+        );
+    }
+
+    #[test]
+    fn stable_install_drops_cached_prerelease_flag_without_suffix() {
+        let cached: UpdateOffer = serde_json::from_str(r#"{"version":"1.1.0","url":"https://github.com/wynxing/Veil/releases/tag/v1.1.0","prerelease":true}"#).unwrap();
+        assert_eq!(retain_newer(Some(cached), "1.0.0"), None);
+    }
+
+    #[test]
+    fn old_stable_cache_remains_readable() {
+        let cached: UpdateOffer = serde_json::from_str(
+            r#"{"version":"1.0.1","url":"https://github.com/wynxing/Veil/releases/tag/v1.0.1"}"#,
+        )
+        .unwrap();
+        assert_eq!(retain_newer(Some(cached), "1.0.0"), Some(offer("1.0.1")));
     }
 
     #[test]

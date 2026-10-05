@@ -80,7 +80,17 @@ if ($existingTag.Count -eq 0) {
 $notes = Join-Path $dist "RELEASE-NOTES.md"
 Set-Content -LiteralPath $notes -Encoding UTF8 -Value (Get-VeilReleaseNotes -VersionInfo $version)
 
-& $gh.Source release create $Tag $exe $sums --prerelease --title ("Veil {0} preview" -f $version.Informational) --notes-file $notes --target $head
+$publishArgs = @('release', 'create', $Tag, $exe, $sums)
+$title = "Veil $($version.Informational)"
+if ($version.VersionSuffix) {
+    $publishArgs += @('--prerelease', '--latest=false')
+    $title += ' preview'
+}
+else {
+    $publishArgs += '--latest'
+}
+$publishArgs += @('--title', $title, '--notes-file', $notes, '--target', $head)
+& $gh.Source @publishArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Output ("created prerelease {0} from {1}; tag was not pushed with git push --tags." -f $Tag, $head)
+Write-Output ("created release {0} from {1}; tag was not pushed with git push --tags." -f $Tag, $head)

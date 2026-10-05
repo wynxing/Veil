@@ -10,17 +10,24 @@ function Test-VeilPublishedRelease {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to query GitHub releases.' }
     $pages = ($json -join "`n") | ConvertFrom-Json -ErrorAction Stop
     $existing = @($pages | ForEach-Object { $_ } | Where-Object { $_.tag_name -eq $Tag })
-    if ($existing.Count -eq 0) { return $false }
-    if ($existing.Count -ne 1) { throw "Ambiguous release for $Tag." }
-    $release = $existing[0]
+    if ($existing.Count -gt 1) { throw "Ambiguous release for $Tag." }
 
     $refs = @(& git ls-remote --exit-code origin "refs/tags/$Tag" "refs/tags/$Tag^{}")
+    if ($LASTEXITCODE -eq 2 -and $refs.Count -eq 0 -and $existing.Count -eq 0) {
+        return $false
+    }
     if ($LASTEXITCODE -ne 0 -or $refs.Count -eq 0) { throw "Cannot verify remote tag $Tag." }
     $peeled = @($refs | Where-Object { $_ -like '*^{}' })
     $ref = if ($peeled.Count -gt 0) { $peeled[0] } else { $refs[0] }
     $commit = ($ref -split '\s+')[0]
     if ($commit -ne $Head) { throw "Remote tag $Tag points to $commit, HEAD is $Head." }
+    if ($existing.Count -eq 0) { return $false }
+    $release = $existing[0]
     if ($release.draft) { throw "Release $Tag is a draft; inspect it before publishing." }
+    $expectedPrerelease = $Tag -match '-'
+    if ([bool]$release.prerelease -ne $expectedPrerelease) {
+        throw "Release $Tag has a mismatched publication channel (prerelease=$($release.prerelease)). Inspect it before retrying."
+    }
     foreach ($name in @($SetupFileName, 'SHA256SUMS.txt')) {
         $asset = @($release.assets | Where-Object { $_.name -eq $name -and $_.state -eq 'uploaded' -and $_.size -gt 0 })
         if ($asset.Count -ne 1) { throw "Release $Tag is incomplete: missing uploaded asset $name. Inspect it before retrying." }

@@ -1,15 +1,15 @@
 # Veil 安装器
 
-传统 WiX 5 Burn 引导 EXE + 应用 MSI。安装包没有 Authenticode。无签名预览的发布边界见 [doc/RELEASE.md](../doc/RELEASE.md)。
+传统 WiX 5 Burn 引导 EXE + 应用 MSI。安装包没有 Authenticode 签名。发布流程见 [doc/RELEASE.md](../doc/RELEASE.md)。
 
 ## 构建
 
 1. 运行 `installer/FetchPayload.ps1`，或按 [payload/README.md](payload/README.md) 放入已核验的 VDD 与 NefCon。
 2. 运行 `installer/ValidatePayload.ps1`：缺失或哈希/签名不符会失败。
 3. 运行 `installer/pack.ps1`：用 `cargo build --release` 产出三个 exe（拷成 `Veil.*.exe`）并编译 MSI/Bundle。缺 payload 时会先 fetch。产物在 `installer/dist/`。
-4. 打 `v*` 标签后由 CI 挂 GitHub prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
+4. 打 `v*` 标签后由 CI 按版本后缀创建正式 Release 或 prerelease；本机也可用 `installer/release.ps1`。Release 正文模板是 `installer/release-notes.template.md`。
 
-无 payload 时不得打出缺驱动的包。版本、tag 与 GitHub prerelease 见 [doc/RELEASE.md](../doc/RELEASE.md)。
+无 payload 时不得打出缺驱动的包。版本、标签与发布渠道见 [doc/RELEASE.md](../doc/RELEASE.md)。
 
 ## 安装行为
 
@@ -36,4 +36,4 @@
 - 设备实例写入实际安装目录的 `owned-devices.json`。启用、禁用、移除只匹配此清单。本机已有同一 `Root\MttVDD` 时应写入清单并接管，不停止安装，也不新建第二块。向日葵 / GameViewer 仍不接管。
 - 安装后禁用失败返回安装失败；清理限于本次新建实例和 XML。缺失/损坏的历史会话证明不能用一个 `ok=true` 绕过恢复门禁。
 
-构建成功不等于安装、升级、卸载已在每台机器上实测。
+安装与维护的验证覆盖见 [支持与诊断](../doc/validation/support-and-diagnostics.md)。
