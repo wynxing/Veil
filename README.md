@@ -4,13 +4,17 @@ Veil keeps selected physical displays off on Windows until you turn them back on
 
 Veil 是 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。它不是全局熄屏快捷方式。
 
+**状态：** 源码公开。安装包是无签名预览，不是已签名的公开发布，也不宣称全平台兼容。能力检测失败则禁用并说明。
+
 ## 45 秒认识 Veil
 
 **你玩你的。屏幕，由你决定。** 从宿舍里的小尴尬，到闲置副屏休息，看看 Veil 为什么存在。
 
-宣传片为原创动画，操作画面是情境示意，不作为硬件或远程软件兼容性实测。
+https://github.com/user-attachments/assets/85ee4b5e-0ddb-4c41-909d-49f64f38d55b
 
-**状态：** 源码公开。安装包是无签名预览，不是已签名的公开发布，也不宣称全平台兼容。能力检测失败则禁用并说明。
+[打开或下载视频](https://github.com/user-attachments/assets/85ee4b5e-0ddb-4c41-909d-49f64f38d55b) · 45 秒。点击播放器的音量按钮开启声音。
+
+宣传片为原创动画，操作画面是情境示意，不作为硬件或远程软件兼容性实测。
 
 ## 下载预览
 
