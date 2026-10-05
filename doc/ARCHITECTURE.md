@@ -210,7 +210,7 @@ installer/Veil.Bundle/    WiX Burn 引导 EXE
 tools/show-session.ps1    打印最近一次产品会话记录
 ```
 
-`src/` 为 Cargo workspace。安装器构建要求 `installer/payload/` 中的已核验文件；缺失则失败。
+`src/` 为 Cargo workspace。安装器构建要求 `installer/payload/` 中的已核验文件；缺失时自动获取，哈希或签名校验不符则失败。
 
 行为契约：查询标志、停 ACTIVE、原点调整、VALIDATE 后 APPLY、拓扑原始字节回放、ready/arm 握手、热键、父进程退出恢复、睡眠/待机中断后回放并打开面板、`execution-gap` 与漏掉的待机同样结束保持关闭且不自动再关、热插拔允许单次再关、内屏兜底。不要做：仅内屏按钮、`SC_MONITORPOWER` 产品入口、扩展桌面失败就改克隆（那只属于 VDD 退路）。
 

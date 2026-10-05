@@ -1,4 +1,4 @@
-function Get-VeilVersion {
+﻿function Get-VeilVersion {
     param(
         [string]$PropsPath
     )

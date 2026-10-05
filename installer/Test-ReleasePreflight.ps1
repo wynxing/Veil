@@ -189,6 +189,21 @@ try {
     if (-not $fixtureAbsolute.StartsWith($tempAbsolute, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test fixture cleanup path.' }
     Remove-Item -LiteralPath $fixtureAbsolute -Recurse -Force
 }
+
+# pack.ps1 loads this helper in Windows PowerShell 5.1; keep that path working.
+$legacyHelper = (Join-Path $PSScriptRoot 'Get-VeilVersion.ps1').Replace("'", "''")
+$legacyProbe = @"
+`$ErrorActionPreference = 'Stop'
+. '$legacyHelper'
+`$version = Get-VeilVersion
+`$notes = Get-VeilReleaseNotes -VersionInfo `$version
+`$expected = if (`$version.VersionSuffix) { '预览版' } else { '正式版' }
+if (-not `$notes.Contains("Veil `$(`$version.Informational)（`$expected）")) { throw 'Incorrect release channel under Windows PowerShell.' }
+"@
+$encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($legacyProbe))
+& (Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoProfile -EncodedCommand $encodedProbe
+if ($LASTEXITCODE -ne 0) { throw 'Version helper failed under Windows PowerShell 5.1.' }
 Write-Output 'Version sources match.'
+
 
 Write-Output 'Release checks passed: preflight, channels, publication arguments, and version consistency.'
