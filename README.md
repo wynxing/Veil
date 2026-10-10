@@ -2,7 +2,7 @@
 
 Veil 是 Windows 屏幕保持关闭工具：按物理屏决定关或开，直到主动恢复。
 
-**正式版：1.0.0 · Windows 11 x64。** 核心关屏与恢复已由用户实际使用。当前支持与验证范围见 [支持与诊断](doc/validation/support-and-diagnostics.md)。
+**正式版：1.0.1 · Windows 11 x64。** 核心关屏与恢复已由用户实际使用。当前支持与验证范围见 [支持与诊断](doc/validation/support-and-diagnostics.md)。
 
 ## 45 秒认识 Veil
 
@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/85ee4b5e-0ddb-4c41-909d-49f64f38d55b
 
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/wynxing/Veil/releases/latest) 下载 `VeilSetup-1.0.0-x64.exe`，并核对同页的 `SHA256SUMS.txt`。安装包没有 Authenticode 签名，Windows 可能显示 SmartScreen 或「未知发布者」提示。
+从 [GitHub Releases](https://github.com/wynxing/Veil/releases/latest) 下载 `VeilSetup-1.0.1-x64.exe`，并核对同页的 `SHA256SUMS.txt`。安装包没有 Authenticode 签名，Windows 可能显示 SmartScreen 或「未知发布者」提示。
 
 发布范围为 **Windows 11 x64**；Windows 10 与 ARM 不在本版支持范围内。辅助输出是已签名的第三方 MTT 显示驱动，安装页说明其用途并允许取消本次设备安装。
 

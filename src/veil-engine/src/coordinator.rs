@@ -741,6 +741,7 @@ impl RecoveryCoordinator {
             return self.restore_all();
         }
         let previous = self.wanted();
+        let mut early_request_id = None;
         let shrink = previous
             .iter()
             .any(|old| !selected.iter().any(|id| id.matches(old)));
@@ -799,6 +800,7 @@ impl RecoveryCoordinator {
                 if let Some(error) = self.publish_intent(&selected, true) {
                     return Some(error);
                 }
+                early_request_id = Some(self.intent.request_id);
                 if let Some(dir) = self.directory.clone() {
                     if let Err(e) = JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(&dir))
                         .and_then(|mut meta| {
@@ -872,7 +874,35 @@ impl RecoveryCoordinator {
             Ok(p) => p,
             Err(e) => return Some(e),
         };
-        let validate_ok = planned.ok() || (plan.may_adjust_clone && planned.rc == 87);
+        // 恢复进程可能在 enable 返回前已完成本次请求。无须再次关闭不等于校验失败；
+        // 仅放行仍属于本次提前发布请求的状态，最终确认继续交给恢复进程。
+        let already_off = planned.rc == 0
+            && planned.disabled_count == 0
+            && planned.remaining_active > 0
+            && !planned.used_apply
+            && early_request_id.is_some_and(|id| self.early_intent_is_current(id, &selected));
+        let validate_ok =
+            planned.ok() || (plan.may_adjust_clone && planned.rc == 87) || already_off;
+        if already_off || !validate_ok {
+            if let Some(dir) = &self.directory {
+                SessionLog::append(
+                    dir,
+                    if already_off {
+                        "keep-off-precheck-already-off"
+                    } else {
+                        "keep-off-precheck-rejected"
+                    },
+                    Some(&format!(
+                        "operation={} early_request={early_request_id:?} rc={} disabled_count={} remaining_active={} used_apply={}",
+                        self.operation_id, planned.rc, planned.disabled_count,
+                        planned.remaining_active, planned.used_apply,
+                    )),
+                    Some(if already_off { "already-off" } else { "validation" }),
+                    None,
+                    Some(planned.rc),
+                );
+            }
+        }
         if !validate_ok {
             if planned.remaining_active == 0 && planned.rc == 0 {
                 return Some("没有第二活动目标，未 APPLY。".into());
@@ -886,6 +916,23 @@ impl RecoveryCoordinator {
             &selected,
             plan.may_adjust_clone || snapshot.has_active_bundled_vdd(),
         )
+    }
+
+    fn early_intent_is_current(&self, request_id: u64, selected: &[ScreenIdentity]) -> bool {
+        let matches = |intent: &IntentFile| {
+            intent.request_id == request_id
+                && intent.vdd_assist
+                && intent.keep_off.len() == selected.len()
+                && selected
+                    .iter()
+                    .all(|id| intent.keep_off.iter().any(|item| item.to_identity() == *id))
+        };
+        matches(&self.intent)
+            && self
+                .directory
+                .as_ref()
+                .and_then(|dir| JsonUtil::try_read::<IntentFile>(SessionPaths::intent(dir)))
+                .is_some_and(|intent| matches(&intent))
     }
 
     fn publish_intent(&mut self, selected: &[ScreenIdentity], vdd_assist: bool) -> Option<String> {
