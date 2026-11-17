@@ -14,9 +14,10 @@ pub mod session;
 pub mod topology;
 
 pub use capability::{
-    looks_like_device_path, resolved_screen_name, short_monitor_id, BundledVddAvailability,
-    BundledVddSettings, DisplaySnapshot, Gate, KeepOffAction, KeepOffPlan, PathRole, PathRow,
-    Roles, ScreenIdentity,
+    looks_like_device_path, resolve_vdd_resolution, resolved_screen_name, short_monitor_id,
+    BundledVddAvailability, BundledVddSettings, DisplaySnapshot, Gate, KeepOffAction, KeepOffPlan,
+    PathRole, PathRow, Roles, ScreenIdentity, VddModePreference, VddResolutionChoice,
+    VddResolutionRequest, VDD_MODE_PRESETS,
 };
 pub use coordinator::{DriverStatus, RecoveryCoordinator, RecoveryCoordinatorHooks};
 pub use devices::{
@@ -45,3 +46,5 @@ pub use topology::{struct_bytes, DeactivateResult, PathOps, TopologyBlob};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vdd_mode_tests;

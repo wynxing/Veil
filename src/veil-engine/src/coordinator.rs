@@ -8,7 +8,10 @@ use crate::session::{
     SessionMetadata, SessionPaths, PROTOCOL_VERSION,
 };
 use crate::topology::TopologyBlob;
-use crate::{KeepOffAction, ScreenIdentity};
+use crate::{
+    resolve_vdd_resolution, KeepOffAction, ScreenIdentity, VddModePreference, VddResolutionChoice,
+    VddResolutionRequest,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -215,6 +218,40 @@ impl RecoveryCoordinator {
         self.log_operation("operation-stage", stage, None);
     }
 
+    fn publish_vdd_resolution(&mut self, selected: &[ScreenIdentity]) -> String {
+        let preference = VddModePreference::load();
+        let choice = match self.ccd.capture(CcdConstants::QUERY_FLAGS) {
+            Ok(frame) => resolve_vdd_resolution(&frame, selected, preference),
+            Err(error) => {
+                let choice = VddResolutionChoice::fallback();
+                let _ = VddResolutionRequest {
+                    width: choice.width,
+                    height: choice.height,
+                }
+                .write_active();
+                return format!(
+                    "读取显示模式失败，退回 {}×{}：{error}",
+                    choice.width, choice.height
+                );
+            }
+        };
+        let request = VddResolutionRequest {
+            width: choice.width,
+            height: choice.height,
+        };
+        if let Err(error) = request.write_active() {
+            return format!("没能写下分辨率请求：{error}");
+        }
+        if choice.fell_back {
+            format!(
+                "读不到可用的被关物理屏模式，退回 {}×{}",
+                choice.width, choice.height
+            )
+        } else {
+            format!("使用 {}×{}", choice.width, choice.height)
+        }
+    }
+
     fn run_helper(&mut self, verb: &str) -> i32 {
         let stage = match verb {
             "install-driver" => "正在安装辅助虚拟输出，请处理 Windows 权限提示",
@@ -419,18 +456,21 @@ impl RecoveryCoordinator {
     }
 
     fn serve_vdd_request(&mut self) {
-        let Some(dir) = &self.directory else {
+        let Some(dir) = self.directory.clone() else {
             return;
         };
-        if self.vdd_request_served.as_ref() == Some(dir)
-            || !SessionPaths::vdd_request(dir).exists()
-            || SessionPaths::result(dir).exists()
+        if self.vdd_request_served.as_ref() == Some(&dir)
+            || !SessionPaths::vdd_request(&dir).exists()
+            || SessionPaths::result(&dir).exists()
         {
             return;
         }
+        let selected = self.wanted();
+        let note = self.publish_vdd_resolution(&selected);
+        self.log_operation("vdd-resolution", &note, None);
         self.vdd_request_served = Some(dir.clone());
         SessionLog::append(
-            dir,
+            &dir,
             "vdd-enable",
             Some("界面按再关请求启用辅助虚拟输出。"),
             None,
@@ -439,9 +479,9 @@ impl RecoveryCoordinator {
         );
         self.vdd_owned = true;
         let saved =
-            JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(dir)).and_then(|mut meta| {
+            JsonUtil::read::<SessionMetadata>(SessionPaths::metadata(&dir)).and_then(|mut meta| {
                 meta.vdd_owned = true;
-                JsonUtil::write_atomic(SessionPaths::metadata(dir), &meta)
+                JsonUtil::write_atomic(SessionPaths::metadata(&dir), &meta)
             });
         if let Err(e) = saved {
             self.status_text = Some(e);
@@ -484,6 +524,8 @@ impl RecoveryCoordinator {
                 return Some(INSTALL_VDD_CANCELLED.into());
             }
         }
+        let note = self.publish_vdd_resolution(&[]);
+        self.log_operation("vdd-resolution", &note, None);
         let helper_rc = self.run_helper("install-driver");
         if helper_rc != 0 {
             return Some(match helper_rc {
@@ -779,6 +821,7 @@ impl RecoveryCoordinator {
                     });
                 }
             }
+            let resolution_note = self.publish_vdd_resolution(&selected);
             if plan.action == KeepOffAction::InstallBundledVdd {
                 let helper_rc = self.run_helper("install-driver");
                 if helper_rc != 0 {
@@ -810,6 +853,7 @@ impl RecoveryCoordinator {
                     }
                 }
             }
+            self.log_operation("vdd-resolution", &resolution_note, None);
             let helper_rc = self.run_helper("enable");
             if helper_rc != 0 {
                 return Some(match helper_rc {

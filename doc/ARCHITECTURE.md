@@ -180,7 +180,9 @@ egui 窗口只承担展示与点击。关屏期间允许退回托盘，后台要
 - 只认 MTT 硬件 ID（`Root\MttVDD`）与已记录发布者指纹；已有同一 ID 则接管
 - 允许机器上存在 GameViewer / 向日葵等其它虚拟屏，但永不把它们当退路、不改装它们
 
-具体文件哈希以安装时捆绑的版本为准，写入 [`installer/payload.manifest.json`](../installer/payload.manifest.json)。更换上游包必须重新核签名与指纹。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装时把 `vdd_settings.xml` 同时写到实际安装目录的 `vdd` 子目录与该目录。
+具体文件哈希以安装时捆绑的版本为准，写入 [`installer/payload.manifest.json`](../installer/payload.manifest.json)。更换上游包必须重新核签名与指纹。捆绑 `MttVDD.dll` 的 UTF-16 字符串写死 `C:\VirtualDisplayDriver`；DriverHelper 安装或启用前把 `vdd_settings.xml` 同时写到实际安装目录的 `vdd` 子目录与该目录。
+
+用户在面板选择辅助虚拟桌面分辨率，记在 `%LOCALAPPDATA%\Veil\vdd-mode.json`。默认沿用被关闭物理屏当时的 source mode；多块一起关时取桌面原点那块，否则取面积最大的一块。读不到模式，或宽高不在 800–7680 × 600–4320 内时，退回 1920×1200，并写入会话日志。固定档同样只写这一条分辨率，刷新率保持 60。协调器在 `install-driver` 和 `enable` 之前把解析结果写到同目录的 `vdd-mode-active.json`。提权助手只覆盖本产品拥有的 XML，不覆盖别人的文件，也不为了换分辨率重启已经启用的虚拟设备。这是设置写入，不是某块物理屏已按新分辨率关屏的实测结论。
 
 ### 7.2 按需启用
 

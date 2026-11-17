@@ -13,11 +13,11 @@
     </BootstrapperApplication>
     <Variable Name="InstallVdd" Type="string" Value="1" bal:Overridable="yes" />
     <Variable Name="InstallFolder" Type="formatted" Value="[ProgramFiles64Folder]Veil" bal:Overridable="yes" />
-    <Variable Name="CreateDesktopShortcut" Type="string" Value="0" bal:Overridable="yes" />
+    <Variable Name="CreateDesktopShortcut" Type="string" Value="1" bal:Overridable="yes" />
     <Variable Name="ExistingVeilState" Type="numeric" Value="2" />
     <util:ProductSearch Id="ExistingVeilProduct" UpgradeCode="9e2c1a0b-4d7e-4c3a-9b11-7f0d2a91e001" Variable="ExistingVeilState" Result="state" />
     <util:RegistrySearch Id="ExistingInstallFolder" Root="HKLM" Key="Software\Veil" Value="InstallDir" Variable="InstallFolder" Result="value" Bitness="always64" />
-    <util:RegistrySearch Id="ExistingDesktopShortcut" Root="HKLM" Key="Software\Veil" Value="DesktopShortcutPref" Variable="CreateDesktopShortcut" Result="value" Bitness="always64" />
+    <util:RegistrySearch Id="ExistingDesktopShortcut" Root="HKLM" Key="Software\Veil" Value="DesktopShortcutUserPref" Variable="CreateDesktopShortcut" Result="value" Bitness="always64" />
     <util:RegistrySearch Id="ExistingInstallVdd" Root="HKLM" Key="Software\Veil" Value="InstallVddPref" Variable="InstallVdd" Result="value" Bitness="always64" />
     <Chain>
       <ExePackage

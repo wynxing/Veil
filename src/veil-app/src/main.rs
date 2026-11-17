@@ -22,7 +22,9 @@ use session::{
     after_ui_session, classify_tray_commands, idle_response, merge_effect, IdleAction, LoopNext,
     PanelEffect, SessionState, SessionStop, TrayCommand, DEFAULT_DETAIL,
 };
-use veil_engine::{CcdApi, CcdConstants, OpenSessionRelease, Win32CcdApi};
+use veil_engine::{
+    CcdApi, CcdConstants, OpenSessionRelease, VddModePreference, Win32CcdApi, VDD_MODE_PRESETS,
+};
 use wake::UiWake;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -117,6 +119,7 @@ struct AppSession {
     stop: SessionStop,
     renderer: Option<RendererChoice>,
     startup: bool,
+    vdd_mode: VddModePreference,
     update_offer: Option<update::UpdateOffer>,
     update_inflight: bool,
     update_arm: bool,
@@ -186,6 +189,7 @@ fn run_panel(mutex: HANDLE, show_event: HANDLE) -> Result<(), String> {
         stop: SessionStop::Dismiss,
         renderer: None,
         startup: startup_enabled(),
+        vdd_mode: VddModePreference::load(),
         update_offer: None,
         update_inflight: false,
         update_arm: true,
@@ -284,7 +288,7 @@ fn native_options(choice: RendererChoice) -> eframe::NativeOptions {
     };
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([420.0, 560.0])
+            .with_inner_size([420.0, 640.0])
             .with_min_inner_size([360.0, 360.0])
             .with_title("Veil")
             .with_icon(window_icon())
@@ -808,6 +812,38 @@ impl eframe::App for VeilApp {
             if ui.button("恢复全部").clicked() {
                 app.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
             }
+            let mut vdd_mode = app.vdd_mode;
+            let mode_busy = !app.state.pending.is_empty()
+                || app.state.auto_stage
+                || app.state.worker_failed;
+            ui.add_enabled_ui(!mode_busy, |ui| {
+                ui.label("辅助虚拟桌面分辨率");
+                egui::ComboBox::from_id_salt("vdd-mode")
+                    .selected_text(vdd_mode_label(vdd_mode))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut vdd_mode,
+                            VddModePreference::MatchPhysical,
+                            "沿用被关闭的物理屏",
+                        );
+                        for &(width, height) in VDD_MODE_PRESETS {
+                            ui.selectable_value(
+                                &mut vdd_mode,
+                                VddModePreference::Fixed { width, height },
+                                format!("{width}×{height}"),
+                            );
+                        }
+                    });
+            });
+            ui.label("只影响关光全部物理屏后留下的虚拟桌面，不改物理屏。已经关着时改选，要先恢复再关一次才换上。刷新率保持 60。");
+            if vdd_mode != app.vdd_mode {
+                match vdd_mode.save() {
+                    Ok(()) => app.vdd_mode = vdd_mode,
+                    Err(error) => {
+                        app.state.detail = format!("没能保存分辨率选择：{error}");
+                    }
+                }
+            }
             let mut startup = startup_now;
             if ui.checkbox(&mut startup, "开机自启（默认关）").changed() {
                 set_startup(startup);
@@ -1096,6 +1132,13 @@ fn startup_path() -> std::path::PathBuf {
         .join("Programs")
         .join("Startup")
         .join("Veil.lnk")
+}
+
+fn vdd_mode_label(mode: VddModePreference) -> String {
+    match mode {
+        VddModePreference::MatchPhysical => "沿用被关闭的物理屏".into(),
+        VddModePreference::Fixed { width, height } => format!("{width}×{height}"),
+    }
 }
 
 fn startup_enabled() -> bool {

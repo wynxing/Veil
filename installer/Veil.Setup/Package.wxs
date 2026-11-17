@@ -21,7 +21,7 @@
     <StandardDirectory Id="DesktopFolder" />
 
     <Property Id="INSTALLVDD" Value="1" />
-    <Property Id="CREATEDESKTOPSHORTCUT" Value="0" />
+    <Property Id="CREATEDESKTOPSHORTCUT" Value="1" />
     <Feature Id="App" Title="Veil 应用" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentGroupRef Id="VddFiles" />
