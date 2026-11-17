@@ -25,7 +25,7 @@ const PARK_Y: i32 = -32_000;
 const DEFAULT_X: i32 = 200;
 const DEFAULT_Y: i32 = 200;
 const DEFAULT_W: i32 = 420;
-const DEFAULT_H: i32 = 560;
+const DEFAULT_H: i32 = 640;
 const IID_ITASKBAR_LIST: GUID = GUID::from_u128(0x56FDF342_fd6d_11d0_958a_006097c9a090);
 
 #[repr(C)]

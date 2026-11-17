@@ -201,7 +201,7 @@ fn install_driver_inner() -> Result<(), String> {
     let payload = veil_engine::resolve_payload()
         .ok_or_else(|| "缺少已校验的辅助虚拟输出驱动包，拒绝安装。".to_string())?;
     veil_engine::validate_payload(&payload)?;
-    let created = BundledVddSettings::write_xml(&[
+    let created = BundledVddSettings::write_requested(&[
         &payload.vdd_dir.to_string_lossy(),
         BundledVddSettings::DRIVER_READS_DIRECTORY,
     ])?;
@@ -264,6 +264,16 @@ fn uninstall_driver() -> i32 {
     }
     rc
 }
+fn write_requested_settings() -> Result<(), String> {
+    let mut directories = Vec::new();
+    if let Some(payload) = veil_engine::resolve_payload() {
+        directories.push(payload.vdd_dir.to_string_lossy().into_owned());
+    }
+    directories.push(BundledVddSettings::DRIVER_READS_DIRECTORY.to_string());
+    let refs: Vec<&str> = directories.iter().map(String::as_str).collect();
+    BundledVddSettings::write_requested(&refs).map(|_| ())
+}
+
 fn enable_all() -> i32 {
     let _guard = match veil_engine::maintenance::OperationLock::for_keep_off() {
         Ok(g) => g,
@@ -300,6 +310,10 @@ fn enable_all() -> i32 {
             return 2;
         }
     };
+    if let Err(error) = write_requested_settings() {
+        helper_log(&error);
+        return 2;
+    }
     ids.iter().fold(0, |rc, id| rc | change_state(id, true))
 }
 fn disable_all() -> i32 {
