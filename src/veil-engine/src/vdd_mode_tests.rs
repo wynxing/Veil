@@ -192,3 +192,73 @@ fn vdd_mode_preference_roundtrip_rejects_out_of_range() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+
+#[test]
+fn driver_reads_hardcoded_lab_directory() {
+    assert_eq!(
+        BundledVddSettings::DRIVER_READS_DIRECTORY,
+        r"C:\VirtualDisplayDriver"
+    );
+    assert_eq!(BundledVddSettings::FILE_NAME, "vdd_settings.xml");
+    assert!(BundledVddSettings::XML.contains("<count>1</count>"));
+    assert!(BundledVddSettings::XML.contains("<width>1920</width>"));
+    assert!(BundledVddSettings::XML.contains("<height>1200</height>"));
+}
+
+#[test]
+fn write_xml_copies_into_install_and_driver_directories() {
+    let root = std::env::temp_dir().join(format!("veil-vdd-settings-{}", std::process::id()));
+    let install = root.join("program-vdd");
+    let driver = root.join("driver-read");
+    let _ = std::fs::remove_dir_all(&root);
+    BundledVddSettings::write_xml(&[&install.to_string_lossy(), &driver.to_string_lossy()])
+        .unwrap();
+    let a = install.join(BundledVddSettings::FILE_NAME);
+    let b = driver.join(BundledVddSettings::FILE_NAME);
+    assert!(a.exists());
+    assert!(b.exists());
+    let a_text = std::fs::read_to_string(&a).unwrap().replace("\r\n", "\n");
+    assert_eq!(BundledVddSettings::XML.replace("\r\n", "\n"), a_text);
+    assert_eq!(
+        std::fs::read_to_string(&a).unwrap(),
+        std::fs::read_to_string(&b).unwrap()
+    );
+    assert!(BundledVddSettings::try_remove_owned_file(
+        &install.to_string_lossy()
+    ));
+    assert!(!a.exists());
+    std::fs::write(&b, "<vdd_settings>foreign</vdd_settings>").unwrap();
+    assert!(!BundledVddSettings::try_remove_owned_file(
+        &driver.to_string_lossy()
+    ));
+    assert!(b.exists());
+    assert!(BundledVddSettings::write_xml(&[&driver.to_string_lossy()]).is_err());
+    let extra = root.join("rollback");
+    let created = BundledVddSettings::write_xml(&[&extra.to_string_lossy()]).unwrap();
+    assert_eq!(created.len(), 1);
+    BundledVddSettings::rollback_created(&created);
+    assert!(!extra.join(BundledVddSettings::FILE_NAME).exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn xml_copy_failure_removes_only_new_files() {
+    let root = std::env::temp_dir().join(format!(
+        "veil-vdd-xml-copy-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let first = root.join("first");
+    let second = root.join("second");
+    std::fs::create_dir(&second).unwrap();
+    let foreign = second.join(BundledVddSettings::FILE_NAME);
+    std::fs::write(&foreign, "foreign").unwrap();
+    assert!(
+        BundledVddSettings::write_xml(&[&first.to_string_lossy(), &second.to_string_lossy()])
+            .is_err()
+    );
+    assert!(!first.join(BundledVddSettings::FILE_NAME).exists());
+    assert_eq!(std::fs::read_to_string(foreign).unwrap(), "foreign");
+    let _ = std::fs::remove_dir_all(&root);
+}
