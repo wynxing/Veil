@@ -1,0 +1,29 @@
+{
+  "name": "veil-promo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Veil 原创漫画宣传片工程",
+  "scripts": {
+    "studio": "remotion studio --no-open",
+    "check": "tsc --noEmit",
+    "sound": "node scripts/create-sound.mjs",
+    "render:sample": "remotion render src/index.ts VeilOpening out/veil-opening.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "still": "remotion still src/index.ts VeilOpening out/veil-opening-cover.png --frame=170",
+    "sound:full": "node scripts/create-full-sound.mjs",
+    "captions": "node scripts/create-captions.mjs",
+    "render:full": "remotion render src/index.ts VeilPromo out/veil-promo.mp4 --codec=h264 --crf=18 --pixel-format=yuv420p",
+    "cover:full": "remotion still src/index.ts VeilCover out/veil-promo-cover.png"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.532",
+    "@remotion/media": "4.0.532",
+    "@remotion/transitions": "4.0.532",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.532"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}

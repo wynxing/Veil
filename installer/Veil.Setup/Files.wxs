@@ -17,7 +17,7 @@
       </Component>
       <Component Id="VeilInstallDirRecord" Guid="0bf572f0-f21b-4726-a2c9-3705e9e5f728">
         <RegistryValue Root="HKLM" Key="Software\Veil" Name="InstallDir" Value="[INSTALLDIR]" Type="string" KeyPath="yes" />
-        <RegistryValue Root="HKLM" Key="Software\Veil" Name="DesktopShortcutPref" Value="[CREATEDESKTOPSHORTCUT]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Veil" Name="DesktopShortcutUserPref" Value="[CREATEDESKTOPSHORTCUT]" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\Veil" Name="InstallVddPref" Value="[INSTALLVDD]" Type="string" />
       </Component>
       <Component Id="VeilStartMenu" Directory="VeilMenuDir" Guid="e5b7a2c6-1f58-4a0e-d264-5f912d7e0a8b">

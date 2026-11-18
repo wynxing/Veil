@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Veil 屏幕与帷幕">
+  <rect x="5" y="9" width="54" height="40" rx="6" fill="#142c34"/>
+  <rect x="10" y="14" width="44" height="30" rx="2" fill="#e9f8f8"/>
+  <path d="M31 14H54V39C43 38 36 30 31 14Z" fill="#0b8c94"/>
+  <path d="M43 14H54V38C49 35 45 27 43 14Z" fill="#076b75"/>
+  <path d="M28 49h8v5h9a2 2 0 0 1 2 2v2H17v-2a2 2 0 0 1 2-2h9z" fill="#142c34"/>
+</svg>
