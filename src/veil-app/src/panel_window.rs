@@ -581,7 +581,7 @@ mod tests {
                     w: 1,
                     h: 1,
                 },
-                (200, 200, 420, 560),
+                (DEFAULT_X, DEFAULT_Y, DEFAULT_W, DEFAULT_H),
             ),
         ] {
             let rect = clamp_to_work(original, work);
