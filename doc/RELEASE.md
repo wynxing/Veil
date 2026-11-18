@@ -1,6 +1,6 @@
 # Veil 版本与发布
 
-当前正式版本为 **1.0.0**，发布范围为 Windows 11 x64。安装包没有 Authenticode 签名；Windows 可能显示 SmartScreen 或「未知发布者」提示。支持与验证范围集中见 [支持与诊断](validation/support-and-diagnostics.md)。
+当前正式版本为 **1.0.1**，发布范围为 Windows 11 x64。安装包没有 Authenticode 签名；Windows 可能显示 SmartScreen 或「未知发布者」提示。支持与验证范围集中见 [支持与诊断](validation/support-and-diagnostics.md)。
 
 ## 版本来源与渠道
 
