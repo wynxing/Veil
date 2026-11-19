@@ -1390,128 +1390,196 @@ impl RecoverySession {
     }
 
     fn activate_inactive_bundled(&mut self, active: &CcdFrame, all: &CcdFrame) -> bool {
-        if active.paths.len() != active.snapshot.paths.len()
-            || all.paths.len() != all.snapshot.paths.len()
-        {
-            self.write_heartbeat("路径与描述数量不一致，未改拓扑。", None, true);
-            return false;
-        }
         let selected: Vec<_> = self
             .intent
             .keep_off
             .iter()
             .map(|item| item.to_identity())
             .collect();
-        let pick_bundled = |available: bool| {
-            all.snapshot
-                .paths
-                .iter()
-                .enumerate()
-                .find(|(index, row)| {
-                    row.is_bundled_vdd()
-                        && !row.active
-                        && (all.paths[*index].target_info.target_available != 0) == available
-                })
-        };
-        let Some((bundled_index, _)) = pick_bundled(true).or_else(|| pick_bundled(false)) else {
-            return false;
-        };
-        let mut paths: Vec<_> = active
-            .paths
-            .iter()
-            .zip(active.snapshot.paths.iter())
-            .filter(|(_, row)| row.active)
-            .map(|(path, _)| *path)
-            .collect();
-        let mut bundled = all.paths[bundled_index];
-        bundled.flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE
-            | CcdConstants::DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
-        let mut modes = active.modes.clone();
-        if let Err(error) = attach_active_modes(&mut bundled, &mut modes) {
-            self.write_heartbeat(&error, Some(&selected), true);
-            return false;
-        }
-        paths.push(bundled);
-        let mut validate_rc = match self
-            .opt
-            .ccd
-            .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
+        match activate_inactive_bundled_path(self.opt.ccd.as_ref(), active, all, 1920, 1200, false)
         {
-            Ok(rc) => rc,
-            Err(error) => {
-                self.write_heartbeat(&error, Some(&selected), true);
-                return false;
-            }
-        };
-        if validate_rc == 87 {
-            if let Some(path) = paths.last_mut() {
-                path.target_info.scaling = CcdConstants::DISPLAYCONFIG_SCALING_PREFERRED;
-            }
-            validate_rc = match self
-                .opt
-                .ccd
-                .set(&paths, &modes, CcdConstants::VALIDATE_FLAGS)
-            {
-                Ok(rc) => rc,
-                Err(error) => {
-                    self.write_heartbeat(&error, Some(&selected), true);
-                    return false;
-                }
-            };
-        }
-        if validate_rc != 0 {
-            if !self.vdd_activate_logged {
-                self.vdd_activate_logged = true;
-                let bundled = paths.last();
-                let detail = match bundled {
-                    Some(path) => format!(
-                        "激活辅助路径校验 {validate_rc}，活动路径 {}，辅助源 {:08x} 目标 {:08x}，未改拓扑。",
-                        paths.len(),
-                        path.source_info.mode_info_idx,
-                        path.target_info.mode_info_idx
-                    ),
-                    None => format!("激活辅助路径校验 {validate_rc}，未改拓扑。"),
-                };
+            InactiveBundledActivation::Applied => {
+                self.vdd_activate_attempted = true;
                 SessionLog::append(
                     &self.opt.directory,
-                    "apply-blocked",
-                    Some(&detail),
+                    "vdd-activate",
+                    Some("已把未活动的辅助路径标为活动，已关物理屏保持关闭。"),
                     None,
                     None,
-                    Some(validate_rc),
+                    Some(0),
                 );
+                true
             }
-            return false;
+            InactiveBundledActivation::NotFound => false,
+            InactiveBundledActivation::Heartbeat {
+                detail,
+                include_selection,
+                mark_attempted,
+            } => {
+                if mark_attempted {
+                    self.vdd_activate_attempted = true;
+                }
+                self.write_heartbeat(
+                    &detail,
+                    include_selection.then_some(selected.as_slice()),
+                    true,
+                );
+                false
+            }
+            InactiveBundledActivation::ApplyBlocked { detail, rc } => {
+                if !self.vdd_activate_logged {
+                    self.vdd_activate_logged = true;
+                    SessionLog::append(
+                        &self.opt.directory,
+                        "apply-blocked",
+                        Some(&detail),
+                        None,
+                        None,
+                        Some(rc),
+                    );
+                }
+                false
+            }
+            InactiveBundledActivation::ApplyFailed { rc } => {
+                self.vdd_activate_attempted = true;
+                SessionLog::append(
+                    &self.opt.directory,
+                    "apply-failed",
+                    Some(&format!("激活辅助路径 APPLY {rc}")),
+                    None,
+                    None,
+                    Some(rc),
+                );
+                false
+            }
         }
-        self.vdd_activate_attempted = true;
-        let apply_rc = match self.opt.ccd.set(&paths, &modes, CcdConstants::APPLY_FLAGS) {
+    }
+}
+
+pub(crate) enum InactiveBundledActivation {
+    Applied,
+    NotFound,
+    Heartbeat {
+        detail: String,
+        include_selection: bool,
+        mark_attempted: bool,
+    },
+    ApplyBlocked {
+        detail: String,
+        rc: i32,
+    },
+    ApplyFailed {
+        rc: i32,
+    },
+}
+
+pub(crate) fn activate_inactive_bundled_path(
+    ccd: &dyn CcdApi,
+    active: &CcdFrame,
+    all: &CcdFrame,
+    width: u32,
+    height: u32,
+    require_available: bool,
+) -> InactiveBundledActivation {
+    if active.paths.len() != active.snapshot.paths.len()
+        || all.paths.len() != all.snapshot.paths.len()
+    {
+        return InactiveBundledActivation::Heartbeat {
+            detail: "路径与描述数量不一致，未改拓扑。".into(),
+            include_selection: false,
+            mark_attempted: false,
+        };
+    }
+    let pick_bundled = |available: bool| {
+        all.snapshot.paths.iter().enumerate().find(|(index, row)| {
+            row.is_bundled_vdd()
+                && !row.active
+                && (all.paths[*index].target_info.target_available != 0) == available
+        })
+    };
+    let Some((bundled_index, _)) = pick_bundled(true).or_else(|| {
+        if require_available {
+            None
+        } else {
+            pick_bundled(false)
+        }
+    }) else {
+        return InactiveBundledActivation::NotFound;
+    };
+    let mut paths: Vec<_> = active
+        .paths
+        .iter()
+        .zip(active.snapshot.paths.iter())
+        .filter(|(_, row)| row.active)
+        .map(|(path, _)| *path)
+        .collect();
+    let mut bundled = all.paths[bundled_index];
+    bundled.flags |= CcdConstants::DISPLAYCONFIG_PATH_ACTIVE
+        | CcdConstants::DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE;
+    let mut modes = active.modes.clone();
+    if let Err(error) = attach_active_modes(&mut bundled, &mut modes, width, height) {
+        return InactiveBundledActivation::Heartbeat {
+            detail: error,
+            include_selection: true,
+            mark_attempted: false,
+        };
+    }
+    paths.push(bundled);
+    let mut validate_rc = match ccd.set(&paths, &modes, CcdConstants::VALIDATE_FLAGS) {
+        Ok(rc) => rc,
+        Err(error) => {
+            return InactiveBundledActivation::Heartbeat {
+                detail: error,
+                include_selection: true,
+                mark_attempted: false,
+            };
+        }
+    };
+    if validate_rc == 87 {
+        if let Some(path) = paths.last_mut() {
+            path.target_info.scaling = CcdConstants::DISPLAYCONFIG_SCALING_PREFERRED;
+        }
+        validate_rc = match ccd.set(&paths, &modes, CcdConstants::VALIDATE_FLAGS) {
             Ok(rc) => rc,
             Err(error) => {
-                self.write_heartbeat(&error, Some(&selected), true);
-                return false;
+                return InactiveBundledActivation::Heartbeat {
+                    detail: error,
+                    include_selection: true,
+                    mark_attempted: false,
+                };
             }
         };
-        if apply_rc != 0 {
-            SessionLog::append(
-                &self.opt.directory,
-                "apply-failed",
-                Some(&format!("激活辅助路径 APPLY {apply_rc}")),
-                None,
-                None,
-                Some(apply_rc),
-            );
-            return false;
-        }
-        SessionLog::append(
-            &self.opt.directory,
-            "vdd-activate",
-            Some("已把未活动的辅助路径标为活动，已关物理屏保持关闭。"),
-            None,
-            None,
-            Some(apply_rc),
-        );
-        true
     }
+    if validate_rc != 0 {
+        let bundled = paths.last();
+        let detail = match bundled {
+            Some(path) => format!(
+                "激活辅助路径校验 {validate_rc}，活动路径 {}，辅助源 {:08x} 目标 {:08x}，未改拓扑。",
+                paths.len(),
+                path.source_info.mode_info_idx,
+                path.target_info.mode_info_idx
+            ),
+            None => format!("激活辅助路径校验 {validate_rc}，未改拓扑。"),
+        };
+        return InactiveBundledActivation::ApplyBlocked {
+            detail,
+            rc: validate_rc,
+        };
+    }
+    let apply_rc = match ccd.set(&paths, &modes, CcdConstants::APPLY_FLAGS) {
+        Ok(rc) => rc,
+        Err(error) => {
+            return InactiveBundledActivation::Heartbeat {
+                detail: error,
+                include_selection: true,
+                mark_attempted: true,
+            };
+        }
+    };
+    if apply_rc != 0 {
+        return InactiveBundledActivation::ApplyFailed { rc: apply_rc };
+    }
+    InactiveBundledActivation::Applied
 }
 
 fn keeps_active_bundled_vdd(
@@ -1533,12 +1601,12 @@ fn keeps_active_bundled_vdd(
 fn attach_active_modes(
     path: &mut crate::native::DisplayConfigPathInfo,
     modes: &mut Vec<DisplayConfigModeInfo>,
+    width: u32,
+    height: u32,
 ) -> Result<(), String> {
     if modes.len() > u16::MAX as usize - 3 {
         return Err("模式表已满，无法激活辅助路径。".into());
     }
-    let width = 1920u32;
-    let height = 1200u32;
     let total_w = width + 160;
     let total_h = height + 119;
     let origin_x = modes

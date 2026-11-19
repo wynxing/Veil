@@ -218,7 +218,7 @@ impl RecoveryCoordinator {
         self.log_operation("operation-stage", stage, None);
     }
 
-    fn publish_vdd_resolution(&mut self, selected: &[ScreenIdentity]) -> String {
+    fn publish_vdd_resolution(&mut self, selected: &[ScreenIdentity]) -> (String, u32, u32) {
         let preference = VddModePreference::load();
         let choice = match self.ccd.capture(CcdConstants::QUERY_FLAGS) {
             Ok(frame) => resolve_vdd_resolution(&frame, selected, preference),
@@ -229,9 +229,13 @@ impl RecoveryCoordinator {
                     height: choice.height,
                 }
                 .write_active();
-                return format!(
-                    "读取显示模式失败，退回 {}×{}：{error}",
-                    choice.width, choice.height
+                return (
+                    format!(
+                        "读取显示模式失败，退回 {}×{}：{error}",
+                        choice.width, choice.height
+                    ),
+                    choice.width,
+                    choice.height,
                 );
             }
         };
@@ -240,16 +244,21 @@ impl RecoveryCoordinator {
             height: choice.height,
         };
         if let Err(error) = request.write_active() {
-            return format!("没能写下分辨率请求：{error}");
+            return (
+                format!("没能写下分辨率请求：{error}"),
+                choice.width,
+                choice.height,
+            );
         }
-        if choice.fell_back {
+        let note = if choice.fell_back {
             format!(
                 "读不到可用的被关物理屏模式，退回 {}×{}",
                 choice.width, choice.height
             )
         } else {
             format!("使用 {}×{}", choice.width, choice.height)
-        }
+        };
+        (note, choice.width, choice.height)
     }
 
     fn run_helper(&mut self, verb: &str) -> i32 {
@@ -466,7 +475,7 @@ impl RecoveryCoordinator {
             return;
         }
         let selected = self.wanted();
-        let note = self.publish_vdd_resolution(&selected);
+        let (note, _, _) = self.publish_vdd_resolution(&selected);
         self.log_operation("vdd-resolution", &note, None);
         self.vdd_request_served = Some(dir.clone());
         SessionLog::append(
@@ -524,7 +533,7 @@ impl RecoveryCoordinator {
                 return Some(INSTALL_VDD_CANCELLED.into());
             }
         }
-        let note = self.publish_vdd_resolution(&[]);
+        let (note, _, _) = self.publish_vdd_resolution(&[]);
         self.log_operation("vdd-resolution", &note, None);
         let helper_rc = self.run_helper("install-driver");
         if helper_rc != 0 {
@@ -822,7 +831,8 @@ impl RecoveryCoordinator {
                     });
                 }
             }
-            let resolution_note = self.publish_vdd_resolution(&selected);
+            let (resolution_note, resolution_width, resolution_height) =
+                self.publish_vdd_resolution(&selected);
             if plan.action == KeepOffAction::InstallBundledVdd {
                 let helper_rc = self.run_helper("install-driver");
                 if helper_rc != 0 {
@@ -870,6 +880,9 @@ impl RecoveryCoordinator {
             self.progress("正在等待辅助虚拟路径出现");
             let wait_started = Instant::now();
             let wait_until = Instant::now() + self.hooks.virtual_path_wait;
+            let mut activation_attempted = false;
+            let mut activation_failure: Option<String> = None;
+            let mut inactive_bundled = 0usize;
             while Instant::now() < wait_until {
                 if (self.hooks.cancel_requested)() {
                     return Some("已取消本次保持关闭请求；正在恢复并清理辅助输出。".into());
@@ -880,6 +893,57 @@ impl RecoveryCoordinator {
                 };
                 if snapshot.has_active_bundled_vdd() {
                     break;
+                }
+                if !activation_attempted {
+                    let active_frame = match self.ccd.capture(CcdConstants::QUERY_FLAGS) {
+                        Ok(frame) => frame,
+                        Err(e) => return Some(e),
+                    };
+                    let all_frame = match self.ccd.capture(CcdConstants::ALL_PATH_FLAGS) {
+                        Ok(frame) => frame,
+                        Err(e) => return Some(e),
+                    };
+                    inactive_bundled = all_frame
+                        .snapshot
+                        .paths
+                        .iter()
+                        .filter(|row| row.is_bundled_vdd() && !row.active)
+                        .count();
+                    match crate::recovery::activate_inactive_bundled_path(
+                        self.ccd.as_ref(),
+                        &active_frame,
+                        &all_frame,
+                        resolution_width,
+                        resolution_height,
+                        true,
+                    ) {
+                        crate::recovery::InactiveBundledActivation::Applied => {
+                            self.log_operation(
+                                "vdd-activate",
+                                "已把未活动的辅助路径标为活动。",
+                                Some(0),
+                            );
+                            activation_attempted = true;
+                            continue;
+                        }
+                        crate::recovery::InactiveBundledActivation::NotFound => {}
+                        crate::recovery::InactiveBundledActivation::Heartbeat {
+                            detail, ..
+                        } => {
+                            activation_attempted = true;
+                            activation_failure = Some(detail);
+                        }
+                        crate::recovery::InactiveBundledActivation::ApplyBlocked {
+                            detail, ..
+                        } => {
+                            activation_attempted = true;
+                            activation_failure = Some(detail);
+                        }
+                        crate::recovery::InactiveBundledActivation::ApplyFailed { rc } => {
+                            activation_attempted = true;
+                            activation_failure = Some(format!("激活辅助路径 APPLY {rc}"));
+                        }
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(400));
             }
@@ -893,10 +957,10 @@ impl RecoveryCoordinator {
                     .active_paths()
                     .filter(|p| p.is_bundled_vdd())
                     .count();
-                SessionLog::append(dir, "vdd-path-wait-end", Some(&format!("operation={} elapsed_ms={} active={active} virtual={virtual_paths} bundled={bundled}", self.operation_id, wait_started.elapsed().as_millis())), None, None, None);
+                SessionLog::append(dir, "vdd-path-wait-end", Some(&format!("operation={} elapsed_ms={} active={active} virtual={virtual_paths} bundled={bundled} inactive={inactive_bundled}", self.operation_id, wait_started.elapsed().as_millis())), None, None, None);
             }
             if !snapshot.has_active_bundled_vdd() {
-                return Some(VDD_PATH_MISSING.into());
+                return Some(activation_failure.unwrap_or_else(|| VDD_PATH_MISSING.into()));
             }
             plan = Gate::plan_keep_off(&snapshot, &selected, true);
             if plan.action != KeepOffAction::Deactivate {

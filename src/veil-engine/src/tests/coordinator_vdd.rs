@@ -468,6 +468,60 @@ fn confirmed_enable_then_missing_virtual_path_requests_restore_before_cleanup() 
     assert!(!coordinator.has_session());
 }
 #[test]
+fn inactive_bundled_path_is_activated_before_keep_off() {
+    let helper = Rc::new(RefCell::new(Vec::new()));
+    let ccd = Rc::new(FakeCcd::with_paths_rows(
+        vec![
+            fakes::path_default(true, 1),
+            fakes::path(false, false, 3, 0x0001FFFF, 1),
+        ],
+        vec![DisplayConfigModeInfo {
+            info_type: 1,
+            ..Default::default()
+        }],
+        vec![
+            fakes::row_simple(PathRole::Internal, 1, "Panel", r"\\?\DISPLAY#CMN#1"),
+            fakes::row(
+                PathRole::Virtual,
+                false,
+                3,
+                "VDD by MTT",
+                r"\\?\ROOT#DISPLAY#0002#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+                r"\\?\DISPLAY#MTT1337#1&33320f0&11&UID256",
+                "0000000000000001",
+            ),
+        ],
+    ));
+    let mut coordinator = RecoveryCoordinator::new(
+        Box::new(ccd.clone()),
+        coord_hooks(
+            Rc::new(RefCell::new(String::new())),
+            helper.clone(),
+            true,
+            true,
+            Some(true),
+            Duration::from_secs(15),
+        ),
+    );
+    let identity = ccd
+        .query_snapshot(CcdConstants::QUERY_FLAGS)
+        .unwrap()
+        .physical_screens()
+        .next()
+        .unwrap()
+        .identity();
+    let error = coordinator.keep_off(identity);
+    assert_eq!(error, None);
+    assert!(ccd
+        .rows()
+        .iter()
+        .any(|row| row.is_bundled_vdd() && row.active));
+    let dir = coordinator.session_directory().unwrap().to_path_buf();
+    let events = std::fs::read_to_string(SessionPaths::events(&dir)).unwrap();
+    assert!(events.contains("vdd-activate"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
 fn cancel_after_helper_enable_does_not_publish_close_intent() {
     let cancelled = Rc::new(std::cell::Cell::new(false));
     let helper = Rc::new(RefCell::new(Vec::new()));
