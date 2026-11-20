@@ -330,6 +330,55 @@ pub(crate) fn render_panel(
                 });
             });
 
+            ui.add_space(4.0);
+            let (hotkey_tone, _) = classify_hotkey(&state.hotkey_status);
+            let hotkey_unavailable = hotkey_tone == HotkeyTone::Unavailable;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(
+                    RichText::new("紧急恢复")
+                        .size(11.5)
+                        .color(if hotkey_unavailable {
+                            palette.danger
+                        } else {
+                            palette.muted
+                        }),
+                );
+                egui::Frame::new()
+                    .fill(if hotkey_unavailable {
+                        palette.danger_fill
+                    } else {
+                        palette.pill_fill
+                    })
+                    .stroke(Stroke::new(
+                        1.0_f32,
+                        if hotkey_unavailable {
+                            palette.danger_stroke
+                        } else {
+                            palette.card_stroke
+                        },
+                    ))
+                    .corner_radius(CornerRadius::same(4))
+                    .inner_margin(Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        let key_text = RichText::new(CcdConstants::HOTKEY_TEXT)
+                            .size(11.5)
+                            .strong();
+                        ui.label(if hotkey_unavailable {
+                            key_text.color(palette.danger)
+                        } else {
+                            key_text
+                        });
+                    });
+                if hotkey_unavailable {
+                    ui.label(
+                        RichText::new("注册失败，已禁止关屏")
+                            .size(11.0)
+                            .color(palette.danger),
+                    );
+                }
+            });
+
             if let Some(offer) = update_offer {
                 ui.add_space(6.0);
                 egui::Frame::new()

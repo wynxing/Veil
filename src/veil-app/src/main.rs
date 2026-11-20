@@ -347,7 +347,7 @@ fn build_tray() -> (
     let _ = menu.append(&exit_item);
     let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("Veil")
+        .with_tooltip(format!("Veil（紧急恢复：{}）", CcdConstants::HOTKEY_TEXT))
         .with_icon(default_icon())
         .build()
     {
