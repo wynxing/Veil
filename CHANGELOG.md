@@ -4,8 +4,10 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-20
+
 ### 新增与体验改进
-- **小面板三段式布局与主题重构**：拆分为固定顶栏（标题、版本号、热键状态徽章、更新/进度/横排确认卡）、可滚动物理屏圆角卡片与固定底栏（常驻「恢复全部」「退出」+ 折叠式「设置与诊断」）；适配 Windows 浅色/深色系统主题并提升警告色对比度；新增「打开日志」「会话目录」「复制诊断摘要（脱敏）」入口。
+- **小面板三段式布局与主题重构**：拆分为固定顶栏（标题、版本号、热键状态徽章、常驻 `紧急恢复 Ctrl+Alt+Shift+F10` 按键胶囊、更新/进度/横排确认卡）、可滚动物理屏圆角卡片与固定底栏（常驻「恢复全部」「退出」+ 折叠式「设置与诊断」）；适配 Windows 浅色/深色系统主题并提升警告色对比度；托盘鼠标悬停提示同步显示紧急恢复热键；新增「打开日志」「会话目录」「复制诊断摘要（脱敏）」入口。
 - **WiX 安装器全中文化**：新增 `VeilTheme.zh-CN.wxl` 本地化文件并改用 `Microsoft YaHei UI`，统一安装、选项、进度、修改、成功、失败与文件占用页的中文界面。
 
 ### 优化与修复
@@ -14,6 +16,11 @@
 - **开机自启改用原生注册表**：改写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Veil` 并自动清理旧版 `Startup\Veil.lnk`，不再在 UI 线程拉起 PowerShell，失败时向用户反馈原因。
 - **日志与历史会话治理**：统一 `Veil-app.log` 与 `Veil-driver-helper.log` 为 UTC RFC3339 时间戳并按 2 MiB 自动轮转（保留 `.1` 备份）；应用启动时自动清理较早的已结束 `session-*` 目录（保留最近 10 份）。
 - **局部清理**：缓存托盘图标状态、窗口图标与中文字体字节（Win11 优先 `msyh.ttc`）；修正 `adjusted_clone` 标记、移除重复托盘接收循环与无效分支，为 `UiWake` 补齐句柄释放。
+
+### 架构、工程与文档
+- 将 `WantedState` / `ConfirmedState` 枚举化（保持协议 v2 `heartbeat.json` 兼容），拆分 `veil-app`（`ui.rs` / `tray.rs` / `elevation.rs` / `startup.rs`）与 `veil-engine`（`vdd_mode.rs` / `vdd_activation.rs` / `tests/vdd_mode.rs`）核心大文件，清理废弃离屏停泊代码。
+- PR CI 接入 `cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings`，全工作区零告警。
+- 梳理文档单一事实源（SSOT），新增 `CHANGELOG.md`，归档历史制作计划至 `doc/archive/plans/`，移出可脚本再生的宣传片 `.wav` 音轨。
 
 ## [1.0.3] - 2026-11-19
 

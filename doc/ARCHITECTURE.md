@@ -2,7 +2,7 @@
 
 版本：1.12
 
-状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。当前正式版 1.0.3，打包流程见 [RELEASE.md](RELEASE.md)，安装与维护门禁详见 [installer/README.md](../installer/README.md)。
+状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。当前正式版 1.1.0，打包流程见 [RELEASE.md](RELEASE.md)，安装与维护门禁详见 [installer/README.md](../installer/README.md)。
 
 更新日期：2026-11-20
 
