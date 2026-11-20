@@ -8,6 +8,7 @@
         LicenseUrl=""
         Theme="hyperlinkLicense"
         ThemeFile="VeilTheme.xml"
+        LocalizationFile="VeilTheme.zh-CN.wxl"
         LogoFile="$(var.LogoFile)"
         SuppressOptionsUI="no" />
     </BootstrapperApplication>

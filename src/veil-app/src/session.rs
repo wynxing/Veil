@@ -5,8 +5,7 @@ use veil_engine::{AuxiliaryInstallItem, ScreenItem};
 
 use crate::operation_worker::{Action, Event, View};
 
-pub(crate) const DEFAULT_DETAIL: &str =
-    "托盘常驻。关面板退回托盘，不退出。黑色画面不是关屏成功。";
+pub(crate) const DEFAULT_DETAIL: &str = "关闭面板后退回托盘继续运行，不会退出程序。";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayCommand {
