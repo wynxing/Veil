@@ -28,7 +28,7 @@ cargo check --manifest-path src/Cargo.toml --workspace --all-targets --locked --
 
 ## PR、标签与发布工作流
 
-1. 从最新远端 `main` 新建工作树和分支，修改版本、实现及发布说明，完成本机验证后提交 PR。
+1. 从最新远端 `main` 新建工作树和分支，修改版本、实现、[变更日志](../CHANGELOG.md) 及发布说明，完成本机验证后提交 PR。
 2. 等待必需的 `windows` 检查成功并合并，确认目标提交已进入远端 `main`。
 3. 在合并提交上创建对应标签，推送该标签；例如 `git tag v1.0.0`、`git push origin v1.0.0`。
 4. `.github/workflows/release.yml` 执行预检、payload 获取、测试、打包及发布，按版本后缀选择渠道。

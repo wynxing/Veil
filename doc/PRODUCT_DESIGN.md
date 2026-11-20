@@ -1,10 +1,10 @@
 # Veil 公开产品设计
 
-版本：1.12
+版本：1.13
 
-状态：1.0.0 正式版产品设计。支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
+状态：1.0.x 正式版产品设计（当前正式版 1.0.3）。版本演进见 [变更日志](../CHANGELOG.md)，支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
 
-日期：2026-10-05
+更新日期：2026-11-20
 
 本文是可公开产品的完整设计。产品要求见 [PRD.md](PRD.md)。实现栈、进程切分与仓库布局见 [ARCHITECTURE.md](ARCHITECTURE.md)。本文描述产品行为与实现选择，具体实测结果由验证说明记录。
 

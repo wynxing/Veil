@@ -1,22 +1,27 @@
 # Veil 技术架构
 
-版本：1.11
+版本：1.12
 
-状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。辅助输出随应用带文件，安装时或面板装设备，已有同一 MTT 则接管。1.0.0 使用正式发布渠道。打包流程见 [RELEASE.md](RELEASE.md)。
+状态：实现栈为 Rust（x64 MSVC）+ egui 小面板 + 原生托盘；`src/` 为 Cargo workspace。当前正式版 1.0.3，打包流程见 [RELEASE.md](RELEASE.md)，安装与维护门禁详见 [installer/README.md](../installer/README.md)。
 
-日期：2026-10-05
+更新日期：2026-11-20
 
-本文是公开产品的实现架构。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。支持与验证证据集中见 [支持与诊断](validation/support-and-diagnostics.md)。
+本文是公开产品的实现架构。产品合同见 [PRD.md](PRD.md)，形态与运行时合同见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)，支持与验证证据集中见 [支持与诊断](validation/support-and-diagnostics.md)。
 
-## 1. 文档分工
+## 1. 文档单一事实源（SSOT）分工
 
-| 文档 | 回答的问题 |
+| 文档 | 负责内容（权威来源） |
 | --- | --- |
-| PRD | 用户要什么、什么算成功 |
-| PRODUCT_DESIGN | 托盘、按需路径、双进程、安装同意、验收边界 |
-| **本文** | 用什么技术做、进程怎么切、仓库怎么摆 |
+| [README.md](../README.md) | 面向用户的简介、下载校验与快速入口 |
+| [CHANGELOG.md](../CHANGELOG.md) | 各版本面向用户与维护者的变更记录 |
+| [PRD.md](PRD.md) | 用户要什么、功能范围、验收与可靠性合同 |
+| [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) | 交互形态、面板内容、状态反馈与产品级边界 |
+| **本文（ARCHITECTURE.md）** | 实现栈、进程切分、会话协议与仓库结构 |
+| [support-and-diagnostics.md](validation/support-and-diagnostics.md) | 支持范围、自动化与机旁验证证据、日志排障 |
+| [RELEASE.md](RELEASE.md) | 版本来源、发布渠道与 CI 发布工作流 |
+| [installer/README.md](../installer/README.md) | WiX 安装包构建、安装行为与卸载恢复门禁细节 |
 
-产品要求已经锁在前两份里。本文不再重开临时关闭、黑窗、自研驱动、跨重启再关、MSIX、Electron。
+产品要求已锁定在 `PRD.md` 与 `PRODUCT_DESIGN.md`，安装器细节归口 `installer/README.md`，跨文档通过链接引用而不重复维护同一段规则。
 
 ## 2. 已锁定的实现选择
 
@@ -128,6 +133,7 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 | `result.json` | Recovery；进程已死时也可由 App 补写 | 结束原因与恢复结果 |
 | `events.jsonl` | Recovery（App 在补写 result 时也可追加） | 追加时间线：ready / apply / settle / interrupt / reapply / finish。给操作者复盘，不是心跳替代 |
 | `vdd-request.json` | Recovery 再关需要辅助输出时 | 界面 Poll 后提权 enable 一次；出现后再 APPLY。未完成不得循环 APPLY |
+| `vdd-resolution.json` | App（写入会话时或再关前） | 本次会话解析后的辅助虚拟桌面分辨率请求；Recovery 激活未活动辅助路径时优先读取 |
 
 结束原因需能区分：`hotkey`、`release`、`parent-exit`、`suspend-resume`（睡眠/待机）、`execution-gap`（调度间隙兜底）、`unexpected-topology`、`error`、`recovery-exit`（恢复进程已死、未写结果）。未 arm 时也要响应 `release.json`，不得一直停在「等待 arm」。卸载检查协议 v2 的编号化 `result.json` 与维护门禁。
 
@@ -141,9 +147,9 @@ Veil.Recovery.exe (同一用户会话, 脱离 Job, 无窗口)
 
 会话元数据缺失时，协调器保留会话目录、关屏前基线和辅助输出归属。原恢复进程仍存活则向它发送恢复请求并等待明确结果；若已退出，只能从内存中可信的关屏前基线重建元数据，再启动恢复专用进程。缺少基线或重建失败时保持失败状态并阻止新关屏，不能报“已恢复全部”，也不能提前禁用辅助输出。
 
-App 的操作线程每 400 毫秒轮询显示器，不随每次绘制读取结果。视图与上次相同时不把结果送回界面，也不因此唤醒绘制。面板可见时界面仍每 400 毫秒刷新等待时间。窗口恢复位置和尺寸统一使用原生物理坐标；placement 单独换算工作区偏移，工作区取目标显示器。重复显示请求在窗口已可见且几何正确时不再移动或抢前台，普通每帧同步不重复改样式或任务栏注册。
+App 的操作线程在活跃会话期间每 400 毫秒轮询显示器，面板打开且无活跃会话时降频至 1 秒；当面板已收起至托盘且无活跃会话时阻塞等待指令，不再周期轮询 CCD / PnP 与磁盘 payload。驱动状态检查按 3 秒缓存，在用户操作或重开面板时立即刷新。视图与上次相同时不把结果送回界面，也不因此唤醒绘制。界面在每次更新立即排空工作线程事件，仅在存在进行中操作时按 500 毫秒定时重绘计时器。窗口恢复位置和尺寸统一使用原生物理坐标；placement 单独换算工作区偏移，工作区取目标显示器。重复显示请求在窗口已可见且几何正确时不再移动或抢前台，普通每帧同步不重复改样式或任务栏注册。
 
-`events.jsonl` 增加拓扑写入、辅助输出清理、面板通知事件，detail 带操作编号。App 日志保留 helper 启动错误、取消、超时、退出码；超时进程未退出时不得启动第二个设备操作。磁盘协议仍为 v2。日志排查与验证覆盖见 [支持与诊断](validation/support-and-diagnostics.md)。
+`events.jsonl` 记录拓扑写入、辅助输出清理、面板通知事件，detail 带操作编号。App 日志与驱动助手日志统一使用 UTC RFC3339 时间戳并按 2 MiB 轮转（保留 `.1` 备份）；超时进程未退出时不得启动第二个设备操作。App 启动时自动清理较早的已结束 `session-*` 目录（默认保留最近 10 份）。磁盘协议仍为 v2。日志排查与验证覆盖见 [支持与诊断](validation/support-and-diagnostics.md)。
 
 egui 窗口只承担展示与点击。关屏期间允许退回托盘，后台要求仍由恢复进程维持。当前实现优先使用 wgpu，初始化失败尝试 glow。一次窗口会话成功后记住该后端，下次打开不再重复初始化失败的后端。
 
@@ -151,7 +157,7 @@ egui 窗口只承担展示与点击。关屏期间允许退回托盘，后台要
 - 右键：打开面板、恢复全部、退出
 - 关闭或最小化面板：退回托盘，不退出进程；任务栏和 Alt-Tab 都没有
 - 第二实例：不新开窗口，向已有进程发 `Local\Veil.ShowPanel`
-- 面板：已连接物理屏列表、每块保持关闭/恢复、底部恢复全部、开机自启（默认关，写当前用户 Startup）、热键状态
+- 面板：已连接物理屏列表、每块保持关闭/恢复、底部恢复全部、开机自启（默认关，写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Veil` 并清理旧版 `Startup\Veil.lnk`）、热键状态
 - DPI：`PerMonitorV2`
 - 退出：先 `release` 并等待恢复结果；超时或失败则报告，不默默退出
 - 更新：面板打开时最多每 24 小时向 `wynxing/Veil` 的 GitHub Releases 查询一次。有更新则在面板提示，并打开发布页。不下载、不启动安装包。正式版排除预览版本，缓存提示遵循相同规则；预览版可发现正式版本。查询失败不提示。恢复进程不访问网络。

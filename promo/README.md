@@ -20,6 +20,6 @@ npm.cmd run still
 
 `src/Promo.tsx` 组织 7 段场景；`src/scenes/` 分别控制情节、操作示意、日常场景及结尾；`src/Opening.tsx` 保留原开头。镜头及动画由帧驱动，字幕已写入画面；SRT 用于额外的字幕轨或后续发布。
 
-`public/` 保存原创插画与项目既有标识。`scripts/create-sound.mjs` 生成 8 秒音轨，`scripts/create-full-sound.mjs` 生成 45 秒原创立体声配乐；没有配音。`scripts/render-checks.mjs` 生成关键检查静帧。文字使用 Windows 系统微软雅黑；其它系统需安装可用中文字体或修改字体列表。
+`public/` 保存原创插画与项目既有标识；`public/opening.wav` 与 `public/promo.wav` 由 `scripts/create-sound.mjs` 与 `scripts/create-full-sound.mjs` 确定性生成，不进入 Git 追踪，预览或渲染前请先运行 `npm.cmd run sound` 与 `npm.cmd run sound:full`。没有配音。`scripts/render-checks.mjs` 生成关键检查静帧。文字使用 Windows 系统微软雅黑；其它系统需安装可用中文字体或修改字体列表。
 
 情节为原创动画示意，不能作为实机兼容性或功能验收证据。完整脚本见 [分镜](分镜.md)，插画制作记录见 [素材说明](素材说明.md)。

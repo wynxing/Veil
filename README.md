@@ -41,6 +41,7 @@ cargo test --manifest-path src\Cargo.toml --workspace --locked
 
 ## 文档
 
+- [变更日志](CHANGELOG.md)
 - [产品需求](doc/PRD.md)
 - [产品设计](doc/PRODUCT_DESIGN.md)
 - [技术架构](doc/ARCHITECTURE.md)
