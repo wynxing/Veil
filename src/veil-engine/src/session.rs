@@ -80,12 +80,14 @@ pub fn request_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
     let now = (unix_seconds() * 1_000_000.0) as u64;
-    LAST.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
-        Some(now.max(old + 1))
-    })
-    .unwrap()
-    .max(now - 1)
-        + 1
+    let mut old = LAST.load(Ordering::SeqCst);
+    loop {
+        let next = now.max(old.saturating_add(1));
+        match LAST.compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(actual) => old = actual,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -211,6 +213,63 @@ pub struct ReleaseFile {
     pub at: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WantedState {
+    #[default]
+    #[serde(rename = "开启")]
+    On,
+    #[serde(rename = "保持关闭")]
+    KeepOff,
+}
+
+impl WantedState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::On => "开启",
+            Self::KeepOff => "保持关闭",
+        }
+    }
+}
+
+impl std::fmt::Display for WantedState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfirmedState {
+    #[serde(rename = "已显示")]
+    On,
+    #[serde(rename = "已关闭")]
+    Off,
+    #[serde(rename = "处理中")]
+    Pending,
+    #[serde(rename = "失败")]
+    Failed,
+    #[default]
+    #[serde(rename = "未知")]
+    Unknown,
+}
+
+impl ConfirmedState {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::On => "已显示",
+            Self::Off => "已关闭",
+            Self::Pending => "处理中",
+            Self::Failed => "失败",
+            Self::Unknown => "未知",
+        }
+    }
+}
+
+impl std::fmt::Display for ConfirmedState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatScreen {
@@ -224,19 +283,12 @@ pub struct HeartbeatScreen {
     pub name: String,
     #[serde(default)]
     pub kind: String,
-    #[serde(default = "default_wanted")]
-    pub wanted: String,
-    #[serde(default = "default_confirmed")]
-    pub confirmed: String,
+    #[serde(default)]
+    pub wanted: WantedState,
+    #[serde(default)]
+    pub confirmed: ConfirmedState,
     #[serde(default)]
     pub detail: String,
-}
-
-fn default_wanted() -> String {
-    "开启".into()
-}
-fn default_confirmed() -> String {
-    "未知".into()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -467,7 +519,7 @@ pub struct OpenSessionRelease;
 
 impl OpenSessionRelease {
     pub fn request_all_and_wait(timeout: Duration) -> Result<RestoreOutcome, RestoreError> {
-        Self::wait_after_release(&SessionPaths::root(), timeout)
+        Self::wait_after_release(SessionPaths::root(), timeout)
     }
     pub fn sweep_concluded(root: impl AsRef<Path>) -> Result<usize, String> {
         let mut removed = 0;

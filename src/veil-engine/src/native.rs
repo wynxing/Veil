@@ -830,14 +830,9 @@ extern "system" {
     fn DisplayConfigGetDeviceInfo(request_packet: *mut DisplayConfigDeviceInfoHeader) -> i32;
 }
 
+#[derive(Default)]
 pub struct Win32Hotkey {
     registered: bool,
-}
-
-impl Default for Win32Hotkey {
-    fn default() -> Self {
-        Self { registered: false }
-    }
 }
 
 impl Hotkey for Win32Hotkey {

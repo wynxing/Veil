@@ -226,8 +226,7 @@ impl TopologyBlob {
 }
 
 pub fn struct_bytes<T: Copy>(items: &[T]) -> Vec<u8> {
-    let size = std::mem::size_of::<T>();
-    let mut dest = vec![0u8; size * items.len()];
+    let mut dest = vec![0u8; std::mem::size_of_val(items)];
     if !items.is_empty() {
         unsafe {
             std::ptr::copy_nonoverlapping(

@@ -148,8 +148,8 @@ impl SessionState {
         self.worker_failed = true;
         self.pending.clear();
         self.stage.clear();
-        self.detail = "显示操作线程已退出，当前恢复状态未知。请使用仍可用的紧急热键，并保留日志。"
-            .into();
+        self.detail =
+            "显示操作线程已退出，当前恢复状态未知。请使用仍可用的紧急热键，并保留日志。".into();
         PanelEffect::Present
     }
 
@@ -273,7 +273,7 @@ impl SessionState {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use veil_engine::ScreenIdentity;
+    use veil_engine::{ConfirmedState, ScreenIdentity, WantedState};
 
     fn fresh() -> SessionState {
         SessionState::new(DEFAULT_DETAIL.into(), "热键：未知".into())
@@ -285,8 +285,12 @@ mod tests {
                 identity: ScreenIdentity::new("luid", 1, r"\\.\DISPLAY1"),
                 name: "内置屏".into(),
                 kind: "internal".into(),
-                wanted: if holding { "保持关闭" } else { "开启" }.into(),
-                confirmed: "已显示".into(),
+                wanted: if holding {
+                    WantedState::KeepOff
+                } else {
+                    WantedState::On
+                },
+                confirmed: ConfirmedState::On,
                 can_keep_off: !holding,
                 can_restore: holding,
                 status_text: String::new(),
@@ -306,10 +310,7 @@ mod tests {
         assert!(!should_release_single_instance(SessionStop::Dismiss));
         assert!(should_release_single_instance(SessionStop::Exit));
         assert_eq!(after_ui_session(SessionStop::Dismiss), LoopNext::Idle);
-        assert_eq!(
-            after_ui_session(SessionStop::Exit),
-            LoopNext::ExitProcess
-        );
+        assert_eq!(after_ui_session(SessionStop::Exit), LoopNext::ExitProcess);
     }
 
     #[test]
@@ -443,10 +444,7 @@ mod tests {
             TrayCommand::RestoreAll,
         ]);
         assert!(present);
-        assert_eq!(
-            deferred,
-            vec![TrayCommand::RestoreAll, TrayCommand::Exit]
-        );
+        assert_eq!(deferred, vec![TrayCommand::RestoreAll, TrayCommand::Exit]);
         let (present, deferred) = classify_tray_commands(&[TrayCommand::Open]);
         assert!(present);
         assert!(deferred.is_empty());

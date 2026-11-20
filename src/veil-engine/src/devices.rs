@@ -47,8 +47,8 @@ pub fn enumerate_bundled_instances() -> Result<Vec<String>, String> {
 
 fn enumerate_display_devices() -> Result<Vec<DisplayDevice>, String> {
     let mut found = Vec::new();
-    let mut guid = DISPLAY_CLASS;
-    let set = unsafe { SetupDiGetClassDevsW(&mut guid, ptr::null(), ptr::null_mut(), 0) };
+    let guid = DISPLAY_CLASS;
+    let set = unsafe { SetupDiGetClassDevsW(&guid, ptr::null(), ptr::null_mut(), 0) };
     if set == INVALID_HANDLE_VALUE as isize {
         return Err("无法枚举显示设备。".into());
     }
@@ -105,8 +105,10 @@ fn hardware_ids(set: isize, data: &mut SP_DEVINFO_DATA) -> Vec<String> {
         return vec![];
     }
     let units: Vec<u16> = buf
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect();
     split_multi_sz(&units)
 }

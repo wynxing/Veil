@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use veil_engine::{
-    AuxiliaryInstallItem, BundledVddAvailability, CcdApi, CcdConstants, DriverStatus,
-    RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenIdentity, ScreenItem, ScreenListBuilder,
-    TopologyBlob, Win32CcdApi, Win32ParentWatcher,
+    AuxiliaryInstallItem, BundledVddAvailability, CcdApi, CcdConstants, ConfirmedState,
+    DriverStatus, RecoveryCoordinator, RecoveryCoordinatorHooks, ScreenIdentity, ScreenItem,
+    ScreenListBuilder, TopologyBlob, WantedState, Win32CcdApi, Win32ParentWatcher,
 };
 
+use crate::app_log;
+use crate::elevation::{helper_operation_unfinished, run_helper_elevated};
 use crate::wake::UiWake;
-use crate::{app_log, helper_operation_unfinished, run_helper_elevated};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
@@ -251,8 +252,7 @@ fn run(
                             && helper_operation_unfinished()
                         {
                             Some(
-                                "上次辅助程序仍在运行，设备状态未确认；请等待其结束后重试。"
-                                    .into(),
+                                "上次辅助程序仍在运行，设备状态未确认；请等待其结束后重试。".into(),
                             )
                         } else {
                             match action {
@@ -428,7 +428,7 @@ fn send_view(
     }
     let holding = screens
         .iter()
-        .any(|s| s.wanted == "保持关闭" || s.confirmed == "处理中");
+        .any(|s| s.wanted == WantedState::KeepOff || s.confirmed == ConfirmedState::Pending);
     let hotkey_status = if coordinator.hotkey_registered {
         format!("{}：可用", CcdConstants::HOTKEY_TEXT)
     } else if !coordinator.has_session() {
@@ -493,8 +493,12 @@ mod tests {
                 identity: ScreenIdentity::new("luid", 1, r"\\.\DISPLAY1"),
                 name: "内置屏".into(),
                 kind: "internal".into(),
-                wanted: if holding { "保持关闭" } else { "开启" }.into(),
-                confirmed: "已显示".into(),
+                wanted: if holding {
+                    WantedState::KeepOff
+                } else {
+                    WantedState::On
+                },
+                confirmed: ConfirmedState::On,
                 can_keep_off: !holding,
                 can_restore: holding,
                 status_text: String::new(),

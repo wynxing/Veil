@@ -1,17 +1,10 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
+use crate::native::{CcdApi, CcdConstants};
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
+    HeartbeatFile, HeartbeatScreen, JsonUtil, ReadyFile, ResultFile, SessionPaths, VddRequestFile,
 };
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
+use crate::session::{RestoreState, SessionMetadata, PROTOCOL_VERSION};
 use crate::*;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -110,7 +103,6 @@ fn poll_interrupt_result_asks_to_show_panel() {
         .query_snapshot(CcdConstants::QUERY_FLAGS)
         .unwrap()
         .physical_screens()
-        .into_iter()
         .next()
         .unwrap()
         .identity();
@@ -216,8 +208,8 @@ fn session_result_clears_keep_off_heartbeat() {
                 target_id: identity.target_id,
                 monitor_path: identity.monitor_path.clone(),
                 name: "Panel".into(),
-                wanted: "保持关闭".into(),
-                confirmed: "已关闭".into(),
+                wanted: WantedState::KeepOff,
+                confirmed: ConfirmedState::Off,
                 detail: "已保持关闭。".into(),
                 ..Default::default()
             }],
@@ -538,8 +530,8 @@ fn session_result_does_not_disable_preexisting_vdd() {
                 target_id: identity.target_id,
                 monitor_path: identity.monitor_path,
                 name: "Panel".into(),
-                wanted: "保持关闭".into(),
-                confirmed: "已关闭".into(),
+                wanted: WantedState::KeepOff,
+                confirmed: ConfirmedState::Off,
                 detail: "已保持关闭。".into(),
                 ..Default::default()
             }],

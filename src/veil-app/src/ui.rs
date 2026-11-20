@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use egui::{Color32, CornerRadius, Margin, RichText, Stroke, Vec2};
-use veil_engine::{CcdConstants, ScreenIdentity, ScreenItem, VddModePreference, VDD_MODE_PRESETS};
+use veil_engine::{
+    CcdConstants, ConfirmedState, ScreenIdentity, ScreenItem, VddModePreference, VDD_MODE_PRESETS,
+};
 
 use crate::operation_worker::Action;
 use crate::session::SessionState;
@@ -161,12 +163,12 @@ pub(crate) fn classify_hotkey(status: &str) -> (HotkeyTone, &'static str) {
 }
 
 pub(crate) fn classify_screen_tone(item: &ScreenItem) -> ScreenTone {
-    match item.confirmed.as_str() {
-        "失败" => ScreenTone::Failed,
-        "处理中" => ScreenTone::Processing,
-        "已关闭" => ScreenTone::Holding,
-        "已显示" => ScreenTone::Active,
-        _ => ScreenTone::Unknown,
+    match item.confirmed {
+        ConfirmedState::Failed => ScreenTone::Failed,
+        ConfirmedState::Pending => ScreenTone::Processing,
+        ConfirmedState::Off => ScreenTone::Holding,
+        ConfirmedState::On => ScreenTone::Active,
+        ConfirmedState::Unknown => ScreenTone::Unknown,
     }
 }
 
@@ -198,7 +200,11 @@ pub(crate) fn build_diagnostic_summary(
         format!("热键状态：{}", state.hotkey_status),
         format!(
             "会话状态：{}（保持关闭中={}，操作线程异常={}）",
-            if state.has_session { "活跃" } else { "空闲" },
+            if state.has_session {
+                "活跃"
+            } else {
+                "空闲"
+            },
             state.holding,
             state.worker_failed
         ),
@@ -361,9 +367,7 @@ pub(crate) fn render_panel(
                     .corner_radius(CornerRadius::same(4))
                     .inner_margin(Margin::symmetric(6, 2))
                     .show(ui, |ui| {
-                        let key_text = RichText::new(CcdConstants::HOTKEY_TEXT)
-                            .size(11.5)
-                            .strong();
+                        let key_text = RichText::new(CcdConstants::HOTKEY_TEXT).size(11.5).strong();
                         ui.label(if hotkey_unavailable {
                             key_text.color(palette.danger)
                         } else {
@@ -383,7 +387,10 @@ pub(crate) fn render_panel(
                 ui.add_space(6.0);
                 egui::Frame::new()
                     .fill(palette.card_fill)
-                    .stroke(Stroke::new(1.0_f32, palette.accent_fill.gamma_multiply(0.6)))
+                    .stroke(Stroke::new(
+                        1.0_f32,
+                        palette.accent_fill.gamma_multiply(0.6),
+                    ))
                     .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(10, 6))
                     .show(ui, |ui| {
@@ -415,7 +422,11 @@ pub(crate) fn render_panel(
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(Margin::symmetric(10, 8))
                         .show(ui, |ui| {
-                            ui.label(RichText::new(&state.detail).size(12.5).color(palette.danger));
+                            ui.label(
+                                RichText::new(&state.detail)
+                                    .size(12.5)
+                                    .color(palette.danger),
+                            );
                         });
                 } else {
                     ui.label(RichText::new(&state.detail).size(12.0).color(palette.muted));
@@ -488,10 +499,9 @@ pub(crate) fn render_panel(
                         );
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            let ok_btn = egui::Button::new(
-                                RichText::new("继续").color(palette.accent_text),
-                            )
-                            .fill(palette.accent_fill);
+                            let ok_btn =
+                                egui::Button::new(RichText::new("继续").color(palette.accent_text))
+                                    .fill(palette.accent_fill);
                             if ui.add(ok_btn).clicked() {
                                 actions.push(UiCommand::ConfirmReply(true));
                             }
@@ -786,29 +796,43 @@ mod tests {
 
     #[test]
     fn screen_status_classifies_all_states() {
-        let make = |confirmed: &str| ScreenItem {
+        use veil_engine::WantedState;
+        let make = |confirmed: ConfirmedState| ScreenItem {
             identity: ScreenIdentity::new("luid", 1, r"\\?\DISPLAY#SENSITIVE#1"),
             name: "内置屏".into(),
             kind: "内置".into(),
-            wanted: "开启".into(),
-            confirmed: confirmed.into(),
+            wanted: WantedState::On,
+            confirmed,
             can_keep_off: true,
             can_restore: false,
             status_text: String::new(),
             block_reason: String::new(),
         };
-        assert_eq!(classify_screen_tone(&make("已显示")), ScreenTone::Active);
-        assert_eq!(classify_screen_tone(&make("已关闭")), ScreenTone::Holding);
         assert_eq!(
-            classify_screen_tone(&make("处理中")),
+            classify_screen_tone(&make(ConfirmedState::On)),
+            ScreenTone::Active
+        );
+        assert_eq!(
+            classify_screen_tone(&make(ConfirmedState::Off)),
+            ScreenTone::Holding
+        );
+        assert_eq!(
+            classify_screen_tone(&make(ConfirmedState::Pending)),
             ScreenTone::Processing
         );
-        assert_eq!(classify_screen_tone(&make("失败")), ScreenTone::Failed);
-        assert_eq!(classify_screen_tone(&make("未知")), ScreenTone::Unknown);
+        assert_eq!(
+            classify_screen_tone(&make(ConfirmedState::Failed)),
+            ScreenTone::Failed
+        );
+        assert_eq!(
+            classify_screen_tone(&make(ConfirmedState::Unknown)),
+            ScreenTone::Unknown
+        );
     }
 
     #[test]
     fn diagnostic_summary_excludes_raw_device_paths() {
+        use veil_engine::WantedState;
         let mut state = SessionState::new(DEFAULT_DETAIL.into(), "Ctrl+Alt+Shift+F10：空闲".into());
         state.screens.push(ScreenItem {
             identity: ScreenIdentity::new(
@@ -818,8 +842,8 @@ mod tests {
             ),
             name: "Dell U2723QE".into(),
             kind: "外接".into(),
-            wanted: "开启".into(),
-            confirmed: "已显示".into(),
+            wanted: WantedState::On,
+            confirmed: ConfirmedState::On,
             can_keep_off: true,
             can_restore: false,
             status_text: "已显示（开启）".into(),

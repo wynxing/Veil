@@ -1,5 +1,5 @@
 use crate::capability::{resolved_screen_name, BundledVddAvailability, Gate, KeepOffAction};
-use crate::session::HeartbeatFile;
+use crate::session::{ConfirmedState, HeartbeatFile, WantedState};
 use crate::{DisplaySnapshot, ScreenIdentity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,8 +44,8 @@ pub struct ScreenItem {
     pub identity: ScreenIdentity,
     pub name: String,
     pub kind: String,
-    pub wanted: String,
-    pub confirmed: String,
+    pub wanted: WantedState,
+    pub confirmed: ConfirmedState,
     pub can_keep_off: bool,
     pub can_restore: bool,
     pub status_text: String,
@@ -84,23 +84,27 @@ impl ScreenListBuilder {
                     ))
                 })
             });
-            let wanted = hb.map(|s| s.wanted.clone()).unwrap_or_else(|| {
+            let wanted = hb.map(|s| s.wanted).unwrap_or_else(|| {
                 if pending_wanted.iter().any(|id| id.matches(&row.identity())) {
-                    "保持关闭".into()
+                    WantedState::KeepOff
                 } else {
-                    "开启".into()
+                    WantedState::On
                 }
             });
-            let confirmed = hb.map(|s| s.confirmed.clone()).unwrap_or_else(|| {
+            let confirmed = hb.map(|s| s.confirmed).unwrap_or_else(|| {
                 if row.active {
-                    "已显示".into()
+                    ConfirmedState::On
                 } else {
-                    "未知".into()
+                    ConfirmedState::Unknown
                 }
             });
             let mut already = pending_wanted.to_vec();
             if let Some(h) = heartbeat {
-                for s in h.screens.iter().filter(|s| s.wanted == "保持关闭") {
+                for s in h
+                    .screens
+                    .iter()
+                    .filter(|s| s.wanted == WantedState::KeepOff)
+                {
                     already.push(ScreenIdentity::new(
                         &s.adapter_luid,
                         s.target_id,
@@ -108,9 +112,7 @@ impl ScreenListBuilder {
                     ));
                 }
             }
-            let plan = if !recovery_ready {
-                None
-            } else if !hotkey_registered {
+            let plan = if !recovery_ready || !hotkey_registered {
                 None
             } else {
                 Some(Gate::screen_keep_off_plan(
@@ -132,8 +134,8 @@ impl ScreenListBuilder {
             } else {
                 None
             };
-            let can_keep_off = wanted != "保持关闭" && hard_block.is_none();
-            let can_restore = wanted == "保持关闭";
+            let can_keep_off = wanted != WantedState::KeepOff && hard_block.is_none();
+            let can_restore = wanted == WantedState::KeepOff;
             let notice = hard_block.or_else(|| {
                 if plan.as_ref().is_some_and(|p| {
                     matches!(
@@ -156,8 +158,8 @@ impl ScreenListBuilder {
                     false,
                 ),
                 kind: row.kind_label().into(),
-                wanted: wanted.clone(),
-                confirmed: confirmed.clone(),
+                wanted,
+                confirmed,
                 can_keep_off,
                 can_restore,
                 status_text: format!("{confirmed}（{wanted}）"),
@@ -174,7 +176,8 @@ impl ScreenListBuilder {
                 if items.iter().any(|i| i.identity.matches(&id)) {
                     continue;
                 }
-                if hb_row.wanted != "保持关闭" && hb_row.confirmed != "已关闭" {
+                if hb_row.wanted != WantedState::KeepOff && hb_row.confirmed != ConfirmedState::Off
+                {
                     continue;
                 }
                 items.push(ScreenItem {
@@ -191,10 +194,11 @@ impl ScreenListBuilder {
                     } else {
                         hb_row.kind.clone()
                     },
-                    wanted: hb_row.wanted.clone(),
-                    confirmed: hb_row.confirmed.clone(),
+                    wanted: hb_row.wanted,
+                    confirmed: hb_row.confirmed,
                     can_keep_off: false,
-                    can_restore: hb_row.wanted == "保持关闭" || hb_row.confirmed == "已关闭",
+                    can_restore: hb_row.wanted == WantedState::KeepOff
+                        || hb_row.confirmed == ConfirmedState::Off,
                     status_text: format!("{}（{}）", hb_row.confirmed, hb_row.wanted),
                     block_reason: hb_row.detail.clone(),
                 });

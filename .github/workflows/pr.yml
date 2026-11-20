@@ -20,10 +20,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src -> target
           shared-key: windows-msvc
+      - run: cargo fmt --manifest-path src/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path src/Cargo.toml --workspace --all-targets --locked -- -D warnings
       - run: cargo test --manifest-path src/Cargo.toml --workspace --locked --release --target x86_64-pc-windows-msvc
       - run: cargo check --manifest-path src/Cargo.toml --workspace --all-targets --locked --release --target x86_64-pc-windows-msvc
       - name: Build installer without running it

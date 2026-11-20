@@ -1,18 +1,8 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
+use crate::native::CcdConstants;
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
+    HeartbeatFile, JsonUtil, OpenSessionRelease, ReadyFile, ResultFile, SessionPaths,
 };
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
-use crate::*;
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::rc::Rc;
+use crate::session::{RecoveryState, SessionMetadata, PROTOCOL_VERSION};
 use std::time::Duration;
 
 use super::support::*;

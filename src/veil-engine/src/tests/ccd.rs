@@ -1,21 +1,10 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
+use crate::fakes::{self, FakeCcd};
 use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
+    CcdAbi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
     DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
+    DisplayConfigVideoSignalInfo, Luid, PointL,
 };
-use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
-};
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
 use crate::*;
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::time::Duration;
-
-use super::support::*;
 
 #[test]
 fn path_and_mode_sizes_match_probe() {
