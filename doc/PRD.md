@@ -2,7 +2,7 @@
 
 版本：1.0
 
-状态：1.0.x 正式版产品要求（当前正式版 1.0.3）。版本演进见 [变更日志](../CHANGELOG.md)，支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
+状态：1.x 正式版产品要求（当前正式版 1.1.0）。版本演进见 [变更日志](../CHANGELOG.md)，支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
 
 更新日期：2026-11-20
 
