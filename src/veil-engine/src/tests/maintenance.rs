@@ -172,6 +172,21 @@ fn uninstall_actions_check_results_before_removal_and_hold_marker_through_commit
     assert!(bundle.contains("Id=\"RetireOldVeil\""));
     assert!(bundle.contains("retire-old"));
     assert!(bundle.contains("[InstallFolder]\\Veil.App.exe"));
+    assert!(bundle.contains("LocalizationFile=\"VeilTheme.zh-CN.wxl\""));
+    let theme = include_str!("../../../../installer/Veil.Bundle/VeilTheme.xml");
+    let wxl = include_str!("../../../../installer/Veil.Bundle/VeilTheme.zh-CN.wxl");
+    let mut rest = theme;
+    while let Some(pos) = rest.find("#(loc.") {
+        rest = &rest[pos + 6..];
+        let end = rest.find(')').expect("unclosed #(loc.) in VeilTheme.xml");
+        let key = &rest[..end];
+        let needle = format!("Id=\"{key}\"");
+        assert!(
+            wxl.contains(&needle),
+            "VeilTheme.zh-CN.wxl 缺少本地化键：{key}"
+        );
+        rest = &rest[end + 1..];
+    }
 }
 #[test]
 fn uninstall_waits_for_acknowledgement_of_new_release() {

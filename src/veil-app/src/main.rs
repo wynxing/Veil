@@ -3,6 +3,7 @@
 mod operation_worker;
 mod panel_window;
 mod session;
+mod ui;
 mod update;
 mod wake;
 
@@ -22,9 +23,7 @@ use session::{
     after_ui_session, classify_tray_commands, idle_response, merge_effect, IdleAction, LoopNext,
     PanelEffect, SessionState, SessionStop, TrayCommand, DEFAULT_DETAIL,
 };
-use veil_engine::{
-    CcdApi, CcdConstants, OpenSessionRelease, VddModePreference, Win32CcdApi, VDD_MODE_PRESETS,
-};
+use veil_engine::{CcdApi, CcdConstants, OpenSessionRelease, VddModePreference, Win32CcdApi};
 use wake::UiWake;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, HWND, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -241,6 +240,8 @@ fn run_ui_once(session: &Rc<RefCell<AppSession>>) -> Result<SessionStop, String>
             "Veil",
             native_options(choice),
             Box::new(move |cc| {
+                let light = ui::prefers_light_theme();
+                ui::apply_theme(&cc.egui_ctx, light);
                 install_cjk_fonts(&cc.egui_ctx);
                 {
                     let app = app_session.borrow();
@@ -248,6 +249,7 @@ fn run_ui_once(session: &Rc<RefCell<AppSession>>) -> Result<SessionStop, String>
                 }
                 Ok(Box::new(VeilApp {
                     session: app_session,
+                    palette: ui::ThemePalette::for_mode(light),
                     close_armed: false,
                     minimize_armed: false,
                     dismiss_logged: false,
@@ -411,6 +413,7 @@ fn install_tray_handlers(
 
 struct VeilApp {
     session: Rc<RefCell<AppSession>>,
+    palette: ui::ThemePalette,
     close_armed: bool,
     minimize_armed: bool,
     dismiss_logged: bool,
@@ -651,187 +654,72 @@ impl eframe::App for VeilApp {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
 
-        let startup_now = app.startup;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Veil");
-            ui.label(&app.state.hotkey_status);
-            ui.label(&app.state.detail);
-            if !app.state.pending.is_empty() || app.state.auto_stage {
-                ui.group(|ui| {
-                    ui.strong(&app.state.stage);
-                    ui.label(format!(
-                        "已等待 {} 秒（当前阶段 {} 秒）",
-                        app.state.operation_started.elapsed().as_secs(),
-                        app.state.stage_started.elapsed().as_secs()
-                    ));
-                    if app.state.cancel_requested {
-                        ui.label("取消已收到；正在等待设备操作结束并确认恢复状态。");
-                    } else if app
-                        .state
-                        .pending
-                        .iter()
-                        .any(|(_, action)| *action == Action::KeepOff)
-                    {
-                        if ui.button("取消本次操作").clicked() {
-                            if let Some((_, reply)) = app.state.confirmation.take() {
-                                let _ = reply.send(false);
-                            }
-                            app.submit(Action::Cancel, None, "取消已收到，正在确认恢复");
-                            app.state.cancel_requested = true;
-                        }
+        let commands = ui::render_panel(
+            ctx,
+            self.palette,
+            &app.state,
+            app.vdd_mode,
+            app.startup,
+            app.update_offer.as_ref(),
+        );
+        for command in commands {
+            match command {
+                ui::UiCommand::Submit {
+                    action,
+                    target,
+                    label,
+                } => app.submit(action, target, label),
+                ui::UiCommand::CancelKeepOff => {
+                    if let Some((_, reply)) = app.state.confirmation.take() {
+                        let _ = reply.send(false);
                     }
-                });
-            }
-            if let Some(reason) = app
-                .state
-                .confirmation
-                .as_ref()
-                .map(|(reason, _)| reason.clone())
-            {
-                ui.group(|ui| {
-                    ui.label(&reason);
-                    ui.label("这是显示驱动操作，继续前需要你明确确认。");
-                    if ui.button("继续").clicked() {
-                        if let Some((_, reply)) = app.state.confirmation.take() {
-                            let _ = reply.send(true);
-                        }
+                    app.submit(Action::Cancel, None, "取消已收到，正在确认恢复");
+                    app.state.cancel_requested = true;
+                }
+                ui::UiCommand::ConfirmReply(accepted) => {
+                    if let Some((_, reply)) = app.state.confirmation.take() {
+                        let _ = reply.send(accepted);
                     }
-                    if ui.button("取消").clicked() {
-                        if let Some((_, reply)) = app.state.confirmation.take() {
-                            let _ = reply.send(false);
-                        }
-                    }
-                });
-            }
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for item in app.state.screens.clone() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong(&item.name);
-                            ui.label(format!("· {}", item.kind));
-                        });
-                        ui.label(&item.status_text);
-                        if !item.block_reason.is_empty() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(180, 80, 40),
-                                &item.block_reason,
-                            );
-                        }
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(
-                                    item.can_keep_off
-                                        && app.state.pending.is_empty()
-                                        && !app.state.auto_stage
-                                        && !app.state.worker_failed,
-                                    egui::Button::new("保持关闭"),
-                                )
-                                .clicked()
-                            {
-                                app.submit(
-                                    Action::KeepOff,
-                                    Some(item.identity.clone()),
-                                    "正在检查显示状态和恢复能力",
-                                );
-                            }
-                            if ui
-                                .add_enabled(
-                                    item.can_restore
-                                        && app.state.pending.is_empty()
-                                        && !app.state.auto_stage
-                                        && !app.state.worker_failed,
-                                    egui::Button::new("恢复"),
-                                )
-                                .clicked()
-                            {
-                                app.submit(
-                                    Action::RestoreOne,
-                                    Some(item.identity.clone()),
-                                    "正在恢复所选物理屏",
-                                );
-                            }
-                        });
-                    });
-                    ui.add_space(6.0);
                 }
-            });
-            ui.separator();
-            if app.state.auxiliary.visible {
-                if !app.state.auxiliary.hint.is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(180, 80, 40),
-                        &app.state.auxiliary.hint,
-                    );
-                }
-                if ui
-                    .add_enabled(
-                        app.state.auxiliary.enabled
-                            && app.state.pending.is_empty()
-                            && !app.state.auto_stage
-                            && !app.state.worker_failed,
-                        egui::Button::new(&app.state.auxiliary.label),
-                    )
-                    .clicked()
-                {
-                    app.submit(Action::Install, None, "正在安装辅助虚拟输出");
-                }
-            }
-            if ui.button("恢复全部").clicked() {
-                app.submit(Action::RestoreAll, None, "正在恢复全部物理屏");
-            }
-            let mut vdd_mode = app.vdd_mode;
-            let mode_busy = !app.state.pending.is_empty()
-                || app.state.auto_stage
-                || app.state.worker_failed;
-            ui.add_enabled_ui(!mode_busy, |ui| {
-                ui.label("辅助虚拟桌面分辨率");
-                egui::ComboBox::from_id_salt("vdd-mode")
-                    .selected_text(vdd_mode_label(vdd_mode))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut vdd_mode,
-                            VddModePreference::MatchPhysical,
-                            "沿用被关闭的物理屏",
-                        );
-                        for &(width, height) in VDD_MODE_PRESETS {
-                            ui.selectable_value(
-                                &mut vdd_mode,
-                                VddModePreference::Fixed { width, height },
-                                format!("{width}×{height}"),
-                            );
-                        }
-                    });
-            });
-            ui.label("只影响关光全部物理屏后留下的虚拟桌面，不改物理屏。已经关着时改选，要先恢复再关一次才换上。刷新率保持 60。");
-            if vdd_mode != app.vdd_mode {
-                match vdd_mode.save() {
+                ui::UiCommand::SetVddMode(vdd_mode) => match vdd_mode.save() {
                     Ok(()) => app.vdd_mode = vdd_mode,
                     Err(error) => {
                         app.state.detail = format!("没能保存分辨率选择：{error}");
                     }
-                }
-            }
-            let mut startup = startup_now;
-            if ui.checkbox(&mut startup, "开机自启（默认关）").changed() {
-                match set_startup(startup) {
+                },
+                ui::UiCommand::SetStartup(startup) => match set_startup(startup) {
                     Ok(()) => app.startup = startup,
                     Err(error) => {
                         app.state.detail = format!("没能更新开机自启：{error}");
                     }
+                },
+                ui::UiCommand::OpenUpdate(url) => {
+                    if !update::open_release_page(&url) {
+                        app.state.detail = "没能打开发布页。".into();
+                    }
+                }
+                ui::UiCommand::ExitApp => {
+                    app.show_window(ctx);
+                    app.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
+                }
+                ui::UiCommand::OpenLogLocation => {
+                    if !ui::open_log_location() {
+                        app.state.detail = "没能打开日志目录。".into();
+                    }
+                }
+                ui::UiCommand::OpenSessionsDirectory => {
+                    if !ui::open_sessions_directory() {
+                        app.state.detail = "没能打开会话目录。".into();
+                    }
+                }
+                ui::UiCommand::CopyDiagnosticSummary => {
+                    let summary =
+                        ui::build_diagnostic_summary(&app.state, app.vdd_mode, app.startup);
+                    ctx.copy_text(summary);
+                    app.state.detail = "已复制诊断摘要（不含敏感设备路径）。".into();
                 }
             }
-            if let Some(offer) = app.update_offer.clone() {
-                ui.label(format!("有新版本 {}", offer.version));
-                if ui.button("查看更新").clicked() && !update::open_release_page(&offer.url) {
-                    app.state.detail = "没能打开发布页。".into();
-                }
-            }
-            if ui.button("退出").clicked() {
-                app.show_window(ctx);
-                app.submit(Action::Exit, None, "正在恢复显示，确认安全后退出");
-            }
-        });
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1237,13 +1125,6 @@ fn set_registry_startup(subkey: &str, value_name: &str, command: Option<&str>) -
     }
 }
 
-fn vdd_mode_label(mode: VddModePreference) -> String {
-    match mode {
-        VddModePreference::MatchPhysical => "沿用被关闭的物理屏".into(),
-        VddModePreference::Fixed { width, height } => format!("{width}×{height}"),
-    }
-}
-
 fn startup_enabled() -> bool {
     registry_startup_exists(RUN_REG_SUBKEY, RUN_REG_VALUE) || legacy_startup_path().exists()
 }
@@ -1358,7 +1239,7 @@ pub(crate) fn app_log(line: &str) {
     veil_engine::append_rotated_log(&path, line, veil_engine::DEFAULT_LOG_MAX_BYTES);
 }
 
-fn to_wide(s: &str) -> Vec<u16> {
+pub(crate) fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s)
         .encode_wide()
         .chain(std::iter::once(0))
