@@ -80,12 +80,14 @@ pub fn request_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
     let now = (unix_seconds() * 1_000_000.0) as u64;
-    LAST.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |old| {
-        Some(now.max(old + 1))
-    })
-    .unwrap()
-    .max(now - 1)
-        + 1
+    let mut old = LAST.load(Ordering::SeqCst);
+    loop {
+        let next = now.max(old.saturating_add(1));
+        match LAST.compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return next,
+            Err(actual) => old = actual,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
