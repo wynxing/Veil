@@ -1,3 +1,5 @@
 node_modules/
 out/
 .cache/
+public/opening.wav
+public/promo.wav

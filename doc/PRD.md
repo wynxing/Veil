@@ -2,9 +2,9 @@
 
 版本：1.0
 
-状态：1.0.0 正式版产品要求。支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
+状态：1.0.x 正式版产品要求（当前正式版 1.0.3）。版本演进见 [变更日志](../CHANGELOG.md)，支持与验证范围见 [支持与诊断](validation/support-and-diagnostics.md)。
 
-日期：2026-10-05
+更新日期：2026-11-20
 
 完整运行时、安装与界面设计见 [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md)。实现栈见 [ARCHITECTURE.md](ARCHITECTURE.md)。本文是产品合同：用户要什么、首版做什么、什么算成功。本文描述行为要求，具体实测结果由验证说明记录。
 

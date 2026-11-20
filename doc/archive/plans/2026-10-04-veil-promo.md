@@ -1,3 +1,6 @@
+> [!NOTE]
+> 本文为 2026-10-04 已完成的历史制作计划归档，仅作背景留存，不代表当前正式版口径。
+
 # Veil 宣传片样片制作计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 本次按用户已批准的分镜方向直接制作，在样片交付处保留创意评审节点。
