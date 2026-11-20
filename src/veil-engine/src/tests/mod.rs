@@ -1,10 +1,11 @@
-mod support;
 mod ccd;
-mod recovery_session;
-mod recovery_restore;
-mod second_close;
+mod coordinator_cleanup;
 mod coordinator_session;
 mod coordinator_vdd;
-mod screen_list;
-mod coordinator_cleanup;
 mod maintenance;
+mod recovery_restore;
+mod recovery_session;
+mod screen_list;
+mod second_close;
+mod support;
+mod vdd_mode;

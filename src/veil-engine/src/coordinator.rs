@@ -28,10 +28,13 @@ pub const VDD_PATH_MISSING: &str = "辅助虚拟输出未能出现活动虚拟�
 pub const AUXILIARY_ALREADY_INSTALLED: &str = "辅助虚拟输出已安装。";
 pub const AUXILIARY_PAYLOAD_MISSING: &str = "缺少已校验的辅助虚拟输出驱动包。";
 
+pub type StartRecoveryHook = Box<dyn FnMut(&str, Option<&str>) -> i32>;
+pub type ConfirmVddHook = Box<dyn FnMut(&str) -> bool>;
+
 pub struct RecoveryCoordinatorHooks {
-    pub start_recovery: Box<dyn FnMut(&str, Option<&str>) -> i32>,
+    pub start_recovery: StartRecoveryHook,
     pub run_driver_helper: Box<dyn FnMut(&str) -> i32>,
-    pub confirm_enable_vdd: Option<Box<dyn FnMut(&str) -> bool>>,
+    pub confirm_enable_vdd: Option<ConfirmVddHook>,
     pub bundled_vdd_installed: Box<dyn Fn() -> bool>,
     pub bundled_vdd_payload: Box<dyn Fn() -> bool>,
     pub is_alive: Box<dyn Fn(i32) -> bool>,
@@ -48,8 +51,8 @@ impl RecoveryCoordinatorHooks {
             }),
             run_driver_helper: Box::new(|verb| run_driver_helper_process(verb).unwrap_or(1)),
             confirm_enable_vdd: None,
-            bundled_vdd_installed: Box::new(|| DriverStatus::installed()),
-            bundled_vdd_payload: Box::new(|| DriverStatus::payload_present()),
+            bundled_vdd_installed: Box::new(DriverStatus::installed),
+            bundled_vdd_payload: Box::new(DriverStatus::payload_present),
             is_alive: Box::new(|pid| Win32ParentWatcher.is_alive(pid).unwrap_or(false)),
             virtual_path_wait: Duration::from_secs(15),
             on_progress: Box::new(|_| {}),
@@ -616,9 +619,7 @@ impl RecoveryCoordinator {
 
     pub fn restore_all(&mut self) -> Option<String> {
         self.progress("正在恢复物理屏并确认结果");
-        let Some(dir) = self.directory.clone() else {
-            return None;
-        };
+        let dir = self.directory.clone()?;
         let request_id = crate::session::request_id();
         // Retry only the failed device cleanup when all still-connected baseline
         // physical targets are active. Never replay a saved topology just for UAC.
@@ -919,7 +920,7 @@ impl RecoveryCoordinator {
                         .iter()
                         .filter(|row| row.is_bundled_vdd() && !row.active)
                         .count();
-                    match crate::recovery::activate_inactive_bundled_path(
+                    match crate::vdd_activation::activate_inactive_bundled_path(
                         self.ccd.as_ref(),
                         &active_frame,
                         &all_frame,
@@ -927,7 +928,7 @@ impl RecoveryCoordinator {
                         resolution_height,
                         true,
                     ) {
-                        crate::recovery::InactiveBundledActivation::Applied => {
+                        crate::vdd_activation::InactiveBundledActivation::Applied => {
                             self.log_operation(
                                 "vdd-activate",
                                 "已把未活动的辅助路径标为活动。",
@@ -936,20 +937,22 @@ impl RecoveryCoordinator {
                             activation_attempted = true;
                             continue;
                         }
-                        crate::recovery::InactiveBundledActivation::NotFound => {}
-                        crate::recovery::InactiveBundledActivation::Heartbeat {
-                            detail, ..
+                        crate::vdd_activation::InactiveBundledActivation::NotFound => {}
+                        crate::vdd_activation::InactiveBundledActivation::Heartbeat {
+                            detail,
+                            ..
                         } => {
                             activation_attempted = true;
                             activation_failure = Some(detail);
                         }
-                        crate::recovery::InactiveBundledActivation::ApplyBlocked {
-                            detail, ..
+                        crate::vdd_activation::InactiveBundledActivation::ApplyBlocked {
+                            detail,
+                            ..
                         } => {
                             activation_attempted = true;
                             activation_failure = Some(detail);
                         }
-                        crate::recovery::InactiveBundledActivation::ApplyFailed { rc } => {
+                        crate::vdd_activation::InactiveBundledActivation::ApplyFailed { rc } => {
                             activation_attempted = true;
                             activation_failure = Some(format!("激活辅助路径 APPLY {rc}"));
                         }

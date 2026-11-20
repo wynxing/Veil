@@ -15,12 +15,15 @@ pub fn path(
     mode_idx: u32,
     adapter_low: u32,
 ) -> DisplayConfigPathInfo {
-    let mut item = DisplayConfigPathInfo::default();
-    item.flags = (if active {
+    let flags = if active {
         CcdConstants::DISPLAYCONFIG_PATH_ACTIVE
     } else {
         0
-    }) | 8;
+    } | 8;
+    let mut item = DisplayConfigPathInfo {
+        flags,
+        ..Default::default()
+    };
     item.target_info.output_technology = if internal_tech {
         CcdConstants::OUTPUT_TECHNOLOGY_INTERNAL
     } else {
@@ -99,6 +102,8 @@ pub fn row_simple(role: PathRole, target_id: u32, name: &str, monitor_path: &str
     )
 }
 
+type AfterApplyHook = Box<dyn FnMut(&mut FakeCcdInner)>;
+
 struct FakeCcdInner {
     paths: Vec<DisplayConfigPathInfo>,
     modes: Vec<DisplayConfigModeInfo>,
@@ -114,7 +119,7 @@ struct FakeCcdInner {
     next_validate_rcs: VecDeque<i32>,
     capture_error: Option<String>,
     stale_captures_remaining: i32,
-    after_apply: Option<Box<dyn FnMut(&mut FakeCcdInner)>>,
+    after_apply: Option<AfterApplyHook>,
     visible_paths: Vec<DisplayConfigPathInfo>,
     visible_rows: Vec<PathRow>,
     has_visible: bool,
@@ -323,10 +328,15 @@ impl CcdApi for FakeCcd {
             let applied_paths = inner.paths.clone();
             let mut aligned = Vec::new();
             for path in &applied_paths {
-                let Some(mut row) = inner.rows.iter().find(|row| {
-                    path.target_info.id == row.target_id
-                        && path.target_info.adapter_id.to_hex() == row.adapter_luid
-                }).cloned() else {
+                let Some(mut row) = inner
+                    .rows
+                    .iter()
+                    .find(|row| {
+                        path.target_info.id == row.target_id
+                            && path.target_info.adapter_id.to_hex() == row.adapter_luid
+                    })
+                    .cloned()
+                else {
                     continue;
                 };
                 row.active = path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0;
@@ -463,6 +473,12 @@ impl ParentWatcher for FakeParent {
 pub struct SharedParent {
     pub alive: RefCell<bool>,
     pub error: RefCell<Option<String>>,
+}
+
+impl Default for SharedParent {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SharedParent {

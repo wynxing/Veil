@@ -202,7 +202,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("veil-payload-ok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         write_valid_payload(&root);
-        assert!(payload_present_in(&[root.clone()]));
+        assert!(payload_present_in(std::slice::from_ref(&root)));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -212,7 +212,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         write_valid_payload(&root);
         std::fs::write(root.join("vdd").join("MttVDD.inf"), b"changed").unwrap();
-        assert!(!payload_present_in(&[root.clone()]));
+        assert!(!payload_present_in(std::slice::from_ref(&root)));
         let _ = std::fs::remove_dir_all(&root);
     }
 

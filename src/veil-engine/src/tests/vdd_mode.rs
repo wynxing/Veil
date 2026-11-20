@@ -12,8 +12,10 @@ fn uuid_like() -> u128 {
         .unwrap_or(0)
 }
 fn source_mode_info(width: u32, height: u32, x: i32, y: i32) -> DisplayConfigModeInfo {
-    let mut mode = DisplayConfigModeInfo::default();
-    mode.info_type = CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+    let mut mode = DisplayConfigModeInfo {
+        info_type: CcdConstants::DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE,
+        ..DisplayConfigModeInfo::default()
+    };
     mode.set_source_mode(DisplayConfigSourceMode {
         width,
         height,
@@ -192,7 +194,6 @@ fn vdd_mode_preference_roundtrip_rejects_out_of_range() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-
 #[test]
 fn driver_reads_hardcoded_lab_directory() {
     assert_eq!(
@@ -243,10 +244,7 @@ fn write_xml_copies_into_install_and_driver_directories() {
 
 #[test]
 fn xml_copy_failure_removes_only_new_files() {
-    let root = std::env::temp_dir().join(format!(
-        "veil-vdd-xml-copy-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("veil-vdd-xml-copy-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let first = root.join("first");

@@ -1,21 +1,6 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
-use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
-};
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
+use crate::fakes::{self};
+use crate::session::{HeartbeatFile, HeartbeatScreen};
 use crate::*;
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::time::Duration;
-
-use super::support::*;
 
 #[test]
 fn virtual_screens_are_not_listed() {
@@ -121,8 +106,8 @@ fn failure_is_never_shown_as_closed() {
             target_id: 1,
             monitor_path: r"\\?\DISPLAY#CMN#1".into(),
             name: "Panel".into(),
-            wanted: "保持关闭".into(),
-            confirmed: "失败".into(),
+            wanted: WantedState::KeepOff,
+            confirmed: ConfirmedState::Failed,
             detail: "校验 87".into(),
             ..Default::default()
         }],
@@ -130,8 +115,8 @@ fn failure_is_never_shown_as_closed() {
     };
     let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
     let panel = items.iter().find(|i| i.name == "Panel").unwrap();
-    assert_eq!(panel.confirmed, "失败");
-    assert_ne!(panel.confirmed, "已关闭");
+    assert_eq!(panel.confirmed, ConfirmedState::Failed);
+    assert_ne!(panel.confirmed, ConfirmedState::Off);
     assert!(panel.block_reason.contains("87"));
 }
 #[test]
@@ -164,8 +149,8 @@ fn heartbeat_keeps_closed_screen_when_snapshot_omits_it() {
             target_id: 1,
             monitor_path: r"\\?\DISPLAY#CMN#1".into(),
             name: "Panel".into(),
-            wanted: "保持关闭".into(),
-            confirmed: "已关闭".into(),
+            wanted: WantedState::KeepOff,
+            confirmed: ConfirmedState::Off,
             ..Default::default()
         }],
         ..Default::default()
@@ -173,7 +158,7 @@ fn heartbeat_keeps_closed_screen_when_snapshot_omits_it() {
     let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
     assert!(items
         .iter()
-        .any(|i| i.name == "Panel" && i.confirmed == "已关闭" && i.can_restore));
+        .any(|i| i.name == "Panel" && i.confirmed == ConfirmedState::Off && i.can_restore));
     assert!(items.iter().any(|i| i.name == "S24"));
 }
 #[test]
@@ -220,15 +205,18 @@ fn closed_screen_raw_heartbeat_name_is_sanitized() {
             target_id: 1,
             monitor_path: r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}".into(),
             name: r"\\?\DISPLAY#CMN1540#4&2ff9cea1&0&UID8388688#{e6f07b5f-ee97-4a90-a60c-1898093096a0}".into(),
-            wanted: "保持关闭".into(),
-            confirmed: "已关闭".into(),
+            wanted: WantedState::KeepOff,
+            confirmed: ConfirmedState::Off,
             kind: "内置".into(),
             ..Default::default()
         }],
         ..Default::default()
     };
     let items = ScreenListBuilder::build(&snap, Some(&hb), &[], false, true, true);
-    let closed = items.iter().find(|i| i.confirmed == "已关闭").unwrap();
+    let closed = items
+        .iter()
+        .find(|i| i.confirmed == ConfirmedState::Off)
+        .unwrap();
     assert_eq!(closed.name, "CMN1540");
     assert_eq!(closed.kind, "内置");
     assert!(!closed.name.contains(r"\\?\"));
@@ -250,8 +238,8 @@ fn remaining_external_is_blocked_after_internal_keep_off() {
             target_id: 1,
             monitor_path: r"\\?\DISPLAY#CMN1540#1".into(),
             name: "CMN1540".into(),
-            wanted: "保持关闭".into(),
-            confirmed: "已关闭".into(),
+            wanted: WantedState::KeepOff,
+            confirmed: ConfirmedState::Off,
             kind: "内置".into(),
             ..Default::default()
         }],
@@ -279,8 +267,8 @@ fn remaining_external_with_payload_offers_install() {
             target_id: 1,
             monitor_path: r"\\?\DISPLAY#CMN1540#1".into(),
             name: "CMN1540".into(),
-            wanted: "保持关闭".into(),
-            confirmed: "已关闭".into(),
+            wanted: WantedState::KeepOff,
+            confirmed: ConfirmedState::Off,
             kind: "内置".into(),
             ..Default::default()
         }],
@@ -309,9 +297,24 @@ fn cleared_heartbeat_after_restore_shows_active_screens_on() {
     );
     let items = ScreenListBuilder::build(&snap, None, &[], false, true, true);
     for i in &items {
-        assert_eq!(i.wanted, "开启");
-        assert_eq!(i.confirmed, "已显示");
+        assert_eq!(i.wanted, WantedState::On);
+        assert_eq!(i.confirmed, ConfirmedState::On);
         assert!(i.can_keep_off);
         assert!(!i.can_restore);
     }
+}
+
+#[test]
+fn screen_state_enums_keep_protocol_v2_json_format() {
+    let raw = r#"{"adapterLuid":"luid","targetId":1,"wanted":"保持关闭","confirmed":"已关闭"}"#;
+    let parsed: HeartbeatScreen = serde_json::from_str(raw).unwrap();
+    assert_eq!(parsed.wanted, WantedState::KeepOff);
+    assert_eq!(parsed.confirmed, ConfirmedState::Off);
+    let encoded = serde_json::to_string(&parsed).unwrap();
+    assert!(encoded.contains(r#""wanted":"保持关闭""#));
+    assert!(encoded.contains(r#""confirmed":"已关闭""#));
+
+    let defaults: HeartbeatScreen = serde_json::from_str("{}").unwrap();
+    assert_eq!(defaults.wanted, WantedState::On);
+    assert_eq!(defaults.confirmed, ConfirmedState::Unknown);
 }

@@ -1,17 +1,12 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
+use crate::fakes::{self, FakeHotkey, FakePower, SharedClock, SharedParent};
+use crate::native::{CcdApi, CcdConstants, PowerEvent};
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
+    ArmFile, HeartbeatFile, IntentFile, JsonUtil, OpenSessionRelease, ReleaseFile, ResultFile,
+    SessionPaths,
 };
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
+use crate::session::{RestoreState, SessionMetadata, PROTOCOL_VERSION};
 use crate::*;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -164,17 +159,21 @@ fn apply_happens_only_after_matching_arm_and_intent() {
     session.tick();
     assert!(ccd.validated());
     assert!(ccd.applied());
-    assert!(ccd.flags().iter().any(|f| *f == CcdConstants::APPLY_FLAGS));
+    assert!(ccd.flags().contains(&CcdConstants::APPLY_FLAGS));
     assert!(!ccd
         .flags()
         .iter()
         .any(|f| f & CcdConstants::SDC_SAVE_TO_DATABASE != 0));
     let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
-    assert!(heartbeat.screens.iter().any(|s| s.confirmed == "已关闭"));
-    assert!(!heartbeat
+    assert!(heartbeat
         .screens
         .iter()
-        .any(|s| s.wanted == "保持关闭" && s.confirmed == "已关闭" && s.detail.contains("失败")));
+        .any(|s| s.confirmed == ConfirmedState::Off));
+    assert!(!heartbeat.screens.iter().any(|s| {
+        s.wanted == WantedState::KeepOff
+            && s.confirmed == ConfirmedState::Off
+            && s.detail.contains("失败")
+    }));
 }
 #[test]
 fn failed_validate_does_not_retry_and_restores_all() {
@@ -542,14 +541,12 @@ fn shrinking_intent_reactivates_restored_path_and_keeps_session() {
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     assert!(events.contains("partial-restored"));
     let heartbeat: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
-    assert!(heartbeat
-        .screens
-        .iter()
-        .any(|s| s.target_id == 1 && s.wanted == "开启" && s.confirmed == "已显示"));
-    assert!(heartbeat
-        .screens
-        .iter()
-        .any(|s| s.target_id == 2 && s.wanted == "保持关闭" && s.confirmed == "已关闭"));
+    assert!(heartbeat.screens.iter().any(|s| {
+        s.target_id == 1 && s.wanted == WantedState::On && s.confirmed == ConfirmedState::On
+    }));
+    assert!(heartbeat.screens.iter().any(|s| {
+        s.target_id == 2 && s.wanted == WantedState::KeepOff && s.confirmed == ConfirmedState::Off
+    }));
 }
 #[test]
 fn hotkey_press_finishes_and_restores_saved() {

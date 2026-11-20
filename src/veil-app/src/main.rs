@@ -1,8 +1,11 @@
 #![windows_subsystem = "windows"]
 
+mod elevation;
 mod operation_worker;
 mod panel_window;
 mod session;
+mod startup;
+mod tray;
 mod ui;
 mod update;
 mod wake;
@@ -14,8 +17,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::TrayIcon;
 
 use operation_worker::{Action, OperationWorker};
 use panel_window::PanelWindow;
@@ -23,6 +25,8 @@ use session::{
     after_ui_session, classify_tray_commands, idle_response, merge_effect, IdleAction, LoopNext,
     PanelEffect, SessionState, SessionStop, TrayCommand, DEFAULT_DETAIL,
 };
+use startup::{set_startup, startup_enabled};
+use tray::{build_tray, install_tray_handlers, should_update_tray_icon, tray_icon_for};
 use veil_engine::{CcdApi, CcdConstants, OpenSessionRelease, VddModePreference, Win32CcdApi};
 use wake::UiWake;
 use windows_sys::Win32::Foundation::{
@@ -38,7 +42,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const MUTEX_NAME: &str = "Local\\Veil";
 const SHOW_EVENT_NAME: &str = "Local\\Veil.ShowPanel";
-static PENDING_HELPER: Mutex<Option<(usize, String)>> = Mutex::new(None);
+const SHOW_EVENT_WAIT_MS: u32 = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RendererChoice {
@@ -89,7 +93,7 @@ fn main() {
     };
     let show_event = create_show_event();
     app_log("互斥已拿到，准备打开面板。");
-    match veil_engine::OpenSessionRelease::prune_concluded(veil_engine::SessionPaths::root(), 10) {
+    match OpenSessionRelease::prune_concluded(veil_engine::SessionPaths::root(), 10) {
         Ok(removed) if removed > 0 => app_log(&format!("已清理 {removed} 个历史会话目录。")),
         Ok(_) => {}
         Err(err) => app_log(&format!("清理历史会话目录失败：{err}")),
@@ -204,12 +208,12 @@ fn run_panel(mutex: HANDLE, show_event: HANDLE) -> Result<(), String> {
         }
         opened_once = true;
         log_process_memory("面板会话开始");
-        match run_ui_once(&session) {
-            Ok(stop) => match after_ui_session(stop) {
+        {
+            let stop = run_ui_once(&session)?;
+            match after_ui_session(stop) {
                 LoopNext::Idle => continue,
                 LoopNext::ExitProcess => break,
-            },
-            Err(err) => return Err(err),
+            }
         }
     }
     Ok(())
@@ -329,88 +333,6 @@ fn idle_until_present(session: &Rc<RefCell<AppSession>>) -> IdleAction {
     }
 }
 
-fn build_tray() -> (
-    Option<TrayIcon>,
-    tray_icon::menu::MenuId,
-    tray_icon::menu::MenuId,
-    tray_icon::menu::MenuId,
-) {
-    let menu = Menu::new();
-    let open_item = MenuItem::new("打开面板", true, None);
-    let restore_item = MenuItem::new("恢复全部", true, None);
-    let exit_item = MenuItem::new("退出", true, None);
-    let open_id = open_item.id().clone();
-    let restore_id = restore_item.id().clone();
-    let exit_id = exit_item.id().clone();
-    let _ = menu.append(&open_item);
-    let _ = menu.append(&restore_item);
-    let _ = menu.append(&exit_item);
-    let tray = match TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip(format!("Veil（紧急恢复：{}）", CcdConstants::HOTKEY_TEXT))
-        .with_icon(default_icon())
-        .build()
-    {
-        Ok(icon) => Some(icon),
-        Err(err) => {
-            app_log(&format!("托盘图标未创建：{err}"));
-            None
-        }
-    };
-    (tray, open_id, restore_id, exit_id)
-}
-
-fn install_tray_handlers(
-    wake: &Arc<UiWake>,
-    commands: &Arc<Mutex<Vec<TrayCommand>>>,
-    open_id: tray_icon::menu::MenuId,
-    restore_id: tray_icon::menu::MenuId,
-    exit_id: tray_icon::menu::MenuId,
-) {
-    let menu_wake = Arc::clone(wake);
-    let menu_commands = commands.clone();
-    MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
-        let command = if ev.id == open_id {
-            Some(TrayCommand::Open)
-        } else if ev.id == restore_id {
-            Some(TrayCommand::RestoreAll)
-        } else if ev.id == exit_id {
-            Some(TrayCommand::Exit)
-        } else {
-            None
-        };
-        if let Some(command) = command {
-            menu_commands
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(command);
-        }
-        menu_wake.ping();
-    }));
-
-    let icon_wake = Arc::clone(wake);
-    let icon_commands = commands.clone();
-    TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
-        if matches!(
-            ev,
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } | TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            }
-        ) {
-            icon_commands
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(TrayCommand::Open);
-            icon_wake.ping();
-        }
-    }));
-}
-
 struct VeilApp {
     session: Rc<RefCell<AppSession>>,
     palette: ui::ThemePalette,
@@ -487,17 +409,17 @@ impl AppSession {
         ctx.request_repaint();
     }
 
-    fn submit(
-        &mut self,
-        action: Action,
-        target: Option<veil_engine::ScreenIdentity>,
-        label: &str,
-    ) {
+    fn submit(&mut self, action: Action, target: Option<veil_engine::ScreenIdentity>, label: &str) {
         if self.state.worker_failed {
             self.state.detail = "显示操作线程不可用，无法确认恢复状态。".into();
             return;
         }
-        if self.state.pending.iter().any(|(_, pending)| *pending == action) {
+        if self
+            .state
+            .pending
+            .iter()
+            .any(|(_, pending)| *pending == action)
+        {
             return;
         }
         if matches!(action, Action::Cancel | Action::RestoreAll | Action::Exit) {
@@ -578,9 +500,7 @@ impl eframe::App for VeilApp {
                 TrayCommand::Open | TrayCommand::RestoreAll | TrayCommand::Exit
             )
         });
-        if ctx.input(|i| i.viewport().close_requested())
-            && !app.state.exiting
-            && !app.state.dismiss
+        if ctx.input(|i| i.viewport().close_requested()) && !app.state.exiting && !app.state.dismiss
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if self.close_armed && !wants_foreground {
@@ -597,14 +517,13 @@ impl eframe::App for VeilApp {
             && !wants_foreground
             && minimized
             && self.minimize_armed
-            && !app.panel.is_parked()
         {
             app.state.dismiss = true;
             self.minimize_armed = false;
         }
         self.close_armed = true;
         if !app.state.dismiss && !app.state.exiting {
-            app.panel.sync(hwnd, true);
+            app.panel.sync_open(hwnd);
         }
         for command in commands {
             if app.state.exiting {
@@ -646,15 +565,11 @@ impl eframe::App for VeilApp {
         } else if app.state.exiting {
             app.stop = SessionStop::Exit;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if needs_timer_repaint(
-            app.panel.is_parked(),
-            !app.state.pending.is_empty(),
-            app.state.auto_stage,
-        ) {
+        } else if needs_timer_repaint(!app.state.pending.is_empty(), app.state.auto_stage) {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
 
-        let commands = ui::render_panel(
+        let ui_commands = ui::render_panel(
             ctx,
             self.palette,
             &app.state,
@@ -662,7 +577,7 @@ impl eframe::App for VeilApp {
             app.startup,
             app.update_offer.as_ref(),
         );
-        for command in commands {
+        for command in ui_commands {
             match command {
                 ui::UiCommand::Submit {
                     action,
@@ -727,132 +642,12 @@ impl eframe::App for VeilApp {
     }
 }
 
-
 fn message_box(text: &str, cancel: bool) -> bool {
     let text_w = to_wide(text);
     let caption = to_wide("Veil");
     let flags = MB_ICONWARNING | if cancel { MB_OKCANCEL } else { MB_OK };
     let rc = unsafe { MessageBoxW(0 as HWND, text_w.as_ptr(), caption.as_ptr(), flags) };
     rc != IDCANCEL
-}
-
-fn run_helper_elevated(verb: &str) -> i32 {
-    use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-    // A timed-out helper can still be running. Retain its handle and never launch
-    // a second device operation until the first one has actually ended.
-    let mut pending = PENDING_HELPER.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((raw, previous_verb)) = pending.as_ref() {
-        let handle = *raw as HANDLE;
-        let wait = unsafe { WaitForSingleObject(handle, 0) };
-        if wait != WAIT_OBJECT_0 {
-            app_log(&format!("helper pending verb={previous_verb} wait={wait}"));
-            return 1460;
-        }
-        let mut code = 1;
-        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
-        let same = previous_verb == verb;
-        unsafe {
-            CloseHandle(handle);
-        }
-        *pending = None;
-        app_log(&format!(
-            "helper late-end verb={verb} exit={code} query={ok}"
-        ));
-        if same {
-            return if ok != 0 { code as i32 } else { 1 };
-        }
-    }
-    app_log(&format!("helper start verb={verb}"));
-    let raw = match launch_helper_elevated(verb) {
-        Ok(raw) => raw,
-        Err(error) => {
-            app_log(&format!("helper launch-failed verb={verb} win32={error}"));
-            return error;
-        }
-    };
-    let handle = raw as HANDLE;
-    let wait = unsafe { WaitForSingleObject(handle, 60_000) };
-    if wait != WAIT_OBJECT_0 {
-        let error = unsafe { GetLastError() };
-        *pending = Some((raw, verb.to_string()));
-        app_log(&format!(
-            "helper wait-incomplete verb={verb} wait={wait} win32={error}"
-        ));
-        return if wait == WAIT_TIMEOUT { 1460 } else { 1 };
-    }
-    let mut code = 1;
-    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
-    let error = if ok == 0 {
-        unsafe { GetLastError() }
-    } else {
-        0
-    };
-    unsafe {
-        CloseHandle(handle);
-    }
-    app_log(&format!("helper end verb={verb} exit={code} win32={error}"));
-    if ok != 0 {
-        code as i32
-    } else {
-        error.max(1) as i32
-    }
-}
-
-fn helper_operation_unfinished() -> bool {
-    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-    let pending = PENDING_HELPER.lock().unwrap_or_else(|e| e.into_inner());
-    pending.as_ref().is_some_and(|(raw, _)| {
-        (unsafe { WaitForSingleObject(*raw as HANDLE, 0) }) != WAIT_OBJECT_0
-    })
-}
-
-fn launch_helper_elevated(verb: &str) -> Result<usize, i32> {
-    use windows_sys::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
-    };
-    use windows_sys::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
-
-    let exe = veil_engine::ProcessLaunch::driver_helper_exe_path();
-    let exe_w = to_wide(&exe.to_string_lossy());
-    let params = to_wide(verb);
-    let launcher = std::thread::Builder::new()
-        .name("veil-elevated-launch".into())
-        .spawn(move || {
-            // ShellExecuteEx can load STA shell extensions. Keep its apartment on
-            // this short-lived launcher; the operation thread waits on the handle.
-            let hr = unsafe {
-                CoInitializeEx(
-                    std::ptr::null(),
-                    (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
-                )
-            };
-            if hr < 0 {
-                return Err(hr);
-            }
-            let verb_w = to_wide("runas");
-            let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-            info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-            info.lpVerb = verb_w.as_ptr();
-            info.lpFile = exe_w.as_ptr();
-            info.lpParameters = params.as_ptr();
-            info.nShow = SW_HIDE;
-            let result = if unsafe { ShellExecuteExW(&mut info) } == 0 {
-                Err(unsafe { GetLastError() }.max(1) as i32)
-            } else if info.hProcess.is_null() {
-                Err(1)
-            } else {
-                Ok(info.hProcess as usize)
-            };
-            unsafe { CoUninitialize() };
-            result
-        })
-        .map_err(|_| 1)?;
-    launcher.join().unwrap_or(Err(1))
 }
 
 fn try_acquire_mutex() -> Option<HANDLE> {
@@ -871,15 +666,9 @@ fn try_acquire_mutex() -> Option<HANDLE> {
     }
 }
 
-fn needs_timer_repaint(parked: bool, has_pending: bool, auto_stage: bool) -> bool {
-    !parked && (has_pending || auto_stage)
+fn needs_timer_repaint(has_pending: bool, auto_stage: bool) -> bool {
+    has_pending || auto_stage
 }
-
-fn should_update_tray_icon(previous: Option<bool>, current: bool) -> bool {
-    previous != Some(current)
-}
-
-const SHOW_EVENT_WAIT_MS: u32 = 500;
 
 fn watch_show_event(
     handle: HANDLE,
@@ -987,190 +776,13 @@ fn try_signal_show() -> bool {
     }
 }
 
-const RUN_REG_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_REG_VALUE: &str = "Veil";
-
-fn legacy_startup_path() -> std::path::PathBuf {
-    let appdata = std::env::var("APPDATA").unwrap_or_default();
-    std::path::PathBuf::from(appdata)
-        .join("Microsoft")
-        .join("Windows")
-        .join("Start Menu")
-        .join("Programs")
-        .join("Startup")
-        .join("Veil.lnk")
-}
-
-fn quote_startup_command(exe: &std::path::Path) -> String {
-    format!("\"{}\"", exe.display())
-}
-
-struct RegKeyGuard(windows_sys::Win32::System::Registry::HKEY);
-
-impl Drop for RegKeyGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                windows_sys::Win32::System::Registry::RegCloseKey(self.0);
-            }
-        }
-    }
-}
-
-fn registry_startup_exists(subkey: &str, value_name: &str) -> bool {
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-    use windows_sys::Win32::System::Registry::{
-        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
-    };
-    let subkey_w = to_wide(subkey);
-    let value_w = to_wide(value_name);
-    let mut key = std::ptr::null_mut();
-    let open = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            subkey_w.as_ptr(),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
-        )
-    };
-    if open != ERROR_SUCCESS || key.is_null() {
-        return false;
-    }
-    let _guard = RegKeyGuard(key);
-    let mut size = 0u32;
-    let query = unsafe {
-        RegQueryValueExW(
-            key,
-            value_w.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut size,
-        )
-    };
-    query == ERROR_SUCCESS && size > 0
-}
-
-fn set_registry_startup(subkey: &str, value_name: &str, command: Option<&str>) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
-    use windows_sys::Win32::System::Registry::{
-        RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY_CURRENT_USER,
-        KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
-    };
-    let subkey_w = to_wide(subkey);
-    let value_w = to_wide(value_name);
-    match command {
-        Some(cmd) => {
-            let mut key = std::ptr::null_mut();
-            let rc = unsafe {
-                RegCreateKeyExW(
-                    HKEY_CURRENT_USER,
-                    subkey_w.as_ptr(),
-                    0,
-                    std::ptr::null(),
-                    REG_OPTION_NON_VOLATILE,
-                    KEY_SET_VALUE,
-                    std::ptr::null(),
-                    &mut key,
-                    std::ptr::null_mut(),
-                )
-            };
-            if rc != ERROR_SUCCESS || key.is_null() {
-                return Err(format!("无法打开自启注册表项（{rc}）"));
-            }
-            let _guard = RegKeyGuard(key);
-            let data = to_wide(cmd);
-            let byte_len = (data.len() * std::mem::size_of::<u16>()) as u32;
-            let rc = unsafe {
-                RegSetValueExW(
-                    key,
-                    value_w.as_ptr(),
-                    0,
-                    REG_SZ,
-                    data.as_ptr() as *const u8,
-                    byte_len,
-                )
-            };
-            if rc != ERROR_SUCCESS {
-                return Err(format!("写入自启项失败（{rc}）"));
-            }
-            Ok(())
-        }
-        None => {
-            let mut key = std::ptr::null_mut();
-            let open = unsafe {
-                RegOpenKeyExW(
-                    HKEY_CURRENT_USER,
-                    subkey_w.as_ptr(),
-                    0,
-                    KEY_SET_VALUE,
-                    &mut key,
-                )
-            };
-            if open == ERROR_FILE_NOT_FOUND {
-                return Ok(());
-            }
-            if open != ERROR_SUCCESS || key.is_null() {
-                return Err(format!("无法打开自启注册表项（{open}）"));
-            }
-            let _guard = RegKeyGuard(key);
-            let rc = unsafe { RegDeleteValueW(key, value_w.as_ptr()) };
-            if rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND {
-                Ok(())
-            } else {
-                Err(format!("移除自启项失败（{rc}）"))
-            }
-        }
-    }
-}
-
-fn startup_enabled() -> bool {
-    registry_startup_exists(RUN_REG_SUBKEY, RUN_REG_VALUE) || legacy_startup_path().exists()
-}
-
-fn set_startup(enabled: bool) -> Result<(), String> {
-    let legacy = legacy_startup_path();
-    if !enabled {
-        set_registry_startup(RUN_REG_SUBKEY, RUN_REG_VALUE, None)?;
-        if let Err(err) = std::fs::remove_file(&legacy) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("移除旧快捷方式失败：{err}"));
-            }
-        }
-        return Ok(());
-    }
-    let exe = std::env::current_exe().map_err(|err| format!("无法获取程序路径：{err}"))?;
-    let command = quote_startup_command(&exe);
-    set_registry_startup(RUN_REG_SUBKEY, RUN_REG_VALUE, Some(&command))?;
-    // 清理旧版 Startup\Veil.lnk，避免迁移后开机启动两次。
-    let _ = std::fs::remove_file(&legacy);
-    Ok(())
-}
-
-fn default_icon() -> Icon {
-    tray_icon_for(false)
-}
-
-fn tray_icon_for(holding: bool) -> Icon {
-    let bytes = if holding {
-        include_bytes!("../../../assets/icon/tray-holding.png").as_slice()
-    } else {
-        include_bytes!("../../../assets/icon/tray-idle.png").as_slice()
-    };
-    let rgba = image::load_from_memory(bytes)
-        .expect("tray image")
-        .to_rgba8();
-    Icon::from_rgba(rgba.into_raw(), 16, 16).expect("tray icon")
-}
-
-fn window_icon() -> std::sync::Arc<egui::IconData> {
-    static ICON: OnceLock<std::sync::Arc<egui::IconData>> = OnceLock::new();
-    std::sync::Arc::clone(ICON.get_or_init(|| {
+fn window_icon() -> Arc<egui::IconData> {
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    Arc::clone(ICON.get_or_init(|| {
         let rgba = image::load_from_memory(include_bytes!("../../../assets/icon/veil.png"))
             .expect("window image")
             .to_rgba8();
-        std::sync::Arc::new(egui::IconData {
+        Arc::new(egui::IconData {
             rgba: rgba.into_raw(),
             width: 64,
             height: 64,
@@ -1179,14 +791,14 @@ fn window_icon() -> std::sync::Arc<egui::IconData> {
 }
 
 fn install_cjk_fonts(ctx: &egui::Context) {
-    let Some((name, data)) = cached_windows_cjk_font() else {
+    let Some((_name, data)) = cached_windows_cjk_font() else {
         app_log("未找到系统中文字体，面板中文会显示为空框。");
         return;
     };
     let mut fonts = egui::FontDefinitions::default();
     fonts
         .font_data
-        .insert("veil_cjk".to_owned(), std::sync::Arc::clone(data));
+        .insert("veil_cjk".to_owned(), Arc::clone(data));
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         if let Some(list) = fonts.families.get_mut(&family) {
             // egui 默认字体有 .notdef，CJK 放后面不会回退，中文会变成方框。
@@ -1194,18 +806,17 @@ fn install_cjk_fonts(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(fonts);
-    let _ = name;
 }
 
-fn cached_windows_cjk_font() -> Option<&'static (String, std::sync::Arc<egui::FontData>)> {
-    static CJK_FONT: OnceLock<Option<(String, std::sync::Arc<egui::FontData>)>> = OnceLock::new();
+fn cached_windows_cjk_font() -> Option<&'static (String, Arc<egui::FontData>)> {
+    static CJK_FONT: OnceLock<Option<(String, Arc<egui::FontData>)>> = OnceLock::new();
     CJK_FONT
         .get_or_init(|| {
             let loaded = load_windows_cjk_font();
             if let Some((name, _)) = &loaded {
                 app_log(&format!("已加载系统中文字体：{name}"));
             }
-            loaded.map(|(name, data)| (name, std::sync::Arc::new(data)))
+            loaded.map(|(name, data)| (name, Arc::new(data)))
         })
         .as_ref()
 }
@@ -1251,57 +862,9 @@ mod operation_tests {
     use super::*;
 
     #[test]
-    fn unfinished_helper_blocks_new_device_work_until_process_exits() {
-        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
-        assert!(!handle.is_null());
-        *PENDING_HELPER.lock().unwrap() = Some((handle as usize, "test".into()));
-        assert!(helper_operation_unfinished());
-        assert_ne!(unsafe { SetEvent(handle) }, 0);
-        assert!(!helper_operation_unfinished());
-        PENDING_HELPER.lock().unwrap().take();
-        unsafe { CloseHandle(handle) };
-    }
-
-    #[test]
-    fn timer_repaint_only_runs_while_visible_and_busy() {
-        assert!(!needs_timer_repaint(true, true, true));
-        assert!(!needs_timer_repaint(false, false, false));
-        assert!(needs_timer_repaint(false, true, false));
-        assert!(needs_timer_repaint(false, false, true));
-    }
-
-    #[test]
-    fn tray_icon_updates_only_on_state_change() {
-        assert!(should_update_tray_icon(None, false));
-        assert!(!should_update_tray_icon(Some(false), false));
-        assert!(should_update_tray_icon(Some(false), true));
-        assert!(!should_update_tray_icon(Some(true), true));
-        assert!(should_update_tray_icon(Some(true), false));
-    }
-
-    #[test]
-    fn startup_command_quotes_paths_with_spaces_and_quotes() {
-        let cmd = quote_startup_command(std::path::Path::new(
-            r"C:\Program Files\Veil\O'Brien\Veil.App.exe",
-        ));
-        assert_eq!(cmd, r#""C:\Program Files\Veil\O'Brien\Veil.App.exe""#);
-    }
-
-    #[test]
-    fn registry_startup_roundtrip_on_isolated_test_key() {
-        use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
-        let subkey = format!(r"Software\Veil\TestStartup-{}", std::process::id());
-        let value = "VeilTest";
-        assert!(!registry_startup_exists(&subkey, value));
-        set_registry_startup(&subkey, value, Some(r#""C:\Veil\Veil.App.exe""#)).unwrap();
-        assert!(registry_startup_exists(&subkey, value));
-        set_registry_startup(&subkey, value, None).unwrap();
-        assert!(!registry_startup_exists(&subkey, value));
-        // Removing an already-absent value stays idempotent.
-        set_registry_startup(&subkey, value, None).unwrap();
-        let subkey_w = to_wide(&subkey);
-        unsafe {
-            RegDeleteKeyW(HKEY_CURRENT_USER, subkey_w.as_ptr());
-        }
+    fn timer_repaint_only_runs_while_busy() {
+        assert!(!needs_timer_repaint(false, false));
+        assert!(needs_timer_repaint(true, false));
+        assert!(needs_timer_repaint(false, true));
     }
 }

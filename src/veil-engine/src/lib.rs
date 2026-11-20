@@ -12,12 +12,12 @@ pub mod recovery;
 pub mod screen_list;
 pub mod session;
 pub mod topology;
+mod vdd_activation;
+pub mod vdd_mode;
 
 pub use capability::{
-    looks_like_device_path, resolve_vdd_resolution, resolved_screen_name, short_monitor_id,
-    BundledVddAvailability, BundledVddSettings, DisplaySnapshot, Gate, KeepOffAction, KeepOffPlan,
-    PathRole, PathRow, Roles, ScreenIdentity, VddModePreference, VddResolutionChoice,
-    VddResolutionRequest, VDD_MODE_PRESETS,
+    looks_like_device_path, resolved_screen_name, short_monitor_id, BundledVddAvailability,
+    DisplaySnapshot, Gate, KeepOffAction, KeepOffPlan, PathRole, PathRow, Roles, ScreenIdentity,
 };
 pub use coordinator::{DriverStatus, RecoveryCoordinator, RecoveryCoordinatorHooks};
 pub use devices::{
@@ -39,13 +39,15 @@ pub use process::ProcessLaunch;
 pub use recovery::{RecoveryOptions, RecoverySession};
 pub use screen_list::{AuxiliaryInstallItem, ScreenItem, ScreenListBuilder};
 pub use session::{
-    append_rotated_log, ArmFile, HeartbeatFile, IntentFile, JsonUtil, OpenSessionRelease,
-    ReadyFile, ReleaseFile, ResultFile, ScreenIdentityDto, SessionLog, SessionPaths,
-    VddRequestFile, DEFAULT_LOG_MAX_BYTES,
+    append_rotated_log, ArmFile, ConfirmedState, HeartbeatFile, IntentFile, JsonUtil,
+    OpenSessionRelease, ReadyFile, ReleaseFile, ResultFile, ScreenIdentityDto, SessionLog,
+    SessionPaths, VddRequestFile, WantedState, DEFAULT_LOG_MAX_BYTES,
 };
 pub use topology::{struct_bytes, DeactivateResult, PathOps, TopologyBlob};
+pub use vdd_mode::{
+    resolve_vdd_resolution, BundledVddSettings, VddModePreference, VddResolutionChoice,
+    VddResolutionRequest, VDD_MODE_PRESETS,
+};
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod vdd_mode_tests;

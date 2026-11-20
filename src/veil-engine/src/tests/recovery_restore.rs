@@ -1,17 +1,9 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
-use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
-};
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
+use crate::fakes::{self, FakeHotkey, SharedClock, SharedParent};
+use crate::native::{CcdApi, CcdConstants};
+use crate::session::{ArmFile, HeartbeatFile, IntentFile, JsonUtil, SessionPaths};
+use crate::session::{RecoveryState, RestoreState, SessionMetadata};
 use crate::*;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -46,7 +38,7 @@ fn failed_restore_keeps_hotkey_and_requires_explicit_retry() {
     assert_eq!(session.result.restore_state, RestoreState::Partial);
     let hb: HeartbeatFile = JsonUtil::read(SessionPaths::heartbeat(&dir.0)).unwrap();
     assert_eq!(hb.state, RecoveryState::RestoreFailed);
-    assert!(hb.screens.iter().all(|s| s.wanted == "开启"));
+    assert!(hb.screens.iter().all(|s| s.wanted == WantedState::On));
     let flags = ccd.flags();
     for _ in 0..30 {
         session.tick();

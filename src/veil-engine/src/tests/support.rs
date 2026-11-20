@@ -1,14 +1,10 @@
-use crate::fakes::{self, FakeCcd, FakeHotkey, FakePower, RcHotkey, SharedClock, SharedParent};
-use crate::native::{
-    CcdAbi, CcdApi, CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo,
-    DisplayConfigPathSourceInfo, DisplayConfigPathTargetInfo, DisplayConfigSourceMode,
-    DisplayConfigVideoSignalInfo, Hotkey, Luid, PointL, PowerEvent,
-};
+use crate::fakes::{self, FakeCcd, FakeHotkey, RcHotkey, SharedClock, SharedParent};
+use crate::native::{CcdConstants, DisplayConfigModeInfo, DisplayConfigPathInfo, Hotkey};
 use crate::session::{
-    ArmFile, HeartbeatFile, HeartbeatScreen, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile,
-    ReleaseFile, ResultFile, ScreenIdentityDto, SessionPaths, VddRequestFile,
+    ArmFile, IntentFile, JsonUtil, ReadyFile, ReleaseFile, ResultFile, ScreenIdentityDto,
+    SessionPaths,
 };
-use crate::session::{RecoveryState, RestoreState, SessionMetadata, PROTOCOL_VERSION};
+use crate::session::{RestoreState, PROTOCOL_VERSION};
 use crate::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -336,24 +332,17 @@ pub(super) fn assert_activated_vdd_uses_virtual_modes(ccd: &FakeCcd) {
     assert_eq!(signal.active_size.cx, 1920);
     assert_eq!(signal.active_size.cy, 1200);
 }
-pub(super) fn owned_coordinator(
-    disable_rc: i32,
-) -> (
+pub(super) type OwnedCoordinatorFixture = (
     RecoveryCoordinator,
     Rc<FakeCcd>,
     Rc<RefCell<String>>,
     Rc<RefCell<Vec<String>>>,
-) {
+);
+
+pub(super) fn owned_coordinator(disable_rc: i32) -> OwnedCoordinatorFixture {
     owned_coordinator_sequence(vec![disable_rc])
 }
-pub(super) fn owned_coordinator_sequence(
-    mut disable_codes: Vec<i32>,
-) -> (
-    RecoveryCoordinator,
-    Rc<FakeCcd>,
-    Rc<RefCell<String>>,
-    Rc<RefCell<Vec<String>>>,
-) {
+pub(super) fn owned_coordinator_sequence(mut disable_codes: Vec<i32>) -> OwnedCoordinatorFixture {
     let started = Rc::new(RefCell::new(String::new()));
     let helper = Rc::new(RefCell::new(Vec::new()));
     let ccd = internal_plus_vdd();

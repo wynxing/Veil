@@ -231,7 +231,10 @@ fn exercise_second_close_race(first_screen: usize, schedule: SecondCloseSchedule
     let intent: IntentFile = JsonUtil::read(SessionPaths::intent(&dir.0)).unwrap();
     assert_eq!(hb.processed_request_id, intent.request_id);
     assert_eq!(hb.state, RecoveryState::Holding);
-    assert!(hb.screens.iter().all(|screen| screen.confirmed == "已关闭"));
+    assert!(hb
+        .screens
+        .iter()
+        .all(|screen| screen.confirmed == ConfirmedState::Off));
     let events = std::fs::read_to_string(SessionPaths::events(&dir.0)).unwrap();
     if recovery_before_helper {
         assert!(events.contains("keep-off-precheck-already-off"));
