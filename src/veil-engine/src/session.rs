@@ -357,6 +357,38 @@ impl SessionPaths {
     pub fn vdd_request(dir: impl AsRef<Path>) -> PathBuf {
         dir.as_ref().join("vdd-request.json")
     }
+    pub fn vdd_resolution(dir: impl AsRef<Path>) -> PathBuf {
+        dir.as_ref().join("vdd-resolution.json")
+    }
+}
+
+pub const DEFAULT_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+pub fn append_rotated_log(path: impl AsRef<Path>, line: &str, max_bytes: u64) {
+    use std::sync::Mutex;
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if max_bytes > 0 {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() >= max_bytes {
+                let mut rotated = path.as_os_str().to_os_string();
+                rotated.push(".1");
+                let _ = replace_file(path, Path::new(&rotated));
+            }
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let _ = writeln!(f, "{ts} {line}");
+    }
 }
 
 fn unique_session_id() -> String {
@@ -455,6 +487,36 @@ impl OpenSessionRelease {
         }
         Ok(removed)
     }
+    pub fn prune_concluded(root: impl AsRef<Path>, keep_recent: usize) -> Result<usize, String> {
+        if !root.as_ref().exists() {
+            return Ok(0);
+        }
+        let mut concluded = Vec::new();
+        let entries = std::fs::read_dir(root).map_err(|e| e.to_string())?;
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if !is_session_dir(&path) {
+                continue;
+            }
+            if SessionPaths::result(&path).exists() || live_recovery_pid(&path).is_none() {
+                let modified = session_modified_time(&path);
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                concluded.push((modified, name, path));
+            }
+        }
+        concluded.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        let mut removed = 0;
+        for (_, _, path) in concluded.into_iter().skip(keep_recent) {
+            if std::fs::remove_dir_all(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
     pub fn wait_after_release(
         root: impl AsRef<Path>,
         timeout: Duration,
@@ -536,6 +598,21 @@ fn is_session_dir(path: &Path) -> bool {
             .unwrap_or_default()
             .to_string_lossy()
             .starts_with("session-")
+}
+
+fn session_modified_time(path: &Path) -> std::time::SystemTime {
+    for candidate in [
+        SessionPaths::result(path),
+        SessionPaths::events(path),
+        path.to_path_buf(),
+    ] {
+        if let Ok(meta) = std::fs::metadata(&candidate) {
+            if let Ok(modified) = meta.modified() {
+                return modified;
+            }
+        }
+    }
+    std::time::UNIX_EPOCH
 }
 
 fn live_recovery_pid(path: &Path) -> Option<i32> {

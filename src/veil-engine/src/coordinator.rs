@@ -80,6 +80,7 @@ pub struct RecoveryCoordinator {
     panel_notified: bool,
     restored_outcome: Option<RestoreOutcome>,
     panel_context: Option<(PathBuf, u64, String)>,
+    last_vdd_resolution: Option<VddResolutionRequest>,
 }
 
 impl RecoveryCoordinator {
@@ -106,6 +107,7 @@ impl RecoveryCoordinator {
             panel_notified: false,
             restored_outcome: None,
             panel_context: None,
+            last_vdd_resolution: None,
         }
     }
 
@@ -224,11 +226,15 @@ impl RecoveryCoordinator {
             Ok(frame) => resolve_vdd_resolution(&frame, selected, preference),
             Err(error) => {
                 let choice = VddResolutionChoice::fallback();
-                let _ = VddResolutionRequest {
+                let request = VddResolutionRequest {
                     width: choice.width,
                     height: choice.height,
+                };
+                self.last_vdd_resolution = Some(request);
+                let _ = request.write_active();
+                if let Some(dir) = &self.directory {
+                    let _ = JsonUtil::write_atomic(SessionPaths::vdd_resolution(dir), &request);
                 }
-                .write_active();
                 return (
                     format!(
                         "读取显示模式失败，退回 {}×{}：{error}",
@@ -243,6 +249,10 @@ impl RecoveryCoordinator {
             width: choice.width,
             height: choice.height,
         };
+        self.last_vdd_resolution = Some(request);
+        if let Some(dir) = &self.directory {
+            let _ = JsonUtil::write_atomic(SessionPaths::vdd_resolution(dir), &request);
+        }
         if let Err(error) = request.write_active() {
             return (
                 format!("没能写下分辨率请求：{error}"),
@@ -1178,6 +1188,9 @@ impl RecoveryCoordinator {
                     vdd_owned: self.vdd_owned,
                 },
             )?;
+            if let Some(request) = self.last_vdd_resolution {
+                JsonUtil::write_atomic(SessionPaths::vdd_resolution(&dir), &request)?;
+            }
             Ok(())
         };
         if let Err(error) = write_session() {
@@ -1224,6 +1237,7 @@ impl RecoveryCoordinator {
             self.directory = None;
             self.baseline = None;
             self.vdd_request_served = None;
+            self.last_vdd_resolution = None;
         }
     }
 

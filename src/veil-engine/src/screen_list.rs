@@ -91,16 +91,13 @@ impl ScreenListBuilder {
                     "开启".into()
                 }
             });
-            let mut confirmed = hb.map(|s| s.confirmed.clone()).unwrap_or_else(|| {
+            let confirmed = hb.map(|s| s.confirmed.clone()).unwrap_or_else(|| {
                 if row.active {
                     "已显示".into()
                 } else {
                     "未知".into()
                 }
             });
-            if confirmed == "失败" && hb.is_none() {
-                confirmed = "失败".into();
-            }
             let mut already = pending_wanted.to_vec();
             if let Some(h) = heartbeat {
                 for s in h.screens.iter().filter(|s| s.wanted == "保持关闭") {

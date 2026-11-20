@@ -408,17 +408,7 @@ fn helper_log(line: &str) {
         PathBuf::from(r"C:\ProgramData\Veil\driver-helper.log"),
     ];
     for path in paths {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            use std::io::Write;
-            let _ = writeln!(f, "{line}");
-        }
+        veil_engine::append_rotated_log(&path, line, veil_engine::DEFAULT_LOG_MAX_BYTES);
     }
     eprintln!("{line}");
 }

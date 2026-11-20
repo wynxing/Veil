@@ -1,6 +1,6 @@
 use std::sync::{Mutex, MutexGuard};
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
 
 /// Wakes the interface thread without retaining an `egui::Context` after the
@@ -46,5 +46,17 @@ impl UiWake {
 
     fn repaint_slot(&self) -> MutexGuard<'_, Option<egui::Context>> {
         self.repaint.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+impl Drop for UiWake {
+    fn drop(&mut self) {
+        let event = self.handle();
+        if !event.is_null() {
+            unsafe {
+                CloseHandle(event);
+            }
+            self.event = 0;
+        }
     }
 }
