@@ -21,6 +21,7 @@ pub(crate) enum Action {
     Exit,
     Cancel,
     PanelShown,
+    SetPanelOpen(bool),
 }
 
 struct Command {
@@ -103,6 +104,48 @@ fn emit(out: &Sender<Event>, wake: &UiWake, event: Event) {
     wake.ping();
 }
 
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(400);
+const PANEL_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
+const DRIVER_PROBE_INTERVAL: Duration = Duration::from_secs(3);
+
+struct DriverProbeCache {
+    bundled: BundledVddAvailability,
+    probed_at: Option<Instant>,
+}
+
+impl DriverProbeCache {
+    fn new() -> Self {
+        Self {
+            bundled: BundledVddAvailability::Absent,
+            probed_at: None,
+        }
+    }
+
+    fn get(&mut self, force: bool) -> BundledVddAvailability {
+        let stale = self
+            .probed_at
+            .is_none_or(|at| at.elapsed() >= DRIVER_PROBE_INTERVAL);
+        if force || stale {
+            self.bundled = BundledVddAvailability::from_flags(
+                DriverStatus::installed(),
+                DriverStatus::payload_present(),
+            );
+            self.probed_at = Some(Instant::now());
+        }
+        self.bundled
+    }
+}
+
+fn next_poll_interval(panel_open: bool, has_session: bool, holding: bool) -> Option<Duration> {
+    if has_session || holding {
+        Some(ACTIVE_POLL_INTERVAL)
+    } else if panel_open {
+        Some(PANEL_IDLE_POLL_INTERVAL)
+    } else {
+        None
+    }
+}
+
 fn run(
     incoming: Receiver<Command>,
     outgoing: Sender<Event>,
@@ -161,126 +204,167 @@ fn run(
     });
     hooks.cancel_requested = Box::new(move || cancel_for_hook.load(Ordering::SeqCst));
     let mut coordinator = RecoveryCoordinator::new(Box::new(Win32CcdApi), hooks);
-    let mut published_view = None;
-    send_view(&mut coordinator, &outgoing, &wake, &mut published_view);
+    let mut published_view: Option<View> = None;
+    let mut driver_cache = DriverProbeCache::new();
+    let mut panel_open = true;
+    send_view(
+        &mut coordinator,
+        &outgoing,
+        &wake,
+        &mut published_view,
+        &mut driver_cache,
+        true,
+    );
     let mut cancel_outcome: Option<Option<String>> = None;
     loop {
-        match incoming.recv_timeout(Duration::from_millis(400)) {
+        let holding = published_view.as_ref().is_some_and(|view| view.holding);
+        let next = match next_poll_interval(panel_open, coordinator.has_session(), holding) {
+            Some(wait) => incoming.recv_timeout(wait),
+            None => incoming
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        let mut force_driver_probe = false;
+        match next {
             Ok(command) => {
                 if command.action == Action::PanelShown {
                     coordinator.panel_show_attempt_finished();
                     continue;
                 }
-                let action = command.action;
-                let operation_started = Instant::now();
-                current_id.store(command.id, Ordering::SeqCst);
-                app_log(&format!(
-                    "operation-start id={} action={action:?}",
-                    command.id
-                ));
-                let error = if matches!(action, Action::KeepOff | Action::Install | Action::Exit)
-                    && helper_operation_unfinished()
-                {
-                    Some("上次辅助程序仍在运行，设备状态未确认；请等待其结束后重试。".into())
-                } else {
-                    match action {
-                        Action::KeepOff => {
-                            let mut result = command
-                                .target
-                                .map(|id| coordinator.keep_off(id))
-                                .unwrap_or_else(|| Some("缺少目标物理屏。".into()));
-                            let restore_requested =
-                                result.is_some() && coordinator.restore_request_pending();
-                            let recovery_error = if restore_requested {
-                                coordinator
-                                    .wait_for_restore_completion(Duration::from_secs(20))
-                                    .err()
-                                    .map(|e| e.to_string())
-                            } else {
-                                None
-                            };
-                            if let Some(error) = &mut result {
-                                if let Some(restore) = &recovery_error {
-                                    *error =
-                                        format!("{error} 关屏请求未提交；恢复未确认：{restore}");
-                                } else if restore_requested {
-                                    error.push_str(" 关屏请求未提交；恢复和清理已确认。");
-                                } else {
-                                    error.push_str(" 关屏请求未提交。");
-                                }
-                            }
-                            cancel_outcome = if cancel.load(Ordering::SeqCst) && result.is_some() {
-                                Some(recovery_error)
-                            } else {
-                                None
-                            };
-                            result
-                        }
-                        Action::RestoreOne => command
-                            .target
-                            .as_ref()
-                            .map(|id| {
-                                coordinator.restore_one(id).or_else(|| {
-                                    coordinator
-                                        .wait_for_single_restore_confirmation(
-                                            id,
-                                            Duration::from_secs(20),
-                                        )
-                                        .err()
-                                        .map(|e| e.to_string())
-                                })
-                            })
-                            .unwrap_or_else(|| Some("缺少目标物理屏。".into())),
-                        Action::RestoreAll => {
-                            let result = coordinator.restore_all_and_wait(Duration::from_secs(20));
-                            cancel_outcome = None;
-                            cancel.store(false, Ordering::SeqCst);
-                            result.err().map(|e| e.to_string())
-                        }
-                        Action::Cancel => {
-                            let result = cancel_outcome.take().unwrap_or_else(|| {
-                                coordinator
-                                    .restore_all_and_wait(Duration::from_secs(20))
-                                    .err()
-                                    .map(|e| e.to_string())
-                            });
-                            cancel.store(false, Ordering::SeqCst);
-                            result
-                        }
-                        Action::Install => coordinator.install_auxiliary_output(),
-                        Action::Exit => {
-                            let result = coordinator.restore_all_and_wait(Duration::from_secs(20));
-                            cancel_outcome = None;
-                            cancel.store(false, Ordering::SeqCst);
-                            result.err().map(|e| e.to_string())
-                        }
-                        Action::PanelShown => unreachable!(),
+                if let Action::SetPanelOpen(open) = command.action {
+                    panel_open = open;
+                    if !open {
+                        continue;
                     }
-                };
-                finish_stage(&stage_clock, command.id);
-                app_log(&format!(
-                    "operation-end id={} action={action:?} elapsed_ms={} error={error:?}",
-                    command.id,
-                    operation_started.elapsed().as_millis()
-                ));
-                current_id.store(0, Ordering::SeqCst);
-                emit(
-                    &outgoing,
-                    &wake,
-                    Event::Done {
-                        id: command.id,
-                        action,
-                        error: error.clone(),
-                    },
-                );
-                if action == Action::Exit && error.is_none() {
-                    emit(&outgoing, &wake, Event::ExitReady);
+                    force_driver_probe = true;
+                } else {
+                    force_driver_probe = true;
+                    let action = command.action;
+                    let operation_started = Instant::now();
+                    current_id.store(command.id, Ordering::SeqCst);
+                    app_log(&format!(
+                        "operation-start id={} action={action:?}",
+                        command.id
+                    ));
+                    let error =
+                        if matches!(action, Action::KeepOff | Action::Install | Action::Exit)
+                            && helper_operation_unfinished()
+                        {
+                            Some(
+                                "上次辅助程序仍在运行，设备状态未确认；请等待其结束后重试。"
+                                    .into(),
+                            )
+                        } else {
+                            match action {
+                                Action::KeepOff => {
+                                    let mut result = command
+                                        .target
+                                        .map(|id| coordinator.keep_off(id))
+                                        .unwrap_or_else(|| Some("缺少目标物理屏。".into()));
+                                    let restore_requested =
+                                        result.is_some() && coordinator.restore_request_pending();
+                                    let recovery_error = if restore_requested {
+                                        coordinator
+                                            .wait_for_restore_completion(Duration::from_secs(20))
+                                            .err()
+                                            .map(|e| e.to_string())
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(error) = &mut result {
+                                        if let Some(restore) = &recovery_error {
+                                            *error = format!(
+                                                "{error} 关屏请求未提交；恢复未确认：{restore}"
+                                            );
+                                        } else if restore_requested {
+                                            error.push_str(" 关屏请求未提交；恢复和清理已确认。");
+                                        } else {
+                                            error.push_str(" 关屏请求未提交。");
+                                        }
+                                    }
+                                    cancel_outcome =
+                                        if cancel.load(Ordering::SeqCst) && result.is_some() {
+                                            Some(recovery_error)
+                                        } else {
+                                            None
+                                        };
+                                    result
+                                }
+                                Action::RestoreOne => command
+                                    .target
+                                    .as_ref()
+                                    .map(|id| {
+                                        coordinator.restore_one(id).or_else(|| {
+                                            coordinator
+                                                .wait_for_single_restore_confirmation(
+                                                    id,
+                                                    Duration::from_secs(20),
+                                                )
+                                                .err()
+                                                .map(|e| e.to_string())
+                                        })
+                                    })
+                                    .unwrap_or_else(|| Some("缺少目标物理屏。".into())),
+                                Action::RestoreAll => {
+                                    let result =
+                                        coordinator.restore_all_and_wait(Duration::from_secs(20));
+                                    cancel_outcome = None;
+                                    cancel.store(false, Ordering::SeqCst);
+                                    result.err().map(|e| e.to_string())
+                                }
+                                Action::Cancel => {
+                                    let result = cancel_outcome.take().unwrap_or_else(|| {
+                                        coordinator
+                                            .restore_all_and_wait(Duration::from_secs(20))
+                                            .err()
+                                            .map(|e| e.to_string())
+                                    });
+                                    cancel.store(false, Ordering::SeqCst);
+                                    result
+                                }
+                                Action::Install => coordinator.install_auxiliary_output(),
+                                Action::Exit => {
+                                    let result =
+                                        coordinator.restore_all_and_wait(Duration::from_secs(20));
+                                    cancel_outcome = None;
+                                    cancel.store(false, Ordering::SeqCst);
+                                    result.err().map(|e| e.to_string())
+                                }
+                                Action::PanelShown | Action::SetPanelOpen(_) => unreachable!(),
+                            }
+                        };
+                    finish_stage(&stage_clock, command.id);
+                    app_log(&format!(
+                        "operation-end id={} action={action:?} elapsed_ms={} error={error:?}",
+                        command.id,
+                        operation_started.elapsed().as_millis()
+                    ));
+                    current_id.store(0, Ordering::SeqCst);
+                    emit(
+                        &outgoing,
+                        &wake,
+                        Event::Done {
+                            id: command.id,
+                            action,
+                            error: error.clone(),
+                        },
+                    );
+                    if action == Action::Exit && error.is_none() {
+                        emit(&outgoing, &wake, Event::ExitReady);
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        send_view(&mut coordinator, &outgoing, &wake, &mut published_view);
+        send_view(
+            &mut coordinator,
+            &outgoing,
+            &wake,
+            &mut published_view,
+            &mut driver_cache,
+            force_driver_probe,
+        );
         if current_id.load(Ordering::SeqCst) == 0 {
             finish_stage(&stage_clock, 0);
         }
@@ -306,6 +390,8 @@ fn send_view(
     outgoing: &Sender<Event>,
     wake: &UiWake,
     published: &mut Option<View>,
+    driver_cache: &mut DriverProbeCache,
+    force_driver_probe: bool,
 ) {
     coordinator.poll();
     let show_panel = coordinator.take_should_show_panel();
@@ -325,10 +411,7 @@ fn send_view(
             return;
         }
     };
-    let bundled = BundledVddAvailability::from_flags(
-        DriverStatus::installed(),
-        DriverStatus::payload_present(),
-    );
+    let bundled = driver_cache.get(force_driver_probe);
     let mut screens = ScreenListBuilder::build(
         &frame.snapshot,
         coordinator.heartbeat.as_ref(),
@@ -466,6 +549,27 @@ mod tests {
                 &sample_view("other", false, "热键：空闲")
             ),
             (true, true)
+        );
+    }
+
+    #[test]
+    fn poll_interval_sleeps_indefinitely_only_when_hidden_and_idle() {
+        assert_eq!(next_poll_interval(false, false, false), None);
+        assert_eq!(
+            next_poll_interval(true, false, false),
+            Some(PANEL_IDLE_POLL_INTERVAL)
+        );
+        assert_eq!(
+            next_poll_interval(false, true, false),
+            Some(ACTIVE_POLL_INTERVAL)
+        );
+        assert_eq!(
+            next_poll_interval(false, false, true),
+            Some(ACTIVE_POLL_INTERVAL)
+        );
+        assert_eq!(
+            next_poll_interval(true, true, true),
+            Some(ACTIVE_POLL_INTERVAL)
         );
     }
 }

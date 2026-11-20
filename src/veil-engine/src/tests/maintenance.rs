@@ -232,3 +232,49 @@ fn restore_session_selection_rejects_service_and_ambiguous_users() {
     assert!(can_act_as_restore_proxy(1, 1).is_ok());
     assert!(can_act_as_restore_proxy(2, 1).is_err());
 }
+#[test]
+fn append_rotated_log_writes_rfc3339_and_rotates_past_limit() {
+    let root = TempSession::new();
+    let log = root.0.join("Veil-test.log");
+    let rotated = root.0.join("Veil-test.log.1");
+    crate::append_rotated_log(&log, "first-entry", 32);
+    let first_text = std::fs::read_to_string(&log).unwrap();
+    assert!(first_text.contains("first-entry"));
+    assert!(first_text.contains('T') && first_text.contains('Z'));
+    assert!(!rotated.exists());
+
+    // First entry already exceeds 32 bytes, so the second write rotates it to .1.
+    crate::append_rotated_log(&log, "second-entry", 32);
+    assert!(rotated.exists());
+    assert!(std::fs::read_to_string(&rotated)
+        .unwrap()
+        .contains("first-entry"));
+    let current = std::fs::read_to_string(&log).unwrap();
+    assert!(current.contains("second-entry"));
+    assert!(!current.contains("first-entry"));
+}
+#[test]
+fn prune_concluded_keeps_newest_and_preserves_live_and_non_session_dirs() {
+    let root = TempSession::new();
+    let keep_other = root.0.join("not-a-session");
+    std::fs::create_dir(&keep_other).unwrap();
+    let live = root.0.join("session-live");
+    std::fs::create_dir(&live).unwrap();
+    write_live_ready(&live);
+
+    for name in ["session-01", "session-02", "session-03", "session-04"] {
+        let dir = root.0.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        JsonUtil::write_atomic(SessionPaths::result(&dir), &complete_result()).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let removed = OpenSessionRelease::prune_concluded(&root.0, 2).unwrap();
+    assert_eq!(removed, 2);
+    assert!(keep_other.exists());
+    assert!(live.exists());
+    assert!(!root.0.join("session-01").exists());
+    assert!(!root.0.join("session-02").exists());
+    assert!(root.0.join("session-03").exists());
+    assert!(root.0.join("session-04").exists());
+}

@@ -695,7 +695,7 @@ impl RecoverySession {
         }
         let mut paths = prepared.paths.clone();
         let modes = prepared.modes.clone();
-        let adjusted_clone = false;
+        let mut adjusted_clone = false;
         let mut rc = match self
             .opt
             .ccd
@@ -717,6 +717,7 @@ impl RecoverySession {
                 return false;
             }
             invalidate_inactive_source_indices(&mut paths);
+            adjusted_clone = true;
             rc = match self
                 .opt
                 .ccd
@@ -1389,6 +1390,23 @@ impl RecoverySession {
         );
     }
 
+    fn preferred_vdd_resolution(&self) -> (u32, u32) {
+        let session_request = JsonUtil::try_read::<crate::VddResolutionRequest>(
+            SessionPaths::vdd_resolution(&self.opt.directory),
+        );
+        #[cfg(not(test))]
+        let request = session_request.or_else(crate::VddResolutionRequest::read_active);
+        #[cfg(test)]
+        let request = session_request;
+        request
+            .filter(|req| crate::BundledVddSettings::accepted(req.width, req.height))
+            .map(|req| (req.width, req.height))
+            .unwrap_or((
+                crate::BundledVddSettings::FALLBACK_WIDTH,
+                crate::BundledVddSettings::FALLBACK_HEIGHT,
+            ))
+    }
+
     fn activate_inactive_bundled(&mut self, active: &CcdFrame, all: &CcdFrame) -> bool {
         let selected: Vec<_> = self
             .intent
@@ -1396,8 +1414,15 @@ impl RecoverySession {
             .iter()
             .map(|item| item.to_identity())
             .collect();
-        match activate_inactive_bundled_path(self.opt.ccd.as_ref(), active, all, 1920, 1200, false)
-        {
+        let (width, height) = self.preferred_vdd_resolution();
+        match activate_inactive_bundled_path(
+            self.opt.ccd.as_ref(),
+            active,
+            all,
+            width,
+            height,
+            false,
+        ) {
             InactiveBundledActivation::Applied => {
                 self.vdd_activate_attempted = true;
                 SessionLog::append(

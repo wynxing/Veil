@@ -709,3 +709,88 @@ fn unknown_session_protocol_never_applies() {
     assert!(!ccd.applied());
     assert!(session.result.restoration_outcome().is_err());
 }
+#[test]
+fn activate_inactive_bundled_uses_session_vdd_resolution() {
+    let _guard = override_bundled_instances(vec![DISPLAY_INSTANCE.into()]);
+    let dir = TempSession::new();
+    let ccd = dual_physical();
+    save_topology(&dir.0, &ccd);
+    JsonUtil::write_atomic(
+        SessionPaths::vdd_resolution(&dir.0),
+        &crate::VddResolutionRequest {
+            width: 2560,
+            height: 1440,
+        },
+    )
+    .unwrap();
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, false);
+    session.tick();
+    write_keep_off(
+        &dir.0,
+        &[(1, r"\\?\DISPLAY#CMN#1"), (2, r"\\?\DISPLAY#PDA#1")],
+        true,
+    );
+    session.tick();
+    let mut paths = ccd.paths();
+    let mut rows = ccd.rows();
+    paths.push(fakes::path(false, false, 3, 0x0001FFFF, 1));
+    rows.push(display_instance_row(false, 3));
+    ccd.set_paths_rows(paths, rows);
+    session.tick();
+
+    assert!(!session.exited);
+    let paths = ccd.paths();
+    let modes = ccd.modes();
+    let path = paths
+        .iter()
+        .find(|path| {
+            path.target_info.id == 3 && path.flags & CcdConstants::DISPLAYCONFIG_PATH_ACTIVE != 0
+        })
+        .expect("辅助路径应处于活动");
+    let source_index = (path.source_info.mode_info_idx >> 16) as usize;
+    let target_index = (path.target_info.mode_info_idx >> 16) as usize;
+    assert_eq!(modes[source_index].source_mode().width, 2560);
+    assert_eq!(modes[source_index].source_mode().height, 1440);
+    let signal = unsafe {
+        modes[target_index]
+            .union
+            .target_mode
+            .target_video_signal_info
+    };
+    assert_eq!(signal.active_size.cx, 2560);
+    assert_eq!(signal.active_size.cy, 1440);
+}
+#[test]
+fn clone_validate_87_retry_marks_adjusted_clone_true() {
+    let dir = TempSession::new();
+    let ccd = internal_plus_vdd();
+    save_topology(&dir.0, &ccd);
+    ccd.push_validate_rc(87);
+    let mut session = RecoverySession::new(options(
+        dir.0.clone(),
+        ccd.clone(),
+        FakeHotkey::new(),
+        11,
+        Rc::new(SharedParent::new()),
+        Rc::new(SharedClock::new(0.0)),
+    ));
+    session.start();
+    JsonUtil::write_atomic(SessionPaths::arm(&dir.0), &ArmFile { pid: 11 }).unwrap();
+    session.tick();
+    write_keep_internal_off(&dir.0, true);
+    session.tick();
+
+    assert!(!session.exited);
+    assert_eq!(session.result.adjusted_clone, Some(true));
+}

@@ -17,9 +17,9 @@
 
 ## 日志与故障排查
 
-- App 日志：`%TEMP%\Veil-app.log`，包括操作开始／结束、阶段计时、辅助程序启动／结束／超时及返回码；时间戳为 Unix 秒。
-- 驱动助手日志：`%TEMP%\Veil-driver-helper.log`，用于排查安装、启用、禁用与移除。
-- 会话目录：`%LOCALAPPDATA%\Veil\session-<id>\`。保留 `events.jsonl`、`heartbeat.json`、`result.json`、`session.json` 与基线文件。
+- App 日志：`%TEMP%\Veil-app.log`，包括操作开始／结束、阶段计时、辅助程序启动／结束／超时及返回码；时间戳为 UTC RFC3339，单文件满 2 MiB 自动轮转保留一份 `.1` 备份。
+- 驱动助手日志：`%TEMP%\Veil-driver-helper.log`（及 `C:\ProgramData\Veil\driver-helper.log`），用于排查安装、启用、禁用与移除；同样使用 UTC RFC3339 时间戳并按 2 MiB 轮转。
+- 会话目录：`%LOCALAPPDATA%\Veil\session-<id>\`。保留 `events.jsonl`、`heartbeat.json`、`result.json`、`session.json` 与基线文件；应用启动时自动清理较早的已结束会话，默认保留最近 10 份。
 - 反馈时附问题发生时间、应用版本、系统与硬件信息、操作方式和对应日志。会话文件可能包含显示器标识，分享前检查隐私信息。
 
 ### 辅助输出未出现

@@ -39,8 +39,9 @@ pub use process::ProcessLaunch;
 pub use recovery::{RecoveryOptions, RecoverySession};
 pub use screen_list::{AuxiliaryInstallItem, ScreenItem, ScreenListBuilder};
 pub use session::{
-    ArmFile, HeartbeatFile, IntentFile, JsonUtil, OpenSessionRelease, ReadyFile, ReleaseFile,
-    ResultFile, ScreenIdentityDto, SessionLog, SessionPaths, VddRequestFile,
+    append_rotated_log, ArmFile, HeartbeatFile, IntentFile, JsonUtil, OpenSessionRelease,
+    ReadyFile, ReleaseFile, ResultFile, ScreenIdentityDto, SessionLog, SessionPaths,
+    VddRequestFile, DEFAULT_LOG_MAX_BYTES,
 };
 pub use topology::{struct_bytes, DeactivateResult, PathOps, TopologyBlob};
 
